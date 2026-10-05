@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using static Sandbox.Clothing;
 
 namespace Sandbox;
@@ -12,6 +13,9 @@ namespace Sandbox;
 /// shape. This component dresses the body like <see cref="Dresser"/> does, but every garment is
 /// refitted to the body first (see <see cref="ClothingFitter"/>). It works for any model on the
 /// citizen skeleton and any citizen clothing, including items downloaded at runtime.
+///
+/// The fitting is done on worker threads, so nothing stalls. A garment shows up when its fit
+/// is ready: right away if it has been worn on this body before, otherwise a moment later.
 ///
 /// The stock ClothingContainer.Apply can't be used here: it treats any model that isn't
 /// citizen.vmdl as a human and throws away clothing that has no human variant.
@@ -63,9 +67,14 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			Apply();
 	}
 
+	// Goes up every time the outfit is put on or taken off. An Apply that comes back from
+	// waiting and finds it changed has been overtaken and stops.
+	int outfit;
+
 	[Button( "Clear Clothing" )]
 	public void Clear()
 	{
+		outfit++;
 		if ( !BodyTarget.IsValid() )
 			return;
 
@@ -119,6 +128,26 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		Live.Remove( this );
 	}
 
+	// How far clothing can stick out past the body: hair, a hat, a sword on the back.
+	const float ClothingReach = 16f;
+
+	protected override void OnPreRender()
+	{
+		if ( !BodyTarget.IsValid() ) return;
+
+		// A model built at runtime has no per-bone extents, so the engine works out the bounds
+		// of a bone-merged garment from its bone positions alone. That box is far too small
+		// (for hair, a sliver through the neck) and the garment gets culled while it is still
+		// on screen. The body's bounds are right, and the clothing is on the body.
+		var bounds = BodyTarget.Bounds.Grow( ClothingReach );
+		foreach ( var child in BodyTarget.GameObject.Children )
+		{
+			if ( !child.Tags.Has( ClothingTag ) ) continue;
+			var sceneModel = child.GetComponent<SkinnedModelRenderer>()?.SceneModel;
+			if ( sceneModel.IsValid() ) sceneModel.Bounds = bounds;
+		}
+	}
+
 	// What a random outfit is made of: for each group, the odds of wearing something from it
 	// and the categories to pick from. Same table as the stock Dresser's Randomize, which sits
 	// in an internal engine class and can't be called from here.
@@ -165,16 +194,30 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	[Button( "Apply Clothing" )]
 	public void Apply()
 	{
+		_ = ApplyAndReport();
+	}
+
+	async Task ApplyAndReport()
+	{
+		try
+		{
+			await ApplyAsync();
+		}
+		catch ( Exception e )
+		{
+			// Nobody waits for this task, so an exception would vanish without a trace.
+			Log.Warning( $"FitDresser on '{GameObject?.Name}': {e.GetType().Name}: {e.Message}" );
+		}
+	}
+
+	async Task ApplyAsync()
+	{
 		if ( !BodyTarget.IsValid() )
 			return;
 
-		// New objects go into whichever scene is current, which isn't ours when this is called
-		// from a console command or from another scene's code.
-		using var sceneScope = BodyTarget.Scene.Push();
-
 		Clear();
-		FittedCount = 0;
-		StockCount = 0;
+		int mine = outfit;
+		bool Overtaken() => mine != outfit || !this.IsValid() || !BodyTarget.IsValid();
 
 		var container = BuildContainer();
 		var worn = container.Clothing
@@ -193,9 +236,13 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			ClothingVersion.Citizen => ClothingFitter.BodyKind.Citizen,
 			ClothingVersion.HumanMale => ClothingFitter.BodyKind.HumanMale,
 			ClothingVersion.HumanFemale => ClothingFitter.BodyKind.HumanFemale,
-			_ => FitAtRuntime ? ClothingFitter.KindOf( BodyTarget.Model ) : ClothingFitter.BodyKind.Citizen,
+			_ => FitAtRuntime ? await ClothingFitter.KindOfAsync( BodyTarget.Model ) : ClothingFitter.BodyKind.Citizen,
 		};
+		if ( Overtaken() ) return;
 
+		// Ask for everything up front so the garments are fitted side by side, then put them
+		// on in order as they arrive.
+		var wanted = new List<(ClothingContainer.ClothingEntry Entry, string StockPath, Task<Model> Fit)>();
 		foreach ( var entry in worn )
 		{
 			var item = entry.Clothing;
@@ -222,10 +269,34 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			if ( string.IsNullOrEmpty( stockPath ) )
 				continue;
 
-			var model = LoadFitted( stockPath, madeFor );
+			wanted.Add( (entry, stockPath, FitAtRuntime ? ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor ) : null) );
+		}
+
+		int fittedCount = 0, stockCount = 0;
+		foreach ( var (entry, stockPath, fit) in wanted )
+		{
+			Model model = null;
+			if ( fit is not null )
+			{
+				model = await fit;
+				if ( Overtaken() ) return;
+			}
+
+			if ( model.IsValid() ) fittedCount++;
+			else
+			{
+				stockCount++;
+				model = Model.Load( stockPath );
+			}
+
 			if ( !model.IsValid() || model.IsError )
 				continue;
 
+			// New objects go into whichever scene is current, which isn't ours after a wait or
+			// when this was called from a console command.
+			using var sceneScope = BodyTarget.Scene.Push();
+
+			var item = entry.Clothing;
 			var go = new GameObject( false, $"Clothing - {item.ResourceName}" );
 			go.Flags |= GameObjectFlags.NotSaved;
 			go.Parent = BodyTarget.GameObject;
@@ -246,10 +317,13 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			go.Enabled = true;
 		}
 
-		// Hide the body parts the clothing covers, same rules as the stock dresser.
+		// Hide the body parts the clothing covers, same rules as the stock dresser. Last, so
+		// there are no holes in the body while the clothes are still on their way.
 		foreach ( var (name, value) in container.GetBodyGroups( worn.Select( x => x.Clothing ), BodyTarget.Model ) )
 			BodyTarget.SetBodyGroup( name, value );
 
+		FittedCount = fittedCount;
+		StockCount = stockCount;
 		Log.Info( $"FitDresser on '{GameObject.Name}' ({bodyKind} clothing): {FittedCount} fitted, {StockCount} as is" );
 	}
 
@@ -267,22 +341,6 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		}
 
 		return container;
-	}
-
-	Model LoadFitted( string stockPath, ClothingFitter.BodyKind madeFor )
-	{
-		if ( FitAtRuntime )
-		{
-			var fitted = ClothingFitter.Fit( BodyTarget.Model, stockPath, madeFor );
-			if ( fitted.IsValid() )
-			{
-				FittedCount++;
-				return fitted;
-			}
-		}
-
-		StockCount++;
-		return Model.Load( stockPath );
 	}
 
 	static Material FirstMaterial( IEnumerable<string> paths )

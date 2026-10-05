@@ -121,23 +121,27 @@ public sealed class SkinByBone
 	{
 		if ( bone < 0 || bone >= family.Length ) return default;
 
-		if ( !trees.TryGetValue( bone, out var entry ) )
+		// Built on first use, and several garments can be fitted at once on different threads.
+		lock ( trees )
 		{
-			var own = new List<int>();
-			for ( int t = 0; t < body.TriCount; t++ )
-				if ( Owns( t, bone ) >= 0.5f ) own.Add( t );
-
-			if ( own.Count >= 4 )
+			if ( !trees.TryGetValue( bone, out var entry ) )
 			{
-				var tris = new int[own.Count * 3];
-				for ( int i = 0; i < own.Count; i++ )
-					Array.Copy( body.Tris, own[i] * 3, tris, i * 3, 3 );
-				entry = (new TriMesh( body.Verts, tris ), own.ToArray());
-			}
-			trees[bone] = entry;
-		}
+				var own = new List<int>();
+				for ( int t = 0; t < body.TriCount; t++ )
+					if ( Owns( t, bone ) >= 0.5f ) own.Add( t );
 
-		return entry;
+				if ( own.Count >= 4 )
+				{
+					var tris = new int[own.Count * 3];
+					for ( int i = 0; i < own.Count; i++ )
+						Array.Copy( body.Tris, own[i] * 3, tris, i * 3, 3 );
+					entry = (new TriMesh( body.Verts, tris ), own.ToArray());
+				}
+				trees[bone] = entry;
+			}
+
+			return entry;
+		}
 	}
 }
 
