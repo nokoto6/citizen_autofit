@@ -52,6 +52,15 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	/// </summary>
 	[Property] public ClothingVersion Version { get; set; } = ClothingVersion.Auto;
 
+	/// <summary>
+	/// How tall the character is, same as the stock Dresser's height: 0 is the shortest, 1 the
+	/// tallest, 0.5 leaves it alone. The body's animation graph does the scaling (the citizen's
+	/// has it), and the clothing follows the bones. With Use Local Avatar the avatar's own
+	/// height is used.
+	/// </summary>
+	[Property, Range( 0, 1 ), HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnHeightChanged ) )]
+	public float Height { get; set; } = 0.5f;
+
 	[Property] public bool ApplyOnStart { get; set; } = true;
 
 	/// <summary>How many garments of the last Apply were fitted on the spot.</summary>
@@ -221,6 +230,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		bool Overtaken() => mine != outfit || !this.IsValid() || !BodyTarget.IsValid();
 
 		var container = BuildContainer();
+		ApplyHeight( UseLocalAvatar ? container.Height : Height );
 		var worn = container.Clothing
 			.Where( x => x.Clothing is not null )
 			.ToList();
@@ -288,6 +298,19 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		FittedCount = fittedCount;
 		StockCount = stockCount;
 		Log.Info( $"FitDresser on '{GameObject.Name}' ({bodyKind} clothing): {FittedCount} fitted, {StockCount} as is" );
+	}
+
+	void OnHeightChanged( float before, float after )
+	{
+		if ( !UseLocalAvatar )
+			ApplyHeight( after );
+	}
+
+	// Same parameter and range as the stock Dresser.
+	void ApplyHeight( float height )
+	{
+		if ( BodyTarget.IsValid() )
+			BodyTarget.Set( "scale_height", height.Remap( 0, 1, 0.8f, 1.2f, true ) );
 	}
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets

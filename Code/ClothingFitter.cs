@@ -73,7 +73,6 @@ public static class ClothingFitter
 	{
 		public SkinnedGeometry Garment;
 		public List<(string Material, List<FittedVertex> Vertices, List<int> Indices)> Draws = new();
-		public List<Mesh> Meshes = new();   // made on the main thread
 		public long Milliseconds;
 	}
 
@@ -197,7 +196,6 @@ public static class ClothingFitter
 				if ( started != generation ) return null;
 
 				var building = System.Diagnostics.Stopwatch.StartNew();
-				MakeMeshes( result, $"fitted/{key}/{i}" );
 				done.Insert( 0, result );
 				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
 				worker += result.Milliseconds;
@@ -611,20 +609,14 @@ public static class ClothingFitter
 	}
 
 	// Main thread: the engine only makes meshes and models there.
-	static void MakeMeshes( Fitted level, string name )
+	static Mesh MakeMesh( (string Material, List<FittedVertex> Vertices, List<int> Indices) draw, string name )
 	{
-		for ( int d = 0; d < level.Draws.Count; d++ )
-		{
-			var (materialPath, vertices, indices) = level.Draws[d];
-			var material = string.IsNullOrEmpty( materialPath ) ? null : Material.Load( materialPath );
-			var mesh = new Mesh( $"{name}_{d}", material );
-			mesh.CreateVertexBuffer( vertices.Count, vertices );
-			mesh.CreateIndexBuffer( indices.Count, indices );
-			mesh.Bounds = BBox.FromPoints( vertices.Select( x => x.Position ) );
-			level.Meshes.Add( mesh );
-		}
-
-		level.Draws = null;   // the buffers have them now
+		var material = string.IsNullOrEmpty( draw.Material ) ? null : Material.Load( draw.Material );
+		var mesh = new Mesh( name, material );
+		mesh.CreateVertexBuffer( draw.Vertices.Count, draw.Vertices );
+		mesh.CreateIndexBuffer( draw.Indices.Count, draw.Indices );
+		mesh.Bounds = BBox.FromPoints( draw.Vertices.Select( x => x.Position ) );
+		return mesh;
 	}
 
 	/// <summary>
@@ -662,16 +654,21 @@ public static class ClothingFitter
 			if ( k == 0 ) mask |= (1 << lowest) - 1;
 			if ( k == levels.Count - 1 ) mask |= 255 & ~((1 << lowest) - 1);
 
-			foreach ( var mesh in levels[k].Meshes )
+			// A mesh can go to one LOD or to all of them, there is no in between. And the same
+			// mesh can't be added twice or shared with another model: tried, and the skinning
+			// of some LODs came out wrong (sleeves that don't follow the arms). So every LOD of
+			// every model gets a mesh of its own. The copies are of the rough levels, which
+			// are small.
+			for ( int d = 0; d < levels[k].Draws.Count; d++ )
 			{
 				if ( mask == 255 )
 				{
-					builder.AddMesh( mesh );
+					builder.AddMesh( MakeMesh( levels[k].Draws[d], $"{name}_{k}_{d}" ) );
 					continue;
 				}
 
 				for ( int lod = 0; lod < 8; lod++ )
-					if ( (mask & (1 << lod)) != 0 ) builder.AddMesh( mesh, lod );
+					if ( (mask & (1 << lod)) != 0 ) builder.AddMesh( MakeMesh( levels[k].Draws[d], $"{name}_{k}_{d}_lod{lod}" ), lod );
 			}
 		}
 

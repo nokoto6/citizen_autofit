@@ -31,6 +31,7 @@ fitted when it was put on.
 | Clothing | The outfit, same entries as the stock Dresser. |
 | Fit At Runtime | Off: clothing is worn as is, for comparison. |
 | Version | Which version of each garment to wear: Auto, Citizen, Human Male, Human Female. Auto goes by the skeleton. It tells a citizen from a human well, but not a male human from a female one, so set it by hand when it guesses wrong. |
+| Height | How tall the character is, 0 to 1, same as the stock Dresser. Scales the body through its animation graph; the clothing follows. |
 | Apply On Start | Dress when the component starts. |
 
 Buttons: **Apply Clothing**, **Clear Clothing**, **Randomize** (same groups and odds as the stock
@@ -99,7 +100,7 @@ workshop player models, each with a Fit Dresser.
   warning in the log and clothing won't sit on it properly.
 - Each garment is fitted to the body on its own. Two layers don't know about each other, so on a
   body with hard edges a shirt can show through a jacket in places.
-- The dresser doesn't apply avatar height or age, and doesn't network anything: every client
+- The dresser doesn't apply avatar age or skin tint, and doesn't network anything: every client
   dresses the character itself from the same list.
 - A model built at runtime has no per-bone bounds, so the engine culls bone-merged clothing by a
   box around its bone positions, which is far too small. The dresser overrides the clothing's
