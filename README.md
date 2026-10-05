@@ -85,6 +85,9 @@ workshop player models, each with a Fit Dresser.
   in animation, so it is moved as a whole: rotated and shifted, scaled only if it wraps the body.
   Glasses keep their lenses in the frame, a sword on a strap doesn't bend with the neck.
 - **Hair made of cards.** Each card follows the scalp on its own.
+- **Normals.** Each normal is turned the same way the surface around its vertex turned, so
+  shading stays right where a garment bends around a new shape, and hard edges and smoothing stay
+  as the artist made them. Tangents are rebuilt from the UVs.
 - **LODs.** Every LOD of a garment is fitted and the fitted model switches between them at the
   garment's own distances.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
@@ -94,8 +97,6 @@ workshop player models, each with a Fit Dresser.
 ## What it doesn't
 
 - A garment's material groups and morphs are not carried over to the fitted model.
-- Normals are rotated along with the surface (or rebuilt, where the source packing isn't one the
-  reader knows), tangents are rebuilt from UVs.
 - Clothing follows bones by name. A model that shares fewer than half of the bones gets a
   warning in the log and clothing won't sit on it properly.
 - Each garment is fitted to the body on its own. Two layers don't know about each other, so on a
