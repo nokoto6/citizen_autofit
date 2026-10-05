@@ -14,8 +14,9 @@ namespace Sandbox;
 /// refitted to the body first (see <see cref="ClothingFitter"/>). It works for any model on the
 /// citizen skeleton and any citizen clothing, including items downloaded at runtime.
 ///
-/// The fitting is done on worker threads, so nothing stalls. A garment shows up when its fit
-/// is ready: right away if it has been worn on this body before, otherwise a moment later.
+/// The fitting is done on worker threads, so nothing stalls. A garment that has been worn on
+/// this body before is on right away. A new one shows up a moment later in its roughest LOD,
+/// which is quick to fit, and sharpens as the more detailed LODs come in.
 ///
 /// The stock ClothingContainer.Apply can't be used here: it treats any model that isn't
 /// citizen.vmdl as a human and throws away clothing that has no human variant.
@@ -240,9 +241,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		};
 		if ( Overtaken() ) return;
 
-		// Ask for everything up front so the garments are fitted side by side, then put them
-		// on in order as they arrive.
-		var wanted = new List<(ClothingContainer.ClothingEntry Entry, string StockPath, Task<Model> Fit)>();
+		// Ask for everything up front so the garments are fitted side by side.
+		var wearing = new List<Task<bool>>();
 		foreach ( var entry in worn )
 		{
 			var item = entry.Clothing;
@@ -269,40 +269,55 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			if ( string.IsNullOrEmpty( stockPath ) )
 				continue;
 
-			wanted.Add( (entry, stockPath, FitAtRuntime ? ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor ) : null) );
+			wearing.Add( WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken ) );
 		}
 
 		int fittedCount = 0, stockCount = 0;
-		foreach ( var (entry, stockPath, fit) in wanted )
+		foreach ( var garment in wearing )
 		{
-			Model model = null;
-			if ( fit is not null )
-			{
-				model = await fit;
-				if ( Overtaken() ) return;
-			}
+			if ( await garment ) fittedCount++;
+			else stockCount++;
+			if ( Overtaken() ) return;
+		}
 
-			if ( model.IsValid() ) fittedCount++;
-			else
-			{
-				stockCount++;
-				model = Model.Load( stockPath );
-			}
+		// Hide the body parts the clothing covers, same rules as the stock dresser. Last, so
+		// there are no holes in the body while the clothes are still on their way.
+		foreach ( var (name, value) in container.GetBodyGroups( worn.Select( x => x.Clothing ), BodyTarget.Model ) )
+			BodyTarget.SetBodyGroup( name, value );
 
-			if ( !model.IsValid() || model.IsError )
-				continue;
+		FittedCount = fittedCount;
+		StockCount = stockCount;
+		Log.Info( $"FitDresser on '{GameObject.Name}' ({bodyKind} clothing): {FittedCount} fitted, {StockCount} as is" );
+	}
+
+	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
+	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
+	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, Material skin, Material eyes, Func<bool> overtaken )
+	{
+		var item = entry.Clothing;
+		SkinnedModelRenderer renderer = null;
+
+		void Show( Model model )
+		{
+			if ( overtaken() || !model.IsValid() || model.IsError )
+				return;
+
+			if ( renderer.IsValid() )
+			{
+				renderer.Model = model;
+				return;
+			}
 
 			// New objects go into whichever scene is current, which isn't ours after a wait or
 			// when this was called from a console command.
 			using var sceneScope = BodyTarget.Scene.Push();
 
-			var item = entry.Clothing;
 			var go = new GameObject( false, $"Clothing - {item.ResourceName}" );
 			go.Flags |= GameObjectFlags.NotSaved;
 			go.Parent = BodyTarget.GameObject;
 			go.Tags.Add( ClothingTag );
 
-			var renderer = go.Components.Create<SkinnedModelRenderer>();
+			renderer = go.Components.Create<SkinnedModelRenderer>();
 			renderer.Model = model;
 			renderer.BoneMergeTarget = BodyTarget;
 			renderer.SetMaterialOverride( skin, "skin" );
@@ -317,14 +332,12 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			go.Enabled = true;
 		}
 
-		// Hide the body parts the clothing covers, same rules as the stock dresser. Last, so
-		// there are no holes in the body while the clothes are still on their way.
-		foreach ( var (name, value) in container.GetBodyGroups( worn.Select( x => x.Clothing ), BodyTarget.Model ) )
-			BodyTarget.SetBodyGroup( name, value );
+		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show ) : null;
+		if ( overtaken() )
+			return false;
 
-		FittedCount = fittedCount;
-		StockCount = stockCount;
-		Log.Info( $"FitDresser on '{GameObject.Name}' ({bodyKind} clothing): {FittedCount} fitted, {StockCount} as is" );
+		Show( fitted.IsValid() ? fitted : Model.Load( stockPath ) );
+		return fitted.IsValid();
 	}
 
 	ClothingContainer BuildContainer()

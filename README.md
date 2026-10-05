@@ -2,6 +2,8 @@
 
 Refits s&box citizen clothing to a body it was not made for, at the moment it is put on.
 
+![Stock clothing fitted to an edited citizen, a citizen made of boxes and workshop player models](preview.png)
+
 All citizen clothing is modelled on the stock citizen (or one of the two stock humans). Change the
 body, or use another player model on the same skeleton, and the clothing clips through it or
 floats off it. This project takes the clothing that already exists and moves it to sit on the new
@@ -9,6 +11,11 @@ body the way it sat on the old one. No per-garment work, no deformer volumes, no
 of time.
 
 It is a regular game project: no whitelist exceptions, not standalone-only.
+
+![A citizen reshaped in Blender, and the same body in s&box wearing stock clothing](blender.png)
+
+Left: the citizen reshaped in Blender. Right: the same body in s&box with stock clothing on,
+fitted when it was put on.
 
 ## Using it
 
@@ -49,6 +56,10 @@ renderer.Model = fitted ?? Model.Load( garmentPath );   // null means "wear it a
 renderer.BoneMergeTarget = body;
 ```
 
+`FitAsync` also takes a callback, `onRough`. A garment's LODs are fitted roughest first, and the
+callback gets a model made of the ones fitted so far each time another is ready, so there is
+something to wear after a few dozen milliseconds. The dresser uses it.
+
 The last argument says which stock body that garment model was made for.
 `ClothingFitter.KindOfAsync( body.Model )` tells which one a body is closest to, to pick between
 a garment's citizen and human models. Call both from the main thread.
@@ -73,13 +84,14 @@ workshop player models, each with a Fit Dresser.
   in animation, so it is moved as a whole: rotated and shifted, scaled only if it wraps the body.
   Glasses keep their lenses in the frame, a sword on a strap doesn't bend with the neck.
 - **Hair made of cards.** Each card follows the scalp on its own.
+- **LODs.** Every LOD of a garment is fitted and the fitted model switches between them at the
+  garment's own distances.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
   materials and with compressed vertex and index buffers. The fitter reads `.vmdl_c` files
   itself, because the engine doesn't hand out skin weights.
 
 ## What it doesn't
 
-- Only the main level of detail is fitted. A fitted model has no LODs.
 - A garment's material groups and morphs are not carried over to the fitted model.
 - Normals are rotated along with the surface (or rebuilt, where the source packing isn't one the
   reader knows), tangents are rebuilt from UVs.
@@ -97,24 +109,29 @@ workshop player models, each with a Fit Dresser.
 ## How long it takes
 
 Nothing stalls. All the work is done on worker threads, cut into steps that run side by side;
-the main thread only creates the mesh and the model at the end. A garment shows up when its fit
-is ready.
+the main thread only creates the meshes and the model. A garment's LODs are fitted roughest
+first, so it is on the character almost at once in a rough form and sharpens as the detailed
+LODs come in.
 
-Measured in the editor on a Ryzen 5 5500 (6 cores), engine 26.10.02:
+Measured in the editor on a Ryzen 5 5500 (6 cores), engine 26.10.02, one garment at a time:
 
 | Step | When | Time |
 |---|---|---|
 | Map a body | once per body | 60-180 ms for an edited citizen, 320-820 ms for other models |
 | Find a body's outer surface | once per body | 130-400 ms, 3.3 s for one very dense workshop model |
-| Fit glasses, a cap (about 1k vertices) | once per body and garment | 14-40 ms |
-| Fit a t-shirt, jeans, a jacket (2-3k vertices) | once per body and garment | 350-600 ms, up to twice that when dozens are fitted at once |
-| Fit hair (9-23k vertices) | once per body and garment | 0.9-1.4 s |
-| Create the model, on the main thread | once per body and garment | 0.2-6.5 ms, 0.3 ms typical |
+| Fit a garment's roughest LOD (50-800 vertices) | once per body and garment | 10-55 ms |
+| Fit glasses, all 4 LODs (1k vertices at the top) | once per body and garment | 40 ms |
+| Fit sneakers, jeans, all 4 LODs (1-1.6k) | once per body and garment | 220-530 ms |
+| Fit a t-shirt, a jacket, all 4 LODs (1.8-2.4k) | once per body and garment | 1.1-1.3 s |
+| Fit hair, all 4 LODs (9k) | once per body and garment | 0.5 s on an edited citizen, more where the head differs |
+| Create meshes and models, on the main thread | once per body and garment | 1-7 ms for all LODs together |
 | Wear something already fitted | every time after that | nothing, it is cached |
 
-A jacket on a body seen for the first time is on about one second after asking. Eight different
-characters with 45 garments between them, all from a cold start at once, were dressed in about
-six seconds.
+On a body seen for the first time a jacket is on in its roughest LOD about half a second after
+asking and finished 1.7 seconds after. On a body that has been dressed before, the rough version
+is there within a few frames. Eight different characters with 45 garments between them, all
+from a cold start at once, were fully dressed in about nine seconds; with that much queued each
+garment takes two to three times longer than on its own.
 
 The engine logs "A task has been running without yielding for more than 1000ms" when a single
 step keeps a worker busy for over a second. That happens for the heaviest hair and bodies,

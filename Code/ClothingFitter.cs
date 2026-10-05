@@ -68,12 +68,21 @@ public static class ClothingFitter
 		public Dictionary<BodyKind, Task<Mapped>> Maps = new();
 	}
 
-	// What a worker hands back for the main thread to make a model of.
+	// One LOD level of a garment as a worker hands it back, for the main thread to make meshes of.
 	sealed class Fitted
 	{
 		public SkinnedGeometry Garment;
-		public List<(string Material, List<FittedVertex> Vertices, List<int> Indices)> Meshes = new();
+		public List<(string Material, List<FittedVertex> Vertices, List<int> Indices)> Draws = new();
+		public List<Mesh> Meshes = new();   // made on the main thread
 		public long Milliseconds;
+	}
+
+	// A garment being fitted, and whoever wants to see it before it is finished.
+	sealed class Job
+	{
+		public Task<Model> Task;
+		public Model Rough;
+		public List<Action<Model>> Watching = new();
 	}
 
 	// Something went wrong on a worker thread. Carries the original exception's text.
@@ -89,7 +98,7 @@ public static class ClothingFitter
 	static readonly Task<Reference>[] references = new Task<Reference>[3];
 	static readonly Dictionary<string, Task<Body>> bodies = new();
 	static readonly Dictionary<string, Model> fitted = new();
-	static readonly Dictionary<string, Task<Model>> pending = new();
+	static readonly Dictionary<string, Job> pending = new();
 	static readonly HashSet<string> failed = new();
 	static int generation;
 
@@ -116,9 +125,16 @@ public static class ClothingFitter
 	/// depending on the garment, plus a second or two the first time a body is seen. Only the
 	/// last step, creating the model, happens on the main thread. Fitted models are cached, so
 	/// asking again is free. Call it from the main thread.
+	///
+	/// A garment's LODs are fitted one at a time, roughest first, because the roughest takes a
+	/// fraction of the time. Pass <paramref name="onRough"/> to wear those while waiting.
 	/// </summary>
 	/// <param name="madeFor">Which stock body this garment model was made for.</param>
-	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen )
+	/// <param name="onRough">
+	/// Called on the main thread with a model made of the LODs fitted so far, each time one more
+	/// is ready. Not called for the finished model, that is what the task returns.
+	/// </param>
+	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null )
 	{
 		if ( body is null || string.IsNullOrEmpty( garmentPath ) )
 			return Task.FromResult<Model>( null );
@@ -134,12 +150,22 @@ public static class ClothingFitter
 			return Task.FromResult<Model>( null );
 
 		// Two characters putting on the same thing at once share one job.
-		if ( !pending.TryGetValue( key, out var job ) || job.IsCompleted )
-			pending[key] = job = FitJob( bodyPath, garmentPath, madeFor, key );
-		return job;
+		if ( !pending.TryGetValue( key, out var job ) || job.Task.IsCompleted )
+		{
+			pending[key] = job = new Job();
+			job.Task = FitJob( bodyPath, garmentPath, madeFor, key, job );
+		}
+
+		if ( onRough != null && !job.Task.IsCompleted )
+		{
+			job.Watching.Add( onRough );
+			if ( job.Rough.IsValid() ) onRough( job.Rough );
+		}
+
+		return job.Task;
 	}
 
-	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key )
+	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job )
 	{
 		int started = generation;
 		try
@@ -156,13 +182,35 @@ public static class ClothingFitter
 			if ( started != generation ) return null;   // Clear() was called meanwhile, whoever wants this will ask again
 
 			var file = ReadCompiled( garmentPath );
-			var result = await OnWorker( () => FitGarment( file, reference, target ) );
-			if ( started != generation ) return null;
+			var levels = await OnWorker( () => CompiledModel.ReadLods( file ) );
 
-			var building = System.Diagnostics.Stopwatch.StartNew();
-			var model = Build( result, $"fitted/{key}" );
+			// Roughest level first. Each one is a step of its own, so the rough levels of every
+			// garment in the queue get done before anyone's detailed ones.
+			var done = new List<Fitted>();
+			Model model = null;
+			long worker = 0;
+			double main = 0;
+			for ( int i = levels.Count - 1; i >= 0; i-- )
+			{
+				var level = levels[i];
+				var result = await OnWorker( () => FitGarment( level, reference, target ) );
+				if ( started != generation ) return null;
+
+				var building = System.Diagnostics.Stopwatch.StartNew();
+				MakeMeshes( result, $"fitted/{key}/{i}" );
+				done.Insert( 0, result );
+				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
+				worker += result.Milliseconds;
+				main += building.Elapsed.TotalMilliseconds;
+
+				if ( i == 0 ) break;
+				job.Rough = model;
+				foreach ( var show in job.Watching ) show( model );
+			}
+
+			job.Watching.Clear();
 			fitted[key] = model;
-			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {result.Milliseconds} ms on a worker thread and {building.Elapsed.TotalMilliseconds:F1} ms on the main thread ({result.Garment.Positions.Length} verts)" );
+			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {done[^1].Milliseconds} ms)" );
 			return model;
 		}
 		catch ( TaskCanceledException )
@@ -500,12 +548,11 @@ public static class ClothingFitter
 		}
 	}
 
-	// Worker thread. Fits the garment and lays its vertices out the way the mesh buffers want
+	// Worker thread. Fits one LOD level of a garment and lays its vertices out the way the mesh buffers want
 	// them. Only reads the reference and the body, so any number of these can run at once.
-	static Fitted FitGarment( byte[] file, Reference reference, Mapped target )
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
-		var garment = CompiledModel.Read( file );
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
 		var positions = GarmentFit.Fit( garment.Positions, garment.Indices, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin );
 
@@ -535,7 +582,7 @@ public static class ClothingFitter
 			}
 
 			if ( vertices.Count > 0 )
-				result.Meshes.Add( (material, vertices, indices) );
+				result.Draws.Add( (material, vertices, indices) );
 		}
 
 		result.Milliseconds = watch.ElapsedMilliseconds;
@@ -564,9 +611,29 @@ public static class ClothingFitter
 	}
 
 	// Main thread: the engine only makes meshes and models there.
-	static Model Build( Fitted fit, string name )
+	static void MakeMeshes( Fitted level, string name )
 	{
-		var g = fit.Garment;
+		for ( int d = 0; d < level.Draws.Count; d++ )
+		{
+			var (materialPath, vertices, indices) = level.Draws[d];
+			var material = string.IsNullOrEmpty( materialPath ) ? null : Material.Load( materialPath );
+			var mesh = new Mesh( $"{name}_{d}", material );
+			mesh.CreateVertexBuffer( vertices.Count, vertices );
+			mesh.CreateIndexBuffer( indices.Count, indices );
+			mesh.Bounds = BBox.FromPoints( vertices.Select( x => x.Position ) );
+			level.Meshes.Add( mesh );
+		}
+
+		level.Draws = null;   // the buffers have them now
+	}
+
+	/// <summary>
+	/// A model out of the LOD levels fitted so far, most detailed first. While the detailed
+	/// ones are still missing, the best one there is stands in for them.
+	/// </summary>
+	static Model Build( List<Fitted> levels, string name )
+	{
+		var g = levels[0].Garment;
 		var builder = Model.Builder.WithName( name );
 
 		// Same skeleton as the original garment, in the same order: the vertices index it.
@@ -581,15 +648,31 @@ public static class ClothingFitter
 			builder.AddBone( g.BoneNames[i], new Vector3( p.X, p.Y, p.Z ), new Rotation( r[0], r[1], r[2], r[3] ), parent >= 0 ? g.BoneNames[parent] : null );
 		}
 
-		for ( int d = 0; d < fit.Meshes.Count; d++ )
+		for ( int lod = 0; lod < g.LodDistances.Length && lod < 8; lod++ )
+			builder.WithLodDistance( lod, g.LodDistances[lod] );
+
+		// Every LOD the engine can ask for has to draw something. A level takes the LODs the
+		// garment gave it, the most detailed one also takes whatever is below it, and the
+		// roughest takes everything above.
+		for ( int k = 0; k < levels.Count; k++ )
 		{
-			var (materialPath, vertices, indices) = fit.Meshes[d];
-			var material = string.IsNullOrEmpty( materialPath ) ? null : Material.Load( materialPath );
-			var mesh = new Mesh( $"{name}_{d}", material );
-			mesh.CreateVertexBuffer( vertices.Count, vertices );
-			mesh.CreateIndexBuffer( indices.Count, indices );
-			mesh.Bounds = BBox.FromPoints( vertices.Select( x => x.Position ) );
-			builder.AddMesh( mesh );
+			int mask = levels[k].Garment.LodMask;
+			int lowest = 0;
+			while ( lowest < 7 && (mask & (1 << lowest)) == 0 ) lowest++;
+			if ( k == 0 ) mask |= (1 << lowest) - 1;
+			if ( k == levels.Count - 1 ) mask |= 255 & ~((1 << lowest) - 1);
+
+			foreach ( var mesh in levels[k].Meshes )
+			{
+				if ( mask == 255 )
+				{
+					builder.AddMesh( mesh );
+					continue;
+				}
+
+				for ( int lod = 0; lod < 8; lod++ )
+					if ( (mask & (1 << lod)) != 0 ) builder.AddMesh( mesh, lod );
+			}
 		}
 
 		return builder.Create();

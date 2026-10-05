@@ -5,7 +5,7 @@ using System.Text;
 namespace Sandbox.Autofit;
 
 /// <summary>
-/// The most detailed LOD of a compiled model with its skinning and skeleton, all meshes merged.
+/// One level of detail of a compiled model with its skinning and skeleton, all meshes merged.
 /// </summary>
 public sealed class SkinnedGeometry
 {
@@ -38,6 +38,12 @@ public sealed class SkinnedGeometry
 
 	/// <summary>False when the normals are stored in a packing this reader doesn't know. <see cref="Normals"/> is filler then.</summary>
 	public bool HasNormals = true;
+
+	/// <summary>Which of the model's LOD levels draw this geometry, one bit per level. All of them for a model without LODs.</summary>
+	public int LodMask = 255;
+
+	/// <summary>The model's LOD switch distances, by level.</summary>
+	public float[] LodDistances = Array.Empty<float>();
 }
 
 /// <summary>
@@ -67,10 +73,73 @@ public static class CompiledModel
 		public List<byte[]> BoneSlots = new();  // mesh-local bone numbers, 4 per vertex, per vertex buffer
 	}
 
+	/// <summary>The most detailed LOD.</summary>
 	public static SkinnedGeometry Read( byte[] file )
 	{
-		var mdat = new List<int>();
-		var mbuf = new List<int>();
+		var model = Open( file );
+		return ReadMeshes( model, model.MeshesOf( 0 ), 255 );
+	}
+
+	/// <summary>
+	/// Every LOD, most detailed first. Levels that draw the same meshes come back as one entry
+	/// with all their bits in <see cref="SkinnedGeometry.LodMask"/>, so a model without LODs
+	/// gives a single entry.
+	/// </summary>
+	public static List<SkinnedGeometry> ReadLods( byte[] file )
+	{
+		var model = Open( file );
+		var levels = new List<SkinnedGeometry>();
+		string previous = null;
+		for ( int lod = 0; lod < 8; lod++ )
+		{
+			var meshes = model.MeshesOf( lod );
+			if ( meshes.Count == 0 ) continue;
+
+			string same = string.Join( ",", meshes );
+			if ( same == previous )
+			{
+				levels[^1].LodMask |= 1 << lod;
+				continue;
+			}
+
+			previous = same;
+			levels.Add( ReadMeshes( model, meshes, 1 << lod ) );
+		}
+
+		if ( levels.Count == 0 )
+			throw new InvalidOperationException( "Model has no meshes that are on by default" );
+		return levels;
+	}
+
+	// A file with its blocks found and the DATA block parsed.
+	sealed class Opened
+	{
+		public byte[] File;
+		public List<int> Mdat = new();
+		public List<int> Mbuf = new();
+		public object Doc;
+		public List<object> LodMasks, GroupMasks;
+		public long DefaultGroups;
+
+		// The meshes drawn at a LOD level. Only the ones that are on by default: a body has an
+		// empty alternative for every body group.
+		public List<int> MeshesOf( int lod )
+		{
+			var meshes = new List<int>();
+			for ( int m = 0; m < Mdat.Count; m++ )
+			{
+				if ( LodMasks != null && m < LodMasks.Count && (Kv3.Int( LodMasks[m] ) & (1L << lod)) == 0 ) continue;
+				if ( GroupMasks != null && m < GroupMasks.Count && (Kv3.Int( GroupMasks[m] ) & DefaultGroups) == 0 ) continue;
+				meshes.Add( m );
+			}
+
+			return meshes;
+		}
+	}
+
+	static Opened Open( byte[] file )
+	{
+		var model = new Opened { File = file };
 		int data = -1;
 		int table = 8 + BitConverter.ToInt32( file, 8 );
 		int count = BitConverter.ToInt32( file, 12 );
@@ -79,24 +148,37 @@ public static class CompiledModel
 			int entry = table + i * 12;
 			string kind = Encoding.ASCII.GetString( file, entry, 4 );
 			int start = entry + 4 + BitConverter.ToInt32( file, entry + 4 );
-			if ( kind == "MDAT" ) mdat.Add( start );
-			else if ( kind == "MBUF" ) mbuf.Add( start );
+			if ( kind == "MDAT" ) model.Mdat.Add( start );
+			else if ( kind == "MBUF" ) model.Mbuf.Add( start );
 			else if ( kind == "DATA" ) data = start;
 		}
 
-		if ( data < 0 || mdat.Count == 0 || mdat.Count != mbuf.Count )
+		if ( data < 0 || model.Mdat.Count == 0 || model.Mdat.Count != model.Mbuf.Count )
 			throw new InvalidOperationException( "Model has no embedded meshes" );
 
-		var doc = Kv3.Parse( file, data );
-		var result = new SkinnedGeometry();
-		ReadSkeleton( doc, result );
+		model.Doc = Kv3.Parse( file, data );
+		model.LodMasks = Kv3.List( Kv3.Get( model.Doc, "m_refLODGroupMasks" ) );
+		model.GroupMasks = Kv3.List( Kv3.Get( model.Doc, "m_refMeshGroupMasks" ) );
+		model.DefaultGroups = Kv3.Int( Kv3.Get( model.Doc, "m_nDefaultMeshGroupMask" ), -1 );
+		return model;
+	}
+
+	static SkinnedGeometry ReadMeshes( Opened model, List<int> meshes, int lodMask )
+	{
+		byte[] file = model.File;
+		var result = new SkinnedGeometry { LodMask = lodMask };
+		ReadSkeleton( model.Doc, result );
 		var boneByName = new Dictionary<string, int>();
 		for ( int i = 0; i < result.BoneNames.Length; i++ )
 			boneByName[result.BoneNames[i]] = i;
 
-		var lodMasks = Kv3.List( Kv3.Get( doc, "m_refLODGroupMasks" ) );
-		var groupMasks = Kv3.List( Kv3.Get( doc, "m_refMeshGroupMasks" ) );
-		long defaultGroups = Kv3.Int( Kv3.Get( doc, "m_nDefaultMeshGroupMask" ), -1 );
+		var distances = Kv3.List( Kv3.Get( model.Doc, "m_lodGroupSwitchDistances" ) );
+		if ( distances != null )
+		{
+			result.LodDistances = new float[distances.Count];
+			for ( int i = 0; i < distances.Count; i++ )
+				result.LodDistances[i] = (float)Kv3.Number( distances[i] );
+		}
 
 		var positions = new List<Vec3>();
 		var normals = new List<Vec3>();
@@ -105,15 +187,10 @@ public static class CompiledModel
 		var boneWeight = new List<float>();
 		var indices = new List<int>();
 
-		for ( int m = 0; m < mdat.Count; m++ )
+		foreach ( int m in meshes )
 		{
-			// Only the most detailed LOD, and only the meshes that are on by default
-			// (a body has an empty alternative for every body group).
-			if ( lodMasks != null && m < lodMasks.Count && (Kv3.Int( lodMasks[m] ) & 1) == 0 ) continue;
-			if ( groupMasks != null && m < groupMasks.Count && (Kv3.Int( groupMasks[m] ) & defaultGroups) == 0 ) continue;
-
-			var mesh = Kv3.Parse( file, mdat[m] );
-			var buffers = ReadBuffers( file, mbuf[m], positions, normals, uvs, boneWeight, ref result.HasNormals );
+			var mesh = Kv3.Parse( file, model.Mdat[m] );
+			var buffers = ReadBuffers( file, model.Mbuf[m], positions, normals, uvs, boneWeight, ref result.HasNormals );
 
 			// The vertices index the mesh's own bone list. Turn that into model bones.
 			var meshBones = Kv3.List( Kv3.Get( Kv3.Get( mesh, "m_skeleton" ), "m_bones" ) );
