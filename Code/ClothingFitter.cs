@@ -99,6 +99,7 @@ public static class ClothingFitter
 	static readonly Dictionary<string, Model> fitted = new();
 	static readonly Dictionary<string, Job> pending = new();
 	static readonly HashSet<string> failed = new();
+	static readonly HashSet<string> skinned = new();   // garments that draw part of themselves with the body's skin
 	static int generation;
 
 	/// <summary>
@@ -112,6 +113,7 @@ public static class ClothingFitter
 		fitted.Clear();
 		pending.Clear();
 		failed.Clear();
+		skinned.Clear();
 		generation++;
 	}
 
@@ -133,7 +135,8 @@ public static class ClothingFitter
 	/// Called on the main thread with a model made of the LODs fitted so far, each time one more
 	/// is ready. Not called for the finished model, that is what the task returns.
 	/// </param>
-	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null )
+	/// <param name="withoutSkin">Leave out the parts of the garment that are drawn with the body's skin material. See <see cref="HasSkin"/>.</param>
+	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null, bool withoutSkin = false )
 	{
 		if ( body is null || string.IsNullOrEmpty( garmentPath ) )
 			return Task.FromResult<Model>( null );
@@ -142,7 +145,7 @@ public static class ClothingFitter
 		if ( bodyPath == ReferencePaths[(int)madeFor] )
 			return Task.FromResult<Model>( null );
 
-		string key = $"{bodyPath}|{Normalize( garmentPath )}";
+		string key = $"{bodyPath}|{Normalize( garmentPath )}{(withoutSkin ? "|no skin" : "")}";
 		if ( fitted.TryGetValue( key, out var cached ) && cached.IsValid() )
 			return Task.FromResult( cached );
 		if ( failed.Contains( key ) )
@@ -152,7 +155,7 @@ public static class ClothingFitter
 		if ( !pending.TryGetValue( key, out var job ) || job.Task.IsCompleted )
 		{
 			pending[key] = job = new Job();
-			job.Task = FitJob( bodyPath, garmentPath, madeFor, key, job );
+			job.Task = FitJob( bodyPath, garmentPath, madeFor, key, job, withoutSkin );
 		}
 
 		if ( onRough != null && !job.Task.IsCompleted )
@@ -164,7 +167,22 @@ public static class ClothingFitter
 		return job.Task;
 	}
 
-	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job )
+	/// <summary>
+	/// True if this garment draws part of itself with the body's skin material. Some clothing
+	/// does that: it hides a part of the body and carries its own copy of that skin instead, cut
+	/// to sit under the cloth. The copy has the stock body's shape, which is no use on another
+	/// body. Known once the garment has been fitted.
+	/// </summary>
+	public static bool HasSkin( string garmentPath ) => skinned.Contains( Normalize( garmentPath ) );
+
+	// The citizen's and the humans' skin materials all sit in a "skin" folder of their model.
+	static bool IsSkin( string material )
+	{
+		string path = Normalize( material );
+		return path.Contains( "/skin/" ) && path.StartsWith( "models/citizen" );
+	}
+
+	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin )
 	{
 		int started = generation;
 		try
@@ -182,6 +200,9 @@ public static class ClothingFitter
 
 			var file = ReadCompiled( garmentPath );
 			var levels = await OnWorker( () => CompiledModel.ReadLods( file ) );
+			if ( started != generation ) return null;
+			if ( levels.Any( level => level.Draws.Any( draw => IsSkin( draw.Material ) ) ) )
+				skinned.Add( Normalize( garmentPath ) );
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
 			// garment in the queue get done before anyone's detailed ones.
@@ -192,7 +213,7 @@ public static class ClothingFitter
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin ) );
 				if ( started != generation ) return null;
 
 				var building = System.Diagnostics.Stopwatch.StartNew();
@@ -226,6 +247,13 @@ public static class ClothingFitter
 				Log.Warning( $"ClothingFitter: couldn't fit {garmentPath} to {bodyPath}, using it as is. {Describe( e )}" );
 			}
 			return null;
+		}
+		finally
+		{
+			// Done either way. Finished jobs aren't kept around: the result is in the cache,
+			// and a task left here would be one more thing for a hotload to trip over.
+			if ( pending.TryGetValue( key, out var mine ) && mine == job )
+				pending.Remove( key );
 		}
 	}
 
@@ -548,11 +576,11 @@ public static class ClothingFitter
 
 	// Worker thread. Fits one LOD level of a garment and lays its vertices out the way the mesh buffers want
 	// them. Only reads the reference and the body, so any number of these can run at once.
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target )
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
-		var positions = GarmentFit.Fit( garment.Positions, garment.Indices, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin );
+		var positions = GarmentFit.Fit( garment.Positions, garment.Indices, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found );
 
 		// The fit happens in the stock skeleton's proportions. Take it back to the body's.
 		positions = target.Pose.FromStockProportions( positions, bones, garment.BoneWeight, reference.Geo );
@@ -564,6 +592,8 @@ public static class ClothingFitter
 		var result = new Fitted { Garment = garment };
 		foreach ( var (first, count, material) in garment.Draws )
 		{
+			if ( withoutSkin && IsSkin( material ) ) continue;
+
 			var remap = new Dictionary<int, int>();
 			var vertices = new List<FittedVertex>();
 			var indices = new List<int>( count );

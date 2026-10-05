@@ -32,6 +32,7 @@ fitted when it was put on.
 | Fit At Runtime | Off: clothing is worn as is, for comparison. |
 | Version | Which version of each garment to wear: Auto, Citizen, Human Male, Human Female. Auto goes by the skeleton. It tells a citizen from a human well, but not a male human from a female one, so set it by hand when it guesses wrong. |
 | Height | How tall the character is, 0 to 1, same as the stock Dresser. Scales the body through its animation graph; the clothing follows. |
+| Remove Skin From Clothing | Some clothing hides a part of the body and draws its own copy of that skin as part of the garment. The copy has the stock body's shape. With this on, such clothing is worn without it and the body part stays visible. |
 | Apply On Start | Dress when the component starts. |
 
 Buttons: **Apply Clothing**, **Clear Clothing**, **Randomize** (same groups and odds as the stock
@@ -90,6 +91,8 @@ workshop player models, each with a Fit Dresser.
   as the artist made them. Tangents are rebuilt from the UVs.
 - **LODs.** Every LOD of a garment is fitted and the fitted model switches between them at the
   garment's own distances.
+- **Jiggle bones.** They are run by the garment's animation graph, which a model built at
+  runtime can't carry, so the fitted garment borrows the original's.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
   materials and with compressed vertex and index buffers. The fitter reads `.vmdl_c` files
   itself, because the engine doesn't hand out skin weights.
@@ -151,7 +154,8 @@ them.
    skin belongs to the bones the vertex is weighted to (the underside of a sleeve is nearest to
    the ribs, but follows the arm). Rigid pieces are fitted as a whole.
 3. **Touch-up.** Vertices and points inside triangles that ended up under the new skin are pushed
-   out to the gap they had on the stock body.
+   out to the gap they had on the stock body. Then the other way round: wherever a vertex of the
+   skin comes up through the cloth, the cloth above it is lifted.
 4. **Build.** The result becomes a new skinned model with the garment's own skeleton and
    weights, bone-merged onto the body like any other clothing.
 

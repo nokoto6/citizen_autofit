@@ -61,6 +61,14 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	[Property, Range( 0, 1 ), HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnHeightChanged ) )]
 	public float Height { get; set; } = 0.5f;
 
+	/// <summary>
+	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
+	/// part of the garment. The copy has the stock body's shape and doesn't suit another body.
+	/// With this on, such clothing is worn without its skin and the body part it meant to hide
+	/// stays visible.
+	/// </summary>
+	[Property] public bool RemoveSkinFromClothing { get; set; }
+
 	[Property] public bool ApplyOnStart { get; set; } = true;
 
 	/// <summary>How many garments of the last Apply were fitted on the spot.</summary>
@@ -252,7 +260,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		if ( Overtaken() ) return;
 
 		// Ask for everything up front so the garments are fitted side by side.
-		var wearing = new List<Task<bool>>();
+		var wearing = new List<(Clothing Item, string StockPath, Task<bool> Fitted)>();
 		foreach ( var entry in worn )
 		{
 			var item = entry.Clothing;
@@ -279,20 +287,29 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			if ( string.IsNullOrEmpty( stockPath ) )
 				continue;
 
-			wearing.Add( WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken ) );
+			wearing.Add( (item, stockPath, WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken )) );
 		}
 
 		int fittedCount = 0, stockCount = 0;
-		foreach ( var garment in wearing )
+		var skinless = new HashSet<Clothing>();
+		foreach ( var (item, stockPath, garment) in wearing )
 		{
-			if ( await garment ) fittedCount++;
-			else stockCount++;
+			bool wasFitted = await garment;
 			if ( Overtaken() ) return;
+
+			if ( wasFitted ) fittedCount++;
+			else stockCount++;
+
+			if ( wasFitted && RemoveSkinFromClothing && ClothingFitter.HasSkin( stockPath ) )
+				skinless.Add( item );
 		}
 
 		// Hide the body parts the clothing covers, same rules as the stock dresser. Last, so
 		// there are no holes in the body while the clothes are still on their way.
-		foreach ( var (name, value) in container.GetBodyGroups( worn.Select( x => x.Clothing ), BodyTarget.Model ) )
+		// A garment that lost its copy of the skin no longer covers for the part it hides.
+		var hiding = worn.Select( x => x.Clothing ).Where( x => !skinless.Contains( x ) );
+
+		foreach ( var (name, value) in container.GetBodyGroups( hiding, BodyTarget.Model ) )
 			BodyTarget.SetBodyGroup( name, value );
 
 		FittedCount = fittedCount;
@@ -355,12 +372,22 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			go.Enabled = true;
 		}
 
-		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show ) : null;
+		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, RemoveSkinFromClothing ) : null;
 		if ( overtaken() )
 			return false;
 
 		Show( fitted.IsValid() ? fitted : Model.Load( stockPath ) );
-		return fitted.IsValid();
+		if ( !fitted.IsValid() )
+			return false;
+
+		// Jiggle bones and anything else that moves a garment on its own are run by the
+		// garment's animation graph. A model built at runtime can't have one, so the fitted
+		// model borrows the original's. Same skeleton, so the graph doesn't know the difference.
+		var original = await Model.LoadAsync( stockPath );
+		if ( !overtaken() && renderer.IsValid() && original?.AnimGraph is { } graph )
+			renderer.AnimationGraph = graph;
+
+		return true;
 	}
 
 	ClothingContainer BuildContainer()

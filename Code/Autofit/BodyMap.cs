@@ -20,6 +20,13 @@ public sealed class BodyMap
 	/// <summary>Displacement of each stock body vertex.</summary>
 	public Vec3[] SkinMove;
 
+	/// <summary>
+	/// True for the vertices whose place on the other body was actually found. The rest got
+	/// their displacement from their neighbours, which is a guess: good enough to carry cloth
+	/// along, not to be taken for a point on the other body's surface.
+	/// </summary>
+	public bool[] Found;
+
 	public int ByUv, ByRays, NoMatch, Outliers;
 
 	const float LookBeyond = 0.5f * Units.Metre;    // how far past the old skin we look for the new one
@@ -136,8 +143,13 @@ public sealed class BodyMap
 			MeshTools.Relax( move, known, edges, 1, 0f );
 
 		result.SkinMove = new Vec3[old.Verts.Length];
+		result.Found = new bool[old.Verts.Length];
 		for ( int i = 0; i < old.Verts.Length; i++ )
+		{
 			result.SkinMove[i] = move[weld[i]];
+			result.Found[i] = kept[weld[i]];
+		}
+
 		return result;
 	}
 

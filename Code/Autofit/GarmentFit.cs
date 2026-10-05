@@ -159,6 +159,7 @@ public static class GarmentFit
 	const float GapCap = 0.05f * Units.Metre;    // gaps up to this size are restored, so a jacket stays above the shirt under it
 	const float MaxPush = 0.05f * Units.Metre;   // the collision pass is a touch-up; anything further is a misread
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
+	const float CoverReach = 0.02f * Units.Metre; // a skin vertex further out of the cloth than this is a bad match, not a bump
 	const float Hidden = 0.005f * Units.Metre;   // further under the stock skin than this was never meant to be seen
 	const float Touching = 0.002f * Units.Metre; // rigid pieces this close together are parts of one object
 	const int LoosePieces = 16;                  // more rigid pieces than this in one heap is hair or the like, not an object
@@ -172,7 +173,8 @@ public static class GarmentFit
 
 	/// <param name="boneIndex">Four bone slots per garment vertex, as indices into the stock body's bones (-1 for none).</param>
 	/// <param name="skinMove">What <see cref="BodyMap"/> worked out for this pair of bodies.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone )
+	/// <param name="skinFound"><see cref="BodyMap.Found"/>, or null if every vertex was found.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null )
 	{
 		var weld = MeshTools.Weld( verts, out int n );
 		var firstOf = new int[n];
@@ -360,6 +362,7 @@ public static class GarmentFit
 			FitRigid( whole, pts, move, gap0, away, fitted, Push, false );
 		}
 
+		var clothTris = new List<int>();
 		foreach ( var (root, idx) in members )
 		{
 			if ( IsRigid( idx, firstOf, boneIndex, boneWeight ) ) continue;
@@ -391,6 +394,7 @@ public static class GarmentFit
 			// and lift its corners. This goes last and is not smoothed: it is what keeps edges
 			// covered.
 			if ( !pieceTris.TryGetValue( root, out var mine ) ) continue;
+			clothTris.AddRange( mine );
 
 			// Measure the same points on the stock body first. A flat triangle over curved skin
 			// dips under it in the middle even when its corners don't, and that is how the
@@ -425,9 +429,83 @@ public static class GarmentFit
 			}
 		}
 
+		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound );
+
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
 		return result;
+	}
+
+	/// <summary>
+	/// The passes above keep the cloth out of the skin by testing points of the cloth. That
+	/// misses the opposite case: a vertex of the skin coming up between those points, the tip
+	/// of a bump the cloth lies flat across. So this goes over the skin instead. Every skin
+	/// vertex that sat under the cloth on the stock body has to be at least as far under it on
+	/// the new one, and the triangle above it is lifted until it is.
+	/// </summary>
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, float[] gap0, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound )
+	{
+		if ( clothTris.Count == 0 ) return;
+		var cloth = new TriMesh( pts, clothTris.ToArray() );
+
+		// Which way is out of the skin at each of its vertices, before and after.
+		var outBefore = new Vec3[old.Verts.Length];
+		var outAfter = new Vec3[old.Verts.Length];
+		for ( int t = 0; t < old.TriCount; t++ )
+		{
+			int a = old.Tris[t * 3], b = old.Tris[t * 3 + 1], c = old.Tris[t * 3 + 2];
+			Vec3 raw = Vec3.Cross( old.Verts[b] - old.Verts[a], old.Verts[c] - old.Verts[a] );
+			Vec3 moved = Vec3.Cross( old.Verts[b] + skinMove[b] - old.Verts[a] - skinMove[a], old.Verts[c] + skinMove[c] - old.Verts[a] - skinMove[a] );
+			if ( Vec3.Dot( raw, old.TriNormals[t] ) < 0 ) moved = -moved;
+			outBefore[a] += old.TriNormals[t]; outBefore[b] += old.TriNormals[t]; outBefore[c] += old.TriNormals[t];
+			outAfter[a] += moved; outAfter[b] += moved; outAfter[c] += moved;
+		}
+
+		// Skin vertices with cloth right above them, and how far above.
+		var under = new List<(int Skin, int Tri, float U, float V, float W, float Gap)>();
+		for ( int v = 0; v < old.Verts.Length; v++ )
+		{
+			if ( skinFound != null && !skinFound[v] ) continue;   // where this vertex went is a guess
+
+			float before = outBefore[v].Length(), after = outAfter[v].Length();
+			if ( before < 1e-12f || after < 1e-12f ) continue;
+			outBefore[v] /= before;
+			outAfter[v] /= after;
+
+			float distance = cloth.Nearest( old.Verts[v], out var above, out int tri );
+			if ( tri < 0 || distance > GapCap ) continue;
+
+			// Straight above, not off to the side: the nearest cloth to skin just past a hem is
+			// the hem's edge, and that skin was never covered.
+			float gap = Vec3.Dot( above - old.Verts[v], outBefore[v] );
+			if ( gap <= 0 || gap < 0.7f * distance ) continue;
+
+			int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];
+			if ( gap0[a] < -Hidden || gap0[b] < -Hidden || gap0[c] < -Hidden ) continue;
+			Barycentric( above, pts[a], pts[b], pts[c], out float bu, out float bv, out float bw );
+			under.Add( (v, tri, bu, bv, bw, gap) );
+		}
+
+		var lift = new Dictionary<int, Vec3>();
+		for ( int pass = 0; pass < 4; pass++ )
+		{
+			lift.Clear();
+			foreach ( var (skin, tri, bu, bv, bw, gap) in under )
+			{
+				int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];
+				Vec3 above = fitted[a] * bu + fitted[b] * bv + fitted[c] * bw;
+				float need = gap - Vec3.Dot( above - (old.Verts[skin] + skinMove[skin]), outAfter[skin] );
+				if ( need <= 1e-4f * Units.Metre || need > CoverReach ) continue;
+
+				Vec3 push = outAfter[skin] * need;
+				if ( bu > 0.05f && (!lift.TryGetValue( a, out var have ) || push.LengthSquared() > have.LengthSquared()) ) lift[a] = push;
+				if ( bv > 0.05f && (!lift.TryGetValue( b, out have ) || push.LengthSquared() > have.LengthSquared()) ) lift[b] = push;
+				if ( bw > 0.05f && (!lift.TryGetValue( c, out have ) || push.LengthSquared() > have.LengthSquared()) ) lift[c] = push;
+			}
+
+			if ( lift.Count == 0 ) break;
+			foreach ( var (vertex, push) in lift ) fitted[vertex] += push;
+		}
 	}
 
 	/// <summary>
