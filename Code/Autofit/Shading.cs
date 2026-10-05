@@ -14,6 +14,23 @@ public static class Shading
 	/// </summary>
 	public static Vec3[] Normals( Vec3[] before, Vec3[] after, int[] tris, Vec3[] normals )
 	{
+		var result = Turned( before, after, tris, normals );
+		for ( int i = 0; i < result.Length; i++ )
+		{
+			float length = result[i].Length();
+			if ( length > 1e-9f ) result[i] = result[i] / length;
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// Turns one vector per vertex the way the surface around that vertex turned. Lengths are
+	/// kept. For anything that is attached to the surface and has a direction: normals, the
+	/// displacements of a morph target.
+	/// </summary>
+	public static Vec3[] Turned( Vec3[] before, Vec3[] after, int[] tris, Vec3[] vectors )
+	{
 		var weld = MeshTools.Weld( before, out int n );
 		var faceBefore = new Vec3[n];
 		var faceAfter = new Vec3[n];
@@ -29,14 +46,14 @@ public static class Shading
 			}
 		}
 
-		var result = new Vec3[normals.Length];
-		for ( int i = 0; i < normals.Length; i++ )
+		var result = new Vec3[vectors.Length];
+		for ( int i = 0; i < vectors.Length; i++ )
 		{
 			Vec3 from = faceBefore[weld[i]], to = faceAfter[weld[i]];
 			float lf = from.Length(), lt = to.Length();
-			result[i] = normals[i];
-			if ( lf < 1e-12f || lt < 1e-12f ) continue;
-			result[i] = Turn( normals[i], from / lf, to / lt );
+			result[i] = vectors[i];
+			if ( lf < 1e-12f || lt < 1e-12f || vectors[i].LengthSquared() < 1e-20f ) continue;
+			result[i] = Turn( vectors[i], from / lf, to / lt );
 		}
 
 		return result;
@@ -73,9 +90,7 @@ public static class Shading
 		axis = axis / sin;
 
 		// Rodrigues' rotation formula.
-		Vec3 turned = v * cos + Vec3.Cross( axis, v ) * sin + axis * (Vec3.Dot( axis, v ) * (1f - cos));
-		float length = turned.Length();
-		return length > 1e-9f ? turned / length : v;
+		return v * cos + Vec3.Cross( axis, v ) * sin + axis * (Vec3.Dot( axis, v ) * (1f - cos));
 	}
 
 	/// <summary>

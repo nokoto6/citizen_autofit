@@ -138,6 +138,26 @@ public sealed class Repose
 	}
 
 	/// <summary>
+	/// How many times bigger the body is around one garment vertex, going by the bones it is
+	/// skinned to. What <see cref="FromStockProportions"/> scales positions by, for things that
+	/// are displacements rather than positions.
+	/// </summary>
+	public float ScaleAt( int vertex, int[] boneIndex, float[] boneWeight )
+	{
+		float sum = 0, weight = 0;
+		for ( int j = 0; j < 4; j++ )
+		{
+			int bone = boneIndex[vertex * 4 + j];
+			float w = boneWeight[vertex * 4 + j];
+			if ( bone < 0 || w <= 0 ) continue;
+			sum += BoneScale[bone] * w;
+			weight += w;
+		}
+
+		return weight > 1e-6f ? sum / weight : 1f;
+	}
+
+	/// <summary>
 	/// Grows a garment that was fitted in the stock proportions back to the body's. Each
 	/// vertex is scaled about the bones it is skinned to, which is exactly what bone merging
 	/// will then carry over to the body's own skeleton.

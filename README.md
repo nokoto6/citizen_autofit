@@ -91,6 +91,8 @@ workshop player models, each with a Fit Dresser.
   as the artist made them. Tangents are rebuilt from the UVs.
 - **LODs.** Every LOD of a garment is fitted and the fitted model switches between them at the
   garment's own distances.
+- **Morph targets.** A beard or a moustache keeps following the mouth: the garment's morphs are
+  read from its morph texture, turned and scaled with the fit and put on the fitted model.
 - **Jiggle bones.** They are run by the garment's animation graph, which a model built at
   runtime can't carry, so the fitted garment borrows the original's.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
@@ -99,7 +101,7 @@ workshop player models, each with a Fit Dresser.
 
 ## What it doesn't
 
-- A garment's material groups and morphs are not carried over to the fitted model.
+- A garment's material groups are not carried over to the fitted model.
 - Clothing follows bones by name. A model that shares fewer than half of the bones gets a
   warning in the log and clothing won't sit on it properly.
 - Each garment is fitted to the body on its own. Two layers don't know about each other, so on a

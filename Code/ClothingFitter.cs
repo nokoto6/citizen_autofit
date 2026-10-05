@@ -72,8 +72,24 @@ public static class ClothingFitter
 	sealed class Fitted
 	{
 		public SkinnedGeometry Garment;
-		public List<(string Material, List<FittedVertex> Vertices, List<int> Indices)> Draws = new();
+		public List<Draw> Draws = new();
 		public long Milliseconds;
+	}
+
+	// One draw call's worth of a fitted garment: what goes into one mesh.
+	sealed class Draw
+	{
+		public string Material;
+		public List<FittedVertex> Vertices = new();
+		public List<int> Indices = new();
+		public Dictionary<string, List<MorphDelta>> Morphs = new();
+	}
+
+	// The pixels of a morph texture, read on the main thread for a worker to decode.
+	sealed class Atlas
+	{
+		public byte[] Rgba;
+		public int Width, Height;
 	}
 
 	// A garment being fitted, and whoever wants to see it before it is finished.
@@ -203,6 +219,7 @@ public static class ClothingFitter
 			if ( started != generation ) return null;
 			if ( levels.Any( level => level.Draws.Any( draw => IsSkin( draw.Material ) ) ) )
 				skinned.Add( Normalize( garmentPath ) );
+			var atlases = ReadAtlases( levels );
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
 			// garment in the queue get done before anyone's detailed ones.
@@ -213,7 +230,7 @@ public static class ClothingFitter
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases ) );
 				if ( started != generation ) return null;
 
 				var building = System.Diagnostics.Stopwatch.StartNew();
@@ -576,7 +593,35 @@ public static class ClothingFitter
 
 	// Worker thread. Fits one LOD level of a garment and lays its vertices out the way the mesh buffers want
 	// them. Only reads the reference and the body, so any number of these can run at once.
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin )
+	// Main thread. A garment's morph targets (a beard that follows the mouth) are stored as
+	// textures. Only the engine can read those, so the pixels are fetched here.
+	static Dictionary<string, Atlas> ReadAtlases( List<SkinnedGeometry> levels )
+	{
+		var atlases = new Dictionary<string, Atlas>();
+		foreach ( var set in levels.SelectMany( level => level.Morphs ) )
+		{
+			if ( string.IsNullOrEmpty( set.AtlasPath ) || atlases.ContainsKey( set.AtlasPath ) ) continue;
+
+			var texture = Texture.Load( set.AtlasPath, false );
+			if ( !texture.IsValid() || texture.IsError || texture.Width <= 0 ) continue;
+
+			var pixels = texture.GetPixels();
+			var atlas = new Atlas { Width = texture.Width, Height = texture.Height, Rgba = new byte[pixels.Length * 4] };
+			for ( int i = 0; i < pixels.Length; i++ )
+			{
+				atlas.Rgba[i * 4] = pixels[i].r;
+				atlas.Rgba[i * 4 + 1] = pixels[i].g;
+				atlas.Rgba[i * 4 + 2] = pixels[i].b;
+				atlas.Rgba[i * 4 + 3] = pixels[i].a;
+			}
+
+			atlases[set.AtlasPath] = atlas;
+		}
+
+		return atlases;
+	}
+
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
@@ -588,29 +633,65 @@ public static class ClothingFitter
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
 
+		// Morph targets are displacements of the stock shape. They turn with the surface they
+		// are on and grow with the body, like everything else about the garment.
+		var morphs = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
+		foreach ( var set in garment.Morphs )
+		{
+			if ( set.AtlasPath == null || !atlases.TryGetValue( set.AtlasPath, out var atlas ) ) continue;
+			foreach ( var (name, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height ) )
+			{
+				if ( !morphs.TryGetValue( name, out var morph ) )
+					morphs[name] = morph = (new Vec3[positions.Length], new Vec3[positions.Length]);
+				foreach ( var (vertex, move, turn) in deltas )
+				{
+					morph.Position[vertex] = move * target.Pose.ScaleAt( vertex, bones, garment.BoneWeight );
+					morph.Normal[vertex] = turn;
+				}
+			}
+		}
+
+		foreach ( string name in morphs.Keys.ToArray() )
+		{
+			var (move, turn) = morphs[name];
+			morphs[name] = (Shading.Turned( garment.Positions, positions, garment.Indices, move ), Shading.Turned( garment.Positions, positions, garment.Indices, turn ));
+		}
+
 		// One mesh per draw call, each with only the vertices it uses.
 		var result = new Fitted { Garment = garment };
 		foreach ( var (first, count, material) in garment.Draws )
 		{
 			if ( withoutSkin && IsSkin( material ) ) continue;
 
+			var draw = new Draw { Material = material };
 			var remap = new Dictionary<int, int>();
-			var vertices = new List<FittedVertex>();
-			var indices = new List<int>( count );
 			for ( int i = first; i < first + count; i++ )
 			{
 				int v = garment.Indices[i];
 				if ( !remap.TryGetValue( v, out int local ) )
 				{
-					local = vertices.Count;
+					local = draw.Vertices.Count;
 					remap[v] = local;
-					vertices.Add( MakeVertex( garment, v, positions[v], normals[v], tangents[v], signs[v] ) );
+					draw.Vertices.Add( MakeVertex( garment, v, positions[v], normals[v], tangents[v], signs[v] ) );
 				}
-				indices.Add( local );
+				draw.Indices.Add( local );
 			}
 
-			if ( vertices.Count > 0 )
-				result.Draws.Add( (material, vertices, indices) );
+			if ( draw.Vertices.Count == 0 ) continue;
+
+			foreach ( var (name, (move, turn)) in morphs )
+			{
+				var deltas = new List<MorphDelta>();
+				foreach ( var (v, local) in remap )
+				{
+					if ( move[v].LengthSquared() < 1e-10f && turn[v].LengthSquared() < 1e-10f ) continue;
+					deltas.Add( new MorphDelta( local, new Vector3( move[v].X, move[v].Y, move[v].Z ), new Vector3( turn[v].X, turn[v].Y, turn[v].Z ) ) );
+				}
+
+				if ( deltas.Count > 0 ) draw.Morphs[name] = deltas;
+			}
+
+			result.Draws.Add( draw );
 		}
 
 		result.Milliseconds = watch.ElapsedMilliseconds;
@@ -639,13 +720,15 @@ public static class ClothingFitter
 	}
 
 	// Main thread: the engine only makes meshes and models there.
-	static Mesh MakeMesh( (string Material, List<FittedVertex> Vertices, List<int> Indices) draw, string name )
+	static Mesh MakeMesh( Draw draw, string name )
 	{
 		var material = string.IsNullOrEmpty( draw.Material ) ? null : Material.Load( draw.Material );
 		var mesh = new Mesh( name, material );
 		mesh.CreateVertexBuffer( draw.Vertices.Count, draw.Vertices );
 		mesh.CreateIndexBuffer( draw.Indices.Count, draw.Indices );
 		mesh.Bounds = BBox.FromPoints( draw.Vertices.Select( x => x.Position ) );
+		foreach ( var (morph, deltas) in draw.Morphs )
+			mesh.AddMorph( morph, deltas.ToArray() );
 		return mesh;
 	}
 

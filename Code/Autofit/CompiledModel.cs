@@ -44,6 +44,9 @@ public sealed class SkinnedGeometry
 
 	/// <summary>The model's LOD switch distances, by level.</summary>
 	public float[] LodDistances = Array.Empty<float>();
+
+	/// <summary>Morph targets of the meshes that have them. Usually only the most detailed LOD does.</summary>
+	public List<MorphSet> Morphs = new();
 }
 
 /// <summary>
@@ -117,6 +120,8 @@ public static class CompiledModel
 		public byte[] File;
 		public List<int> Mdat = new();
 		public List<int> Mbuf = new();
+		public List<int> Blocks = new();           // where every block of the file starts, in file order
+		public Dictionary<int, int> MorphBlock = new();  // mesh number -> start of its MRPH block
 		public object Doc;
 		public List<object> LodMasks, GroupMasks;
 		public long DefaultGroups;
@@ -140,7 +145,7 @@ public static class CompiledModel
 	static Opened Open( byte[] file )
 	{
 		var model = new Opened { File = file };
-		int data = -1;
+		int data = -1, control = -1;
 		int table = 8 + BitConverter.ToInt32( file, 8 );
 		int count = BitConverter.ToInt32( file, 12 );
 		for ( int i = 0; i < count; i++ )
@@ -148,9 +153,11 @@ public static class CompiledModel
 			int entry = table + i * 12;
 			string kind = Encoding.ASCII.GetString( file, entry, 4 );
 			int start = entry + 4 + BitConverter.ToInt32( file, entry + 4 );
+			model.Blocks.Add( start );
 			if ( kind == "MDAT" ) model.Mdat.Add( start );
 			else if ( kind == "MBUF" ) model.Mbuf.Add( start );
 			else if ( kind == "DATA" ) data = start;
+			else if ( kind == "CTRL" ) control = start;
 		}
 
 		if ( data < 0 || model.Mdat.Count == 0 || model.Mdat.Count != model.Mbuf.Count )
@@ -160,6 +167,19 @@ public static class CompiledModel
 		model.LodMasks = Kv3.List( Kv3.Get( model.Doc, "m_refLODGroupMasks" ) );
 		model.GroupMasks = Kv3.List( Kv3.Get( model.Doc, "m_refMeshGroupMasks" ) );
 		model.DefaultGroups = Kv3.Int( Kv3.Get( model.Doc, "m_nDefaultMeshGroupMask" ), -1 );
+
+		// The CTRL block lists the meshes and says which block holds each one's morphs.
+		if ( control >= 0 )
+		{
+			foreach ( var mesh in Kv3.List( Kv3.Get( Kv3.Parse( file, control ), "embedded_meshes" ) ) ?? new List<object>() )
+			{
+				int index = (int)Kv3.Int( Kv3.Get( mesh, "mesh_index" ), -1 );
+				int block = (int)Kv3.Int( Kv3.Get( mesh, "morph_block" ), -1 );
+				if ( index >= 0 && block >= 0 && block < model.Blocks.Count )
+					model.MorphBlock[index] = model.Blocks[block];
+			}
+		}
+
 		return model;
 	}
 
@@ -190,7 +210,10 @@ public static class CompiledModel
 		foreach ( int m in meshes )
 		{
 			var mesh = Kv3.Parse( file, model.Mdat[m] );
+			int firstVertex = positions.Count;
 			var buffers = ReadBuffers( file, model.Mbuf[m], positions, normals, uvs, boneWeight, ref result.HasNormals );
+			if ( model.MorphBlock.TryGetValue( m, out int morphs ) )
+				result.Morphs.Add( ReadMorphs( Kv3.Parse( file, morphs ), firstVertex, positions.Count - firstVertex ) );
 
 			// The vertices index the mesh's own bone list. Turn that into model bones.
 			var meshBones = Kv3.List( Kv3.Get( Kv3.Get( mesh, "m_skeleton" ), "m_bones" ) );
@@ -228,6 +251,71 @@ public static class CompiledModel
 		result.BoneWeight = boneWeight.ToArray();
 		result.Indices = indices.ToArray();
 		return result;
+	}
+
+	static MorphSet ReadMorphs( object doc, int firstVertex, int vertexCount )
+	{
+		var set = new MorphSet
+		{
+			AtlasPath = Kv3.Get( doc, "m_pTextureAtlas" ) as string,
+			Width = (int)Kv3.Int( Kv3.Get( doc, "m_nWidth" ) ),
+			Height = (int)Kv3.Int( Kv3.Get( doc, "m_nHeight" ) ),
+			FirstVertex = firstVertex,
+			VertexCount = vertexCount,
+		};
+
+		// Each rectangle carries one bundle per entry of this list, in the same order.
+		int positionBundle = -1, normalBundle = -1;
+		var types = Kv3.List( Kv3.Get( doc, "m_bundleTypes" ) ) ?? new List<object>();
+		for ( int i = 0; i < types.Count; i++ )
+		{
+			string type = types[i] as string ?? "";
+			if ( type.Contains( "POSITION" ) ) positionBundle = i;
+			else if ( type.Contains( "NORMAL" ) ) normalBundle = i;
+		}
+
+		foreach ( var data in Kv3.List( Kv3.Get( doc, "m_morphDatas" ) ) ?? new List<object>() )
+		{
+			var morph = new MorphSet.Morph { Name = Kv3.Get( data, "m_name" ) as string ?? "" };
+			foreach ( var rectData in Kv3.List( Kv3.Get( data, "m_morphRectDatas" ) ) ?? new List<object>() )
+			{
+				var bundles = Kv3.List( Kv3.Get( rectData, "m_bundleDatas" ) ) ?? new List<object>();
+				morph.Rects.Add( new MorphSet.Rect
+				{
+					X = (int)Kv3.Int( Kv3.Get( rectData, "m_nXLeftDst" ) ),
+					Y = (int)Kv3.Int( Kv3.Get( rectData, "m_nYTopDst" ) ),
+					Width = (float)Kv3.Number( Kv3.Get( rectData, "m_flUWidthSrc" ) ),
+					Height = (float)Kv3.Number( Kv3.Get( rectData, "m_flVHeightSrc" ) ),
+					Position = ReadBundle( bundles, positionBundle ),
+					Normal = ReadBundle( bundles, normalBundle ),
+				} );
+			}
+
+			set.Morphs.Add( morph );
+		}
+
+		return set;
+	}
+
+	static MorphSet.Bundle ReadBundle( List<object> bundles, int index )
+	{
+		if ( index < 0 || index >= bundles.Count ) return null;
+
+		var bundle = new MorphSet.Bundle
+		{
+			U = (float)Kv3.Number( Kv3.Get( bundles[index], "m_flULeftSrc" ) ),
+			V = (float)Kv3.Number( Kv3.Get( bundles[index], "m_flVTopSrc" ) ),
+		};
+
+		var offsets = Kv3.List( Kv3.Get( bundles[index], "m_offsets" ) );
+		var ranges = Kv3.List( Kv3.Get( bundles[index], "m_ranges" ) );
+		for ( int i = 0; i < 4; i++ )
+		{
+			if ( offsets != null && i < offsets.Count ) bundle.Offsets[i] = (float)Kv3.Number( offsets[i] );
+			if ( ranges != null && i < ranges.Count ) bundle.Ranges[i] = (float)Kv3.Number( ranges[i] );
+		}
+
+		return bundle;
 	}
 
 	static void ReadSkeleton( object doc, SkinnedGeometry result )
