@@ -1,0 +1,42 @@
+{
+  "Title": "Citizen Autofit",
+  "Type": "game",
+  "Org": "glag",
+  "Ident": "citizen_autofit",
+  "Schema": 1,
+  "IncludeSourceFiles": false,
+  "Resources": "*.scene_d",
+  "PackageReferences": [],
+  "EditorReferences": null,
+  "Mounts": null,
+  "IsStandaloneOnly": false,
+  "Metadata": {
+    "StartupScene": "scenes/dresser_models.scene",
+    "MapSelect": "Unrestricted",
+    "MaxPlayers": 4,
+    "MinPlayers": 1,
+    "GameNetworkType": "Multiplayer",
+    "TickRate": 50,
+    "LaunchMode": "Normal",
+    "ControlModes": {
+      "Keyboard": true,
+      "VR": false,
+      "Gamepad": true
+    },
+    "Compiler": {
+      "RootNamespace": "Sandbox",
+      "DefineConstants": "SANDBOX",
+      "NoWarn": "1701;1702;1591;",
+      "WarningsAsErrors": "",
+      "TreatWarningsAsErrors": false,
+      "Nullables": false,
+      "ReleaseMode": "Release",
+      "AssemblyReferences": [],
+      "ReplacementDirectives": {
+        ".Server.cs": "SERVER"
+      },
+      "IgnoreFolders": [],
+      "DistinctAssemblyReferences": []
+    }
+  }
+}
