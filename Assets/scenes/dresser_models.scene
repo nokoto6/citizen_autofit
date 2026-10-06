@@ -961,6 +961,12 @@
                 "Path": "models/citizen_clothes/glasses/nerdy_glasses/nerdy_glasses.clothing"
               },
               "Tint": 0.15671083
+            },
+            {
+              "Clothing": {
+                "Id": "f04fa265-5995-43dd-aa9f-222d234775af",
+                "Path": "models/citizen_clothes/full_outfit/katana/katana.clothing"
+              }
             }
           ],
           "FitAtRuntime": true,
@@ -1989,7 +1995,7 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "RemoveSkinFromClothing": false,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -2910,7 +2916,7 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "RemoveSkinFromClothing": false,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -3106,7 +3112,7 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "RemoveSkinFromClothing": false,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -3234,7 +3240,7 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "RemoveSkinFromClothing": false,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -3652,6 +3658,7 @@
     "arghbeef.bunnyhead#161778",
     "backdoor.simon_henriksson#126901",
     "gbonnsclothing.strawberry_hat#338886",
+    "glitchworkshop.katana#409507",
     "lies.swagchain#278641",
     "ma1.jack_box#164333",
     "perkedel.zuuljedus_playermodel#267963",
