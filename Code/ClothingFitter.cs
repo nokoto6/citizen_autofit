@@ -528,8 +528,12 @@ public static class ClothingFitter
 			working++;
 		}
 
+		// No await inside a catch or finally here: the compiler turns that into
+		// ExceptionDispatchInfo, which the whitelist doesn't allow. The step's own errors are
+		// caught on the worker; only the game stopping can come through.
 		T result = default;
 		string error = null;
+		bool cancelled = false;
 		try
 		{
 			await GameTask.RunInThreadAsync( () =>
@@ -544,14 +548,17 @@ public static class ClothingFitter
 				}
 			} );
 		}
-		finally
+		catch ( TaskCanceledException )
 		{
-			await GameTask.MainThread();
-			// Hand the worker straight to whoever waits longest, or give it back.
-			if ( waiting.Count > 0 ) waiting.Dequeue().SetResult( true );
-			else working--;
+			cancelled = true;
 		}
 
+		await GameTask.MainThread();
+		// Hand the worker straight to whoever waits longest, or give it back.
+		if ( waiting.Count > 0 ) waiting.Dequeue().SetResult( true );
+		else working--;
+
+		if ( cancelled ) throw new TaskCanceledException();
 		if ( error != null ) throw new FitException( error );
 		return result;
 	}
