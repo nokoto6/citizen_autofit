@@ -191,11 +191,15 @@ public static class ClothingFitter
 	/// </summary>
 	public static bool HasSkin( string garmentPath ) => skinned.Contains( Normalize( garmentPath ) );
 
-	// The citizen's and the humans' skin materials all sit in a "skin" folder of their model.
+	// The citizen's skin materials sit in models/citizen/skin, the humans' in
+	// models/citizen_human/bodies/male and female (body_mode_dark, female_body_mode_dark,
+	// body_male_light). Everything else in those folders is eyes, mouths and underwear.
 	static bool IsSkin( string material )
 	{
 		string path = Normalize( material );
-		return path.Contains( "/skin/" ) && path.StartsWith( "models/citizen" );
+		if ( !path.StartsWith( "models/citizen" ) ) return false;
+		if ( path.Contains( "/skin/" ) ) return true;
+		return path.Contains( "/bodies/" ) && System.IO.Path.GetFileName( path ).Contains( "body" );
 	}
 
 	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin )

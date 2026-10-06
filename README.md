@@ -32,7 +32,7 @@ fitted when it was put on.
 | Fit At Runtime | Off: clothing is worn as is, for comparison. |
 | Version | Which version of each garment to wear: Auto, Citizen, Human Male, Human Female. Auto goes by the skeleton. It tells a citizen from a human well, but not a male human from a female one, so set it by hand when it guesses wrong. |
 | Height | How tall the character is, 0 to 1, same as the stock Dresser. Scales the body through its animation graph; the clothing follows. |
-| Remove Skin From Clothing | Some clothing hides a part of the body and draws its own copy of that skin as part of the garment. The copy has the stock body's shape. With this on, such clothing is worn without it and the body part stays visible. |
+| Remove Skin From Clothing | Some clothing hides a part of the body and draws its own copy of that skin as part of the garment (37 of the stock citizen garments, 63 of the human ones). The copy has the stock body's shape. With this on, such clothing is worn without it and the body part stays visible. |
 | Apply On Start | Dress when the component starts. |
 
 Buttons: **Apply Clothing**, **Clear Clothing**, **Randomize** (same groups and odds as the stock
