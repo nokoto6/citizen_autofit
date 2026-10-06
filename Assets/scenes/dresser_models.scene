@@ -143,7 +143,7 @@
       "__version": 2,
       "Flags": 0,
       "Name": "Box - stock clothing",
-      "Position": "0,-25.0964851,0",
+      "Position": "3.6586287,-86.5766144,0",
       "Rotation": "0,0,0,1",
       "Scale": "1,1,1",
       "Tags": "",
@@ -160,7 +160,7 @@
           "__enabled": true,
           "Flags": 0,
           "AnimationGraph": null,
-          "BodyGroups": 65,
+          "BodyGroups": 69,
           "BoneMergeTarget": null,
           "CreateAttachments": false,
           "CreateBoneObjects": false,
@@ -180,8 +180,12 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
-          "PlaybackRate": 1,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
+          "PlaybackRate": 0.2882883,
           "RenderOptions": {
             "GameLayer": true,
             "OverlayLayer": false,
@@ -190,7 +194,7 @@
           },
           "RenderType": "On",
           "Sequence": {
-            "Name": "Swim_S",
+            "Name": "Run_N",
             "Looping": true,
             "Blending": false
           },
@@ -210,12 +214,6 @@
             "component_type": "SkinnedModelRenderer"
           },
           "Clothing": [
-            {
-              "Clothing": {
-                "Id": "d4f5edd1-bcf6-4236-baa5-3eeae725454a",
-                "Path": "models/citizen_clothes/hair/hair_shortscruffy/hair_shortscruffy_brown.clothing"
-              }
-            },
             {
               "Clothing": {
                 "Id": "e77b193f-f5d8-4adb-ad42-08cfcae73a74",
@@ -245,16 +243,29 @@
                 "Id": "d63384f6-6eb6-4a3f-a193-c94f4d41559b",
                 "Path": "models/citizen_clothes/shoes/sneakers/sneakers.clothing"
               }
+            },
+            {
+              "Clothing": {
+                "Id": "d549519e-20b7-4bd1-be8f-928cf6f119f5",
+                "Path": "gangsta_chain/swag_chain.clothing"
+              }
+            },
+            {
+              "Clothing": {
+                "Id": "65a59e79-dfac-41dd-9492-c2cf28944bc4",
+                "Path": "shoes/bunnyhead.clothing"
+              }
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -283,7 +294,7 @@
           "__enabled": true,
           "Flags": 0,
           "AnimationGraph": null,
-          "BodyGroups": 65,
+          "BodyGroups": 85,
           "BoneMergeTarget": null,
           "CreateAttachments": false,
           "CreateBoneObjects": false,
@@ -303,8 +314,12 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
-          "PlaybackRate": 1,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
+          "PlaybackRate": 0.18018018,
           "RenderOptions": {
             "GameLayer": true,
             "OverlayLayer": false,
@@ -384,13 +399,266 @@
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "12912ef0-abe6-4da7-bee0-f3da38c595f0",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Box - stock clothing (2)",
+      "Position": "0,-31.4877396,0",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "8640706e-4ec3-4833-a32d-9458e5da7a79",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 80,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "4379fe83-ddfb-4968-951a-4dbcc60aa541",
+            "Path": "models/citizen_box/citizen_box.vmdl"
+          },
+          "Morphs": {},
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.1479676
+            }
+          },
+          "PlaybackRate": 0.21621622,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": "Run_N",
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": false
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "44f3fc88-2ea8-4cf1-be38-5ee0efe8e879",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "8640706e-4ec3-4833-a32d-9458e5da7a79",
+            "go": "12912ef0-abe6-4da7-bee0-f3da38c595f0",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "b8684e92-931c-49b4-9b8f-5b006ce243a5",
+                "Path": "models/citizen_clothes/dress/standard_skirt/standard_skirt.clothing"
+              },
+              "Tint": 0.46204177
+            },
+            {
+              "Clothing": {
+                "Id": "f5552543-9aad-4b56-9ae6-f77357c315ec",
+                "Path": "models/citizen_clothes/shirt/polo_shirt/polo_shirt_white.clothing"
+              },
+              "Tint": 0.9571471
+            },
+            {
+              "Clothing": {
+                "Id": "522c5b11-7284-4956-a26a-ec9980a6db0d",
+                "Path": "models/citizen_clothes/shoes/boots/army_boots.clothing"
+              },
+              "Tint": 0.79767853
+            },
+            {
+              "Clothing": {
+                "Id": "218efe2c-3ef7-4f12-8627-df02f29b424f",
+                "Path": "models/citizen_clothes/glasses/party_glasses/party_glasses.clothing"
+              },
+              "Tint": 0.33723474
+            },
+            {
+              "Clothing": {
+                "Id": "925c4111-026d-4acd-990d-8444b4dc3aa9",
+                "Path": "projects/clown/clown.clothing"
+              }
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.8699187,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "89c189b3-b614-4128-8d1b-6964c1f5a001",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Box - stock clothing (3)",
+      "Position": "0,-149.997971,0",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "3a4e89fb-7fa7-48e4-bddb-5fbed72f9586",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 81,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "4379fe83-ddfb-4968-951a-4dbcc60aa541",
+            "Path": "models/citizen_box/citizen_box.vmdl"
+          },
+          "Morphs": {},
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
+          "PlaybackRate": 1,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": "Swim_S",
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": false
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "7df8762e-e234-4127-bce9-f0fb93dd2324",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "3a4e89fb-7fa7-48e4-bddb-5fbed72f9586",
+            "go": "89c189b3-b614-4128-8d1b-6964c1f5a001",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "b8684e92-931c-49b4-9b8f-5b006ce243a5",
+                "Path": "models/citizen_clothes/dress/standard_skirt/standard_skirt.clothing"
+              },
+              "Tint": 0.46204177
+            },
+            {
+              "Clothing": {
+                "Id": "f5552543-9aad-4b56-9ae6-f77357c315ec",
+                "Path": "models/citizen_clothes/shirt/polo_shirt/polo_shirt_white.clothing"
+              },
+              "Tint": 0.9571471
+            },
+            {
+              "Clothing": {
+                "Id": "522c5b11-7284-4956-a26a-ec9980a6db0d",
+                "Path": "models/citizen_clothes/shoes/boots/army_boots.clothing"
+              },
+              "Tint": 0.79767853
+            },
+            {
+              "Clothing": {
+                "Id": "218efe2c-3ef7-4f12-8627-df02f29b424f",
+                "Path": "models/citizen_clothes/glasses/party_glasses/party_glasses.clothing"
+              },
+              "Tint": 0.33723474
+            },
+            {
+              "Clothing": {
+                "Id": "47e47c6e-1e8a-427b-8e66-e8f6ce5e9f6c",
+                "Path": "strawberry_hat/strawberry_hat.clothing"
+              }
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.5,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -402,7 +670,7 @@
       "__version": 2,
       "Flags": 0,
       "Name": "Terry - stock clothing",
-      "Position": "-0.135993958,-86.6762543,-0.167898417",
+      "Position": "-0.135993958,-204.997253,-0.167898417",
       "Rotation": "0,0,0,1",
       "Scale": "1,1,1",
       "Tags": "",
@@ -419,7 +687,7 @@
           "__enabled": true,
           "Flags": 0,
           "AnimationGraph": null,
-          "BodyGroups": 65,
+          "BodyGroups": 85,
           "BoneMergeTarget": null,
           "CreateAttachments": false,
           "CreateBoneObjects": false,
@@ -439,7 +707,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.0569106
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -471,49 +743,235 @@
           "Clothing": [
             {
               "Clothing": {
-                "Id": "d4f5edd1-bcf6-4236-baa5-3eeae725454a",
-                "Path": "models/citizen_clothes/hair/hair_shortscruffy/hair_shortscruffy_brown.clothing"
-              }
+                "Id": "1c98c2d5-434b-4155-86ca-518840151dea",
+                "Path": "models/citizen_clothes/hair/hair_short_braids/hair_short_braids.clothing"
+              },
+              "Tint": 0.7690108
+            },
+            {
+              "Clothing": {
+                "Id": "fa2a9ddd-e7a9-4cd9-baa6-69ea7ed8791c",
+                "Path": "models/citizen_clothes/shorts/summer_shorts/summer shorts.clothing"
+              },
+              "Tint": 0.8972905
+            },
+            {
+              "Clothing": {
+                "Id": "451f3c13-3310-4e80-aea6-24e41d97b1f4",
+                "Path": "models/citizen_clothes/shirt/leotard/leotard_blue.clothing"
+              },
+              "Tint": 0.10538332
+            },
+            {
+              "Clothing": {
+                "Id": "c2961518-612d-48c9-a494-949de2c553ad",
+                "Path": "models/citizen_clothes/shoes/sneakers/blue_sneakers.clothing"
+              },
+              "Tint": 0.69530594
+            },
+            {
+              "Clothing": {
+                "Id": "25c26483-5468-46c4-8a25-f9736821d940",
+                "Path": "models/citizen_clothes/jumper/cardigan/cardigan.clothing"
+              },
+              "Tint": 0.5103164
             },
             {
               "Clothing": {
                 "Id": "e77b193f-f5d8-4adb-ad42-08cfcae73a74",
                 "Path": "models/citizen_clothes/glasses/nerdy_glasses/nerdy_glasses.clothing"
-              }
-            },
-            {
-              "Clothing": {
-                "Id": "67b7e638-61d3-46c4-93e2-22eb089281f8",
-                "Path": "models/citizen_clothes/shirt/tshirt/tshirt.clothing"
-              }
-            },
-            {
-              "Clothing": {
-                "Id": "5d9d895b-ec3f-4786-a2d3-1a49eca8c170",
-                "Path": "models/citizen_clothes/jacket/biker_jacket/biker_jacket.clothing"
-              }
-            },
-            {
-              "Clothing": {
-                "Id": "d9a7cc5b-386e-4545-8b4c-99a688d0b989",
-                "Path": "models/citizen_clothes/trousers/jeans/jeans.clothing"
-              }
-            },
-            {
-              "Clothing": {
-                "Id": "d63384f6-6eb6-4a3f-a193-c94f4d41559b",
-                "Path": "models/citizen_clothes/shoes/sneakers/sneakers.clothing"
-              }
+              },
+              "Tint": 0.2858955
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.6422764,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "573452bb-4094-462e-aa1d-11a6125b7394",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Terry - stock clothing (1)",
+      "Position": "-0.135993958,-249.552994,-0.167898417",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "f4f97420-65c3-4cca-9b94-14c80e76705f",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 69,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "bf80bc81-b130-40c6-a15f-98c8bac7e237",
+            "Path": "models/citizen_custom/citizen_custom.vmdl"
+          },
+          "Morphs": {
+            "browlowererL": 0.24080001,
+            "browlowererR": 0.56,
+            "outerbrowraiserL": 0.25752324,
+            "outerbrowraiserR": 0.41308329,
+            "innerbrowraiserL": 0.2788537,
+            "innerbrowraiserR": 0.6465386,
+            "lipcornerpullerL": 0.19953331,
+            "lipcornerpullerR": 0.34968767,
+            "nosewrinklerL": 0.20711248,
+            "nosewrinklerR": 0.66586185,
+            "openjawL": 0.39511377,
+            "openjawR": 0.5721011,
+            "openmouthL": 0.6608499,
+            "openmouthR": 0.6255962,
+            "lipcornerdepressorL": 0.86883897,
+            "lipcornerdepressorR": 0.7215242,
+            "upperlipraiserL": 0.047159597,
+            "upperlipraiserR": 0.43571877,
+            "jawsidewaysL": 0.99509794,
+            "jawsidewaysR": 0.07041896,
+            "cheekinflateL": 0.48909494,
+            "cheekinflateR": 0.49118647,
+            "LipSidewaysL": 0.2737615,
+            "LipSidewaysR": 0.06183942,
+            "lippuckerer": 0.25223684,
+            "jawthrust": 0.39814922,
+            "jawsuck": 0.19999999,
+            "nostrildilator": 0.16945806,
+            "lowerLipFunneler": 0.018241974,
+            "upperLipFunneler": 0.33738616,
+            "upperLipsTowardAndPart": 0.880177,
+            "lowerLipsTowardAndPart": 0.7598292,
+            "ChinRaiser": 0.6293035,
+            "LowerLipDrepressor": 0.6754832,
+            "eyelidbulgelower": 0.66714114,
+            "eyelidbulgeupper": 0.3290348
+          },
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.0569106
+            }
+          },
+          "PlaybackRate": 1,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": null,
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": true
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "cce3328a-c1f5-4566-a997-48e3102ebde5",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "f4f97420-65c3-4cca-9b94-14c80e76705f",
+            "go": "573452bb-4094-462e-aa1d-11a6125b7394",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "e6f19be9-8c98-4892-826c-4f43ee340ac0",
+                "Path": "models/citizen_clothes/hair/hair_slickedback/hair_slickedback.clothing"
+              },
+              "Tint": 0.4115443
+            },
+            {
+              "Clothing": {
+                "Id": "fc9bf186-ada0-4bbc-bb38-c2424e1c317d",
+                "Path": "models/citizen_clothes/trousers/trackiebottoms/trackie_bottoms.clothing"
+              },
+              "Tint": 0.54508203
+            },
+            {
+              "Clothing": {
+                "Id": "46b57b4f-4ce5-41a5-82a5-62b30b838e14",
+                "Path": "models/citizen_clothes/shirt/flannel_shirt/flannel_shirt.clothing"
+              },
+              "Tint": 0.3607135
+            },
+            {
+              "Clothing": {
+                "Id": "d63384f6-6eb6-4a3f-a193-c94f4d41559b",
+                "Path": "models/citizen_clothes/shoes/sneakers/sneakers.clothing"
+              },
+              "Tint": 0.6511963
+            },
+            {
+              "Clothing": {
+                "Id": "6728630a-cec6-43e7-bf40-8c3e94c97de1",
+                "Path": "models/citizen_clothes/jacket/labcoat/labcoat.clothing"
+              },
+              "item": 57125,
+              "Tint": 0.89296395
+            },
+            {
+              "Clothing": {
+                "Id": "da28aeb2-5b62-4bbf-b812-4ce22e3083e2",
+                "Path": "models/citizen_clothes/hair/mutton_chops/mutton_chops.clothing"
+              },
+              "Tint": 0.67951393
+            },
+            {
+              "Clothing": {
+                "Id": "e77b193f-f5d8-4adb-ad42-08cfcae73a74",
+                "Path": "models/citizen_clothes/glasses/nerdy_glasses/nerdy_glasses.clothing"
+              },
+              "Tint": 0.15671083
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.6422764,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -552,7 +1010,7 @@
           "MaterialOverride": null,
           "Materials": null,
           "Model": {
-            "Id": "5340ab20-6c2f-4f00-94b6-8239dbd44edb",
+            "Id": "1b4a4cbe-bb03-4a29-9eda-b34cbbe65a3c",
             "Path": "combinesoldier/combine.vmdl"
           },
           "Morphs": {},
@@ -562,7 +1020,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 0.998374
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -643,13 +1105,14 @@
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.49593496,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
           "UseLocalAvatar": false,
           "Version": "HumanMale"
         }
@@ -1438,7 +1901,7 @@
           "MaterialOverride": null,
           "Materials": null,
           "Model": {
-            "Id": "d2fb2736-67b1-4d2c-8f64-16cb8a4c579f",
+            "Id": "513eeadb-40eb-4692-abfd-bed17d62f3e1",
             "Path": "gmod_swat/css_gign.vmdl"
           },
           "Morphs": {},
@@ -1448,7 +1911,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -1515,13 +1982,14 @@
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -2285,7 +2753,7 @@
           "IsStatic": false,
           "MaterialGroup": null,
           "Model": {
-            "Id": "f3d0234a-3ae4-43ce-856a-24e03b284f28",
+            "Id": "63f7e5f5-9706-4a26-bb87-6158c8f1367f",
             "Path": "models/cry_of_fear/simon/simon.vmdl"
           },
           "OnComponentDestroy": null,
@@ -2316,7 +2784,7 @@
           "MaterialOverride": null,
           "Materials": null,
           "Model": {
-            "Id": "f3d0234a-3ae4-43ce-856a-24e03b284f28",
+            "Id": "63f7e5f5-9706-4a26-bb87-6158c8f1367f",
             "Path": "models/cry_of_fear/simon/simon.vmdl"
           },
           "Morphs": {},
@@ -2326,7 +2794,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -2360,7 +2832,7 @@
             "Roll": false
           },
           "Model": {
-            "Id": "f3d0234a-3ae4-43ce-856a-24e03b284f28",
+            "Id": "63f7e5f5-9706-4a26-bb87-6158c8f1367f",
             "Path": "models/cry_of_fear/simon/simon.vmdl"
           },
           "MotionEnabled": true,
@@ -2431,13 +2903,14 @@
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -2470,7 +2943,7 @@
           "IsStatic": false,
           "MaterialGroup": null,
           "Model": {
-            "Id": "04e2ac6f-72e2-45e7-a2e0-1f23ea6bd69d",
+            "Id": "f58f4f66-6d0b-4d30-9560-d3246203981f",
             "Path": "entity/zuuljedus/zuuljedus.vmdl"
           },
           "OnComponentDestroy": null,
@@ -2501,7 +2974,7 @@
           "MaterialOverride": null,
           "Materials": null,
           "Model": {
-            "Id": "04e2ac6f-72e2-45e7-a2e0-1f23ea6bd69d",
+            "Id": "f58f4f66-6d0b-4d30-9560-d3246203981f",
             "Path": "entity/zuuljedus/zuuljedus.vmdl"
           },
           "Morphs": {},
@@ -2511,7 +2984,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -2545,7 +3022,7 @@
             "Roll": false
           },
           "Model": {
-            "Id": "04e2ac6f-72e2-45e7-a2e0-1f23ea6bd69d",
+            "Id": "f58f4f66-6d0b-4d30-9560-d3246203981f",
             "Path": "entity/zuuljedus/zuuljedus.vmdl"
           },
           "MotionEnabled": true,
@@ -2583,38 +3060,53 @@
                 "Id": "70d83dba-bc7d-4141-9e67-bd4869b207c7",
                 "Path": "models/citizen_clothes/hair/hair_bobcut/hair_bobcut.clothing"
               },
-              "Tint": 0.26607051
+              "Tint": 0.7636917
             },
             {
               "Clothing": {
-                "Id": "55b60d34-9d6b-4647-a7f2-c8bb813fac44",
-                "Path": "models/citizen_clothes/underwear/boxers/white_boxers.clothing"
+                "Id": "698b6d8f-73de-4e84-a6de-6dfd83103856",
+                "Path": "models/citizen_clothes/dress/denim_skirt/denim_skirt_leapard.clothing"
               },
-              "Tint": 0.63976806
+              "Tint": 0.666313
             },
             {
               "Clothing": {
-                "Id": "528c6885-6ae4-404e-af01-8e6c00af09ab",
-                "Path": "models/citizen_clothes/shirt/loose_crop_top/loose_crop_top_pattern.clothing"
+                "Id": "67b7e638-61d3-46c4-93e2-22eb089281f8",
+                "Path": "models/citizen_clothes/shirt/tshirt/tshirt.clothing"
               },
-              "Tint": 0.26108927
+              "Tint": 0.72748923
             },
             {
               "Clothing": {
-                "Id": "d63384f6-6eb6-4a3f-a193-c94f4d41559b",
-                "Path": "models/citizen_clothes/shoes/sneakers/sneakers.clothing"
+                "Id": "ac691bb6-27ca-4897-9363-1c707b16d34e",
+                "Path": "models/citizen_clothes/shoes/boots/black_boots.clothing"
               },
-              "Tint": 0.79891664
+              "Tint": 0.6889622
+            },
+            {
+              "Clothing": {
+                "Id": "5d9d895b-ec3f-4786-a2d3-1a49eca8c170",
+                "Path": "models/citizen_clothes/jacket/biker_jacket/biker_jacket.clothing"
+              },
+              "Tint": 0.9701708
+            },
+            {
+              "Clothing": {
+                "Id": "e77b193f-f5d8-4adb-ad42-08cfcae73a74",
+                "Path": "models/citizen_clothes/glasses/nerdy_glasses/nerdy_glasses.clothing"
+              },
+              "Tint": 0.16469085
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -2653,7 +3145,7 @@
           "MaterialOverride": null,
           "Materials": null,
           "Model": {
-            "Id": "9bdfbb47-ab4c-419c-855f-62c682258aff",
+            "Id": "c98444bb-b7fe-49f1-898a-b2d8e3d893a7",
             "Path": "models/citizen/skin/skeleton/models/skeleton_clean_skin.vmdl"
           },
           "Morphs": {},
@@ -2663,7 +3155,11 @@
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
-          "Parameters": {},
+          "Parameters": {
+            "floats": {
+              "scale_height": 1
+            }
+          },
           "PlaybackRate": 1,
           "RenderOptions": {
             "GameLayer": true,
@@ -2731,13 +3227,14 @@
             }
           ],
           "FitAtRuntime": true,
-          "FittedFolder": "",
+          "Height": 0.5,
           "OnComponentDestroy": null,
           "OnComponentDisabled": null,
           "OnComponentEnabled": null,
           "OnComponentFixedUpdate": null,
           "OnComponentStart": null,
           "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": false,
           "UseLocalAvatar": false,
           "Version": "Auto"
         }
@@ -2798,7 +3295,7 @@
       "__version": 2,
       "Flags": 0,
       "Name": "Text",
-      "Position": "-156.371521,255.43277,171.13147",
+      "Position": "-156.371521,255.43277,221.201614",
       "Rotation": "0,0,1,-4.37113883E-08",
       "Scale": "1,1,1",
       "Tags": "",
@@ -2833,7 +3330,247 @@
           },
           "Scale": 0.3,
           "TextScope": {
-            "Text": "So, can you make a \ncitizen body \nlike mine now? :3",
+            "Text": "So, can you make a \ncitizen body \nlike this now? :3",
+            "TextColor": "0.45103,0.47149,0.5297,1",
+            "FontName": "Poppins",
+            "FontSize": 64,
+            "FontWeight": 800,
+            "FontItalic": false,
+            "FontVariantNumeric": "Normal",
+            "LineHeight": 1,
+            "LetterSpacing": 0,
+            "WordSpacing": 0,
+            "FilterMode": "Bilinear",
+            "FontSmooth": "Auto",
+            "Outline": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,1,1"
+            },
+            "Shadow": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            },
+            "OutlineUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,1,0,1"
+            },
+            "ShadowUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            }
+          },
+          "VerticalAlignment": "Center"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "ec1d6c75-6b92-4d18-b7e5-d0501f056cd5",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Text (1)",
+      "Position": "-156.371521,257.041534,146.990524",
+      "Rotation": "0,0,1,-4.37113883E-08",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.TextRenderer",
+          "__guid": "7f5b0292-7587-42fe-9e88-874742bbccf1",
+          "__enabled": true,
+          "Flags": 0,
+          "__version": 2,
+          "Billboard": "None",
+          "BlendMode": "Normal",
+          "FogStrength": 1,
+          "HorizontalAlignment": "Center",
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "Scale": 0.18199997,
+          "TextScope": {
+            "Text": "You can keep the default citizen \nand also add other variations, \nfor example, a female version",
+            "TextColor": "0.45103,0.47149,0.5297,1",
+            "FontName": "Poppins",
+            "FontSize": 64,
+            "FontWeight": 800,
+            "FontItalic": false,
+            "FontVariantNumeric": "Normal",
+            "LineHeight": 1,
+            "LetterSpacing": 0,
+            "WordSpacing": 0,
+            "FilterMode": "Bilinear",
+            "FontSmooth": "Auto",
+            "Outline": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,1,1"
+            },
+            "Shadow": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            },
+            "OutlineUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,1,0,1"
+            },
+            "ShadowUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            }
+          },
+          "VerticalAlignment": "Center"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "172dec83-493b-4509-82f7-c6603cb96f61",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Text (2)",
+      "Position": "-156.371506,20.6772289,196.087341",
+      "Rotation": "0,0,1,-4.37113883E-08",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.TextRenderer",
+          "__guid": "cd40359e-ab7a-471d-b05c-2bfb221d15c1",
+          "__enabled": true,
+          "Flags": 0,
+          "__version": 2,
+          "Billboard": "None",
+          "BlendMode": "Normal",
+          "FogStrength": 1,
+          "HorizontalAlignment": "Center",
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "Scale": 0.18199997,
+          "TextScope": {
+            "Text": "Made with love \nfor you \nFP ❤",
+            "TextColor": "0.45103,0.47149,0.5297,1",
+            "FontName": "Poppins",
+            "FontSize": 64,
+            "FontWeight": 800,
+            "FontItalic": false,
+            "FontVariantNumeric": "Normal",
+            "LineHeight": 1,
+            "LetterSpacing": 0,
+            "WordSpacing": 0,
+            "FilterMode": "Bilinear",
+            "FontSmooth": "Auto",
+            "Outline": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,1,1"
+            },
+            "Shadow": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            },
+            "OutlineUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,1,0,1"
+            },
+            "ShadowUnder": {
+              "Enabled": false,
+              "Size": 4,
+              "Color": "0,0,0,1",
+              "Offset": "4,4"
+            }
+          },
+          "VerticalAlignment": "Center"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "b2b211f5-0d7f-4527-95cf-3337819aa7fa",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Text (3)",
+      "Position": "-156.37149,-59.5039749,70.8654022",
+      "Rotation": "0,0,1,-4.37113883E-08",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.TextRenderer",
+          "__guid": "3f7fd448-f72f-4db1-8391-3b972e3fa59b",
+          "__enabled": true,
+          "Flags": 0,
+          "__version": 2,
+          "Billboard": "None",
+          "BlendMode": "Lighten",
+          "FogStrength": 1,
+          "HorizontalAlignment": "Center",
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "Scale": 0.21799994,
+          "TextScope": {
+            "Text": "No, its not new deformer",
             "TextColor": "0.45103,0.47149,0.5297,1",
             "FontName": "Poppins",
             "FontSize": 64,
@@ -2912,7 +3649,11 @@
   "Title": null,
   "Description": null,
   "__references": [
+    "arghbeef.bunnyhead#161778",
     "backdoor.simon_henriksson#126901",
+    "gbonnsclothing.strawberry_hat#338886",
+    "lies.swagchain#278641",
+    "ma1.jack_box#164333",
     "perkedel.zuuljedus_playermodel#267963",
     "playermodelports.combine#115229",
     "playermodelports.cssgign#115223",
