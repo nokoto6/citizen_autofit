@@ -255,6 +255,12 @@
                 "Id": "65a59e79-dfac-41dd-9492-c2cf28944bc4",
                 "Path": "shoes/bunnyhead.clothing"
               }
+            },
+            {
+              "Clothing": {
+                "Id": "f04fa265-5995-43dd-aa9f-222d234775af",
+                "Path": "models/citizen_clothes/full_outfit/katana/katana.clothing"
+              }
             }
           ],
           "FitAtRuntime": true,
@@ -821,7 +827,7 @@
           "__enabled": true,
           "Flags": 0,
           "AnimationGraph": null,
-          "BodyGroups": 69,
+          "BodyGroups": 85,
           "BoneMergeTarget": null,
           "CreateAttachments": false,
           "CreateBoneObjects": false,
@@ -914,58 +920,519 @@
           "Clothing": [
             {
               "Clothing": {
-                "Id": "e6f19be9-8c98-4892-826c-4f43ee340ac0",
-                "Path": "models/citizen_clothes/hair/hair_slickedback/hair_slickedback.clothing"
+                "Id": "cc968b2c-34df-431e-a6a3-4d4a0f8eea69",
+                "Path": "models/citizen_clothes/hair/hair_looseblonde/hair.loose.grey.clothing"
               },
-              "Tint": 0.4115443
+              "Tint": 0.27469307
             },
             {
               "Clothing": {
-                "Id": "fc9bf186-ada0-4bbc-bb38-c2424e1c317d",
-                "Path": "models/citizen_clothes/trousers/trackiebottoms/trackie_bottoms.clothing"
+                "Id": "6b18ed52-9031-4c35-9c2a-250a16273fee",
+                "Path": "models/citizen_clothes/seasonal/2024/santa/santatrousers.clothing"
               },
-              "Tint": 0.54508203
+              "item": 335294,
+              "Tint": 0.5977186
             },
             {
               "Clothing": {
-                "Id": "46b57b4f-4ce5-41a5-82a5-62b30b838e14",
-                "Path": "models/citizen_clothes/shirt/flannel_shirt/flannel_shirt.clothing"
+                "Id": "92dec857-1558-4ab6-a81b-5fe3ae2cc966",
+                "Path": "models/citizen_clothes/shirt/loose_shirt/loose_shirt.clothing"
               },
-              "Tint": 0.3607135
+              "Tint": 0.5550754
             },
             {
               "Clothing": {
                 "Id": "d63384f6-6eb6-4a3f-a193-c94f4d41559b",
                 "Path": "models/citizen_clothes/shoes/sneakers/sneakers.clothing"
               },
-              "Tint": 0.6511963
+              "Tint": 0.52260256
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.6422764,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "971f97d1-4f46-43de-9895-d84f619e8e04",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Terry - stock clothing (2)",
+      "Position": "-0.135993958,-300.720215,-0.167898417",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "62952d83-2dd2-4b3e-bbe8-54669c73e308",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 85,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "bf80bc81-b130-40c6-a15f-98c8bac7e237",
+            "Path": "models/citizen_custom/citizen_custom.vmdl"
+          },
+          "Morphs": {},
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.0569106
+            }
+          },
+          "PlaybackRate": 1,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": null,
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": true
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "b3d47cc9-05b1-4889-ac19-8a6b000de56c",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "62952d83-2dd2-4b3e-bbe8-54669c73e308",
+            "go": "971f97d1-4f46-43de-9895-d84f619e8e04",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "70d83dba-bc7d-4141-9e67-bd4869b207c7",
+                "Path": "models/citizen_clothes/hair/hair_bobcut/hair_bobcut.clothing"
+              },
+              "Tint": 0.4961684
             },
             {
               "Clothing": {
-                "Id": "6728630a-cec6-43e7-bf40-8c3e94c97de1",
-                "Path": "models/citizen_clothes/jacket/labcoat/labcoat.clothing"
+                "Id": "ec2d4889-f0f6-4b47-87c6-300050b50d3f",
+                "Path": "models/citizen_clothes/underwear/boxers/black_boxers.clothing"
               },
-              "item": 57125,
-              "Tint": 0.89296395
+              "Tint": 0.5935012
+            },
+            {
+              "Clothing": {
+                "Id": "67b7e638-61d3-46c4-93e2-22eb089281f8",
+                "Path": "models/citizen_clothes/shirt/tshirt/tshirt.clothing"
+              },
+              "Tint": 0.6276572
+            },
+            {
+              "Clothing": {
+                "Id": "ac691bb6-27ca-4897-9363-1c707b16d34e",
+                "Path": "models/citizen_clothes/shoes/boots/black_boots.clothing"
+              },
+              "Tint": 0.5619964
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.6422764,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "0f6d8a7b-390c-4407-924d-f6e1dd4faab4",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Terry - stock clothing (3)",
+      "Position": "-0.135993958,-352.950104,-0.167898417",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "b34c9569-fe3f-4e33-919c-395dc74a672c",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 85,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "bf80bc81-b130-40c6-a15f-98c8bac7e237",
+            "Path": "models/citizen_custom/citizen_custom.vmdl"
+          },
+          "Morphs": {
+            "browlowererL": 0.82761306,
+            "browlowererR": 0.17205556,
+            "outerbrowraiserL": 0.51447046,
+            "outerbrowraiserR": 0.46681103,
+            "innerbrowraiserL": 0.6805112,
+            "innerbrowraiserR": 0.49394217,
+            "lipcornerpullerL": 0.71921724,
+            "lipcornerpullerR": 0.5936082,
+            "nosewrinklerL": 0.03954138,
+            "nosewrinklerR": 0.07766851,
+            "openjawL": 0.0431711,
+            "openjawR": 0.8726421,
+            "openmouthL": 0.18642473,
+            "openmouthR": 0.2856615,
+            "lipcornerdepressorL": 0.8614332,
+            "lipcornerdepressorR": 0.7969029,
+            "upperlipraiserL": 0.22163266,
+            "upperlipraiserR": 0.9811172,
+            "jawsidewaysL": 0.23306493,
+            "jawsidewaysR": 0.79359293,
+            "cheekinflateL": 0.85099417,
+            "cheekinflateR": 0.31633914,
+            "LipSidewaysL": 0.3806732,
+            "LipSidewaysR": 0.45870847,
+            "lippuckerer": 0.7832903,
+            "jawthrust": 0.7478439,
+            "jawsuck": 0.87010187,
+            "nostrildilator": 0.3875213,
+            "lowerLipFunneler": 0.9238604,
+            "upperLipFunneler": 0.5554463,
+            "upperLipsTowardAndPart": 0.14940155,
+            "lowerLipsTowardAndPart": 0.74615675,
+            "ChinRaiser": 0.03363986,
+            "LowerLipDrepressor": 0.35775036,
+            "eyelidbulgelower": 0.007864537,
+            "eyelidbulgeupper": 0.5835511
+          },
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.0569106
+            }
+          },
+          "PlaybackRate": 1,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": null,
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": true
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "6cece204-2bb1-4575-ab89-f2123442f211",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "b34c9569-fe3f-4e33-919c-395dc74a672c",
+            "go": "0f6d8a7b-390c-4407-924d-f6e1dd4faab4",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "e7ccaf56-352c-472b-a928-ea3d672da5fe",
+                "Path": "models/citizen_clothes/hat/baseball_cap/baseball_cap_black.clothing"
+              },
+              "Tint": 0.683495
+            },
+            {
+              "Clothing": {
+                "Id": "c45070ec-e912-4ab7-b65f-767d8372715b",
+                "Path": "models/citizen_clothes/dress/denim_skirt/denim_skirt_green.clothing"
+              },
+              "Tint": 0.1845721
+            },
+            {
+              "Clothing": {
+                "Id": "41901b8c-3111-41ef-a344-75786a3a7e48",
+                "Path": "models/citizen_clothes/shirt/tshirt/football_tshirt.clothing"
+              },
+              "Tint": 0.39217523
+            },
+            {
+              "Clothing": {
+                "Id": "5f0e3eda-db7c-4be7-91dc-3d04d06c2f4c",
+                "Path": "models/citizen_clothes/shoes/boxing_boots/boxing_boots_blue.clothing"
+              },
+              "Tint": 0.71250135
+            },
+            {
+              "Clothing": {
+                "Id": "8ccfc83a-1f8c-4655-9764-d74313a4b7f8",
+                "Path": "models/citizen_clothes/jacket/puffer_jacket/puffer_jacket.clothing"
+              },
+              "Tint": 0.29022792
             },
             {
               "Clothing": {
                 "Id": "da28aeb2-5b62-4bbf-b812-4ce22e3083e2",
                 "Path": "models/citizen_clothes/hair/mutton_chops/mutton_chops.clothing"
               },
-              "Tint": 0.67951393
+              "Tint": 0.80294436
             },
             {
               "Clothing": {
-                "Id": "e77b193f-f5d8-4adb-ad42-08cfcae73a74",
-                "Path": "models/citizen_clothes/glasses/nerdy_glasses/nerdy_glasses.clothing"
+                "Id": "218efe2c-3ef7-4f12-8627-df02f29b424f",
+                "Path": "models/citizen_clothes/glasses/party_glasses/party_glasses.clothing"
               },
-              "Tint": 0.15671083
+              "Tint": 0.6582045
             },
             {
               "Clothing": {
-                "Id": "f04fa265-5995-43dd-aa9f-222d234775af",
-                "Path": "models/citizen_clothes/full_outfit/katana/katana.clothing"
+                "Id": "70d83dba-bc7d-4141-9e67-bd4869b207c7",
+                "Path": "models/citizen_clothes/hair/hair_bobcut/hair_bobcut.clothing"
+              }
+            }
+          ],
+          "FitAtRuntime": true,
+          "Height": 0.6422764,
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "RemoveSkinFromClothing": true,
+          "UseLocalAvatar": false,
+          "Version": "Auto"
+        }
+      ],
+      "Children": []
+    },
+    {
+      "__guid": "6b1f3717-12e9-4b12-8b1b-0603b798211c",
+      "__version": 2,
+      "Flags": 0,
+      "Name": "Terry - stock clothing (4)",
+      "Position": "-0.135993958,-402.049622,-0.167898417",
+      "Rotation": "0,0,0,1",
+      "Scale": "1,1,1",
+      "Tags": "",
+      "Enabled": true,
+      "NetworkMode": 2,
+      "NetworkFlags": 0,
+      "NetworkOrphaned": 0,
+      "NetworkTransmit": true,
+      "OwnerTransfer": 1,
+      "Components": [
+        {
+          "__type": "Sandbox.SkinnedModelRenderer",
+          "__guid": "3d1197e2-a899-44a4-9d9c-44cc095a2468",
+          "__enabled": true,
+          "Flags": 0,
+          "AnimationGraph": null,
+          "BodyGroups": 85,
+          "BoneMergeTarget": null,
+          "CreateAttachments": false,
+          "CreateBoneObjects": false,
+          "DeformationMode": "Normal",
+          "LodOverride": null,
+          "MaterialGroup": null,
+          "MaterialOverride": null,
+          "Materials": null,
+          "Model": {
+            "Id": "bf80bc81-b130-40c6-a15f-98c8bac7e237",
+            "Path": "models/citizen_custom/citizen_custom.vmdl"
+          },
+          "Morphs": {
+            "browlowererL": 0.82761306,
+            "browlowererR": 0.17205556,
+            "outerbrowraiserL": 0.51447046,
+            "outerbrowraiserR": 0.46681103,
+            "innerbrowraiserL": 0.6805112,
+            "innerbrowraiserR": 0.49394217,
+            "lipcornerpullerL": 0.71921724,
+            "lipcornerpullerR": 0.5936082,
+            "nosewrinklerL": 0.03954138,
+            "nosewrinklerR": 0.07766851,
+            "openjawL": 0.0431711,
+            "openjawR": 0.8726421,
+            "openmouthL": 0.18642473,
+            "openmouthR": 0.2856615,
+            "lipcornerdepressorL": 0.8614332,
+            "lipcornerdepressorR": 0.7969029,
+            "upperlipraiserL": 0.22163266,
+            "upperlipraiserR": 0.9811172,
+            "jawsidewaysL": 0.23306493,
+            "jawsidewaysR": 0.79359293,
+            "cheekinflateL": 0.85099417,
+            "cheekinflateR": 0.31633914,
+            "LipSidewaysL": 0.3806732,
+            "LipSidewaysR": 0.45870847,
+            "lippuckerer": 0.7832903,
+            "jawthrust": 0.7478439,
+            "jawsuck": 0.87010187,
+            "nostrildilator": 0.3875213,
+            "lowerLipFunneler": 0.9238604,
+            "upperLipFunneler": 0.5554463,
+            "upperLipsTowardAndPart": 0.14940155,
+            "lowerLipsTowardAndPart": 0.74615675,
+            "ChinRaiser": 0.03363986,
+            "LowerLipDrepressor": 0.35775036,
+            "eyelidbulgelower": 0.007864537,
+            "eyelidbulgeupper": 0.5835511
+          },
+          "OnComponentDestroy": null,
+          "OnComponentDisabled": null,
+          "OnComponentEnabled": null,
+          "OnComponentFixedUpdate": null,
+          "OnComponentStart": null,
+          "OnComponentUpdate": null,
+          "Parameters": {
+            "floats": {
+              "scale_height": 1.0569106
+            }
+          },
+          "PlaybackRate": 1,
+          "RenderOptions": {
+            "GameLayer": true,
+            "OverlayLayer": false,
+            "BloomLayer": false,
+            "AfterUILayer": false
+          },
+          "RenderType": "On",
+          "Sequence": {
+            "Name": null,
+            "Looping": true,
+            "Blending": false
+          },
+          "Tint": "1,1,1,1",
+          "UseAnimGraph": true
+        },
+        {
+          "__type": "Sandbox.FitDresser",
+          "__guid": "25d1b958-a3c0-4434-9f33-cbb2587c7f7f",
+          "__enabled": true,
+          "Flags": 0,
+          "ApplyOnStart": true,
+          "BodyTarget": {
+            "_type": "component",
+            "component_id": "3d1197e2-a899-44a4-9d9c-44cc095a2468",
+            "go": "6b1f3717-12e9-4b12-8b1b-0603b798211c",
+            "component_type": "SkinnedModelRenderer"
+          },
+          "Clothing": [
+            {
+              "Clothing": {
+                "Id": "8dfc9750-e596-42a2-ac09-d4750e77652d",
+                "Path": "models/cosmetics/head/wizardhat/wizard_hat.clothing"
+              },
+              "Tint": 0.683495
+            },
+            {
+              "Clothing": {
+                "Id": "c45070ec-e912-4ab7-b65f-767d8372715b",
+                "Path": "models/citizen_clothes/dress/denim_skirt/denim_skirt_green.clothing"
+              },
+              "Tint": 0.1845721
+            },
+            {
+              "Clothing": {
+                "Id": "41901b8c-3111-41ef-a344-75786a3a7e48",
+                "Path": "models/citizen_clothes/shirt/tshirt/football_tshirt.clothing"
+              },
+              "Tint": 0.39217523
+            },
+            {
+              "Clothing": {
+                "Id": "5f0e3eda-db7c-4be7-91dc-3d04d06c2f4c",
+                "Path": "models/citizen_clothes/shoes/boxing_boots/boxing_boots_blue.clothing"
+              },
+              "Tint": 0.71250135
+            },
+            {
+              "Clothing": {
+                "Id": "8ccfc83a-1f8c-4655-9764-d74313a4b7f8",
+                "Path": "models/citizen_clothes/jacket/puffer_jacket/puffer_jacket.clothing"
+              },
+              "Tint": 0.29022792
+            },
+            {
+              "Clothing": {
+                "Id": "da28aeb2-5b62-4bbf-b812-4ce22e3083e2",
+                "Path": "models/citizen_clothes/hair/mutton_chops/mutton_chops.clothing"
+              },
+              "Tint": 0.80294436
+            },
+            {
+              "Clothing": {
+                "Id": "218efe2c-3ef7-4f12-8627-df02f29b424f",
+                "Path": "models/citizen_clothes/glasses/party_glasses/party_glasses.clothing"
+              },
+              "Tint": 0.6582045
+            },
+            {
+              "Clothing": {
+                "Id": "70d83dba-bc7d-4141-9e67-bd4869b207c7",
+                "Path": "models/citizen_clothes/hair/hair_bobcut/hair_bobcut.clothing"
               }
             }
           ],
@@ -3664,7 +4131,8 @@
     "perkedel.zuuljedus_playermodel#267963",
     "playermodelports.combine#115229",
     "playermodelports.cssgign#115223",
-    "roomfield.skeletom#20023"
+    "roomfield.skeletom#20023",
+    "shadb.wizardhat#90744"
   ],
   "__version": 3
 }
