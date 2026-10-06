@@ -74,6 +74,20 @@ public static class ClothingFitter
 		public SkinnedGeometry Garment;
 		public List<Draw> Draws = new();
 		public long Milliseconds;
+
+		// The fit in the stock pose and proportions, for rough levels to follow.
+		public Vec3[] StockFit;
+
+		// The garment's bones in the body's rest pose, in the garment's own bone order.
+		public Vec3[] BonePositions;
+		public float[][] BoneRotations;
+
+		// The fitted model's skeleton: the garment's bones, less the ones the body lacks, plus
+		// the stock bones that stand in for those. Parents first.
+		public List<string> BoneNames = new();
+		public List<int> BoneParents = new();
+		public List<Vec3> OutPositions = new();
+		public List<float[]> OutRotations = new();
 	}
 
 	// One draw call's worth of a fitted garment: what goes into one mesh.
@@ -115,7 +129,8 @@ public static class ClothingFitter
 	static readonly Dictionary<string, Model> fitted = new();
 	static readonly Dictionary<string, Job> pending = new();
 	static readonly HashSet<string> failed = new();
-	static readonly HashSet<string> skinned = new();   // garments that draw part of themselves with the body's skin
+	static readonly Dictionary<string, bool> skinned = new();   // per garment, whether it draws part of itself with the body's skin
+	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under
 	static int generation;
 
 	/// <summary>
@@ -127,9 +142,9 @@ public static class ClothingFitter
 		Array.Clear( references, 0, references.Length );
 		bodies.Clear();
 		fitted.Clear();
+		shapes.Clear();
 		pending.Clear();
 		failed.Clear();
-		skinned.Clear();
 		generation++;
 	}
 
@@ -152,16 +167,23 @@ public static class ClothingFitter
 	/// is ready. Not called for the finished model, that is what the task returns.
 	/// </param>
 	/// <param name="withoutSkin">Leave out the parts of the garment that are drawn with the body's skin material. See <see cref="HasSkin"/>.</param>
-	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null, bool withoutSkin = false )
+	/// <param name="under">
+	/// Another garment this one is worn under: hair under a hat. The hair is fitted so that it
+	/// doesn't come through the hat, on any body, the stock one included.
+	/// </param>
+	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null, bool withoutSkin = false, string under = null )
 	{
 		if ( body is null || string.IsNullOrEmpty( garmentPath ) )
 			return Task.FromResult<Model>( null );
+		return FitAsync( Normalize( body.ResourcePath ), garmentPath, madeFor, onRough, withoutSkin, under );
+	}
 
-		string bodyPath = Normalize( body.ResourcePath );
-		if ( bodyPath == ReferencePaths[(int)madeFor] )
+	static Task<Model> FitAsync( string bodyPath, string garmentPath, BodyKind madeFor, Action<Model> onRough, bool withoutSkin, string under )
+	{
+		if ( bodyPath == ReferencePaths[(int)madeFor] && under == null )
 			return Task.FromResult<Model>( null );
 
-		string key = $"{bodyPath}|{Normalize( garmentPath )}{(withoutSkin ? "|no skin" : "")}";
+		string key = $"{bodyPath}|{Normalize( garmentPath )}{(withoutSkin ? "|no skin" : "")}{(under != null ? "|under " + Normalize( under ) : "")}";
 		if ( fitted.TryGetValue( key, out var cached ) && cached.IsValid() )
 			return Task.FromResult( cached );
 		if ( failed.Contains( key ) )
@@ -171,7 +193,7 @@ public static class ClothingFitter
 		if ( !pending.TryGetValue( key, out var job ) || job.Task.IsCompleted )
 		{
 			pending[key] = job = new Job();
-			job.Task = FitJob( bodyPath, garmentPath, madeFor, key, job, withoutSkin );
+			job.Task = FitJob( bodyPath, garmentPath, madeFor, key, job, withoutSkin, under );
 		}
 
 		if ( onRough != null && !job.Task.IsCompleted )
@@ -187,9 +209,17 @@ public static class ClothingFitter
 	/// True if this garment draws part of itself with the body's skin material. Some clothing
 	/// does that: it hides a part of the body and carries its own copy of that skin instead, cut
 	/// to sit under the cloth. The copy has the stock body's shape, which is no use on another
-	/// body. Known once the garment has been fitted.
+	/// body.
 	/// </summary>
-	public static bool HasSkin( string garmentPath ) => skinned.Contains( Normalize( garmentPath ) );
+	public static bool HasSkin( string garmentPath )
+	{
+		string path = Normalize( garmentPath );
+		if ( skinned.TryGetValue( path, out bool has ) ) return has;
+		var model = Model.Load( garmentPath );
+		has = model.IsValid() && !model.IsError && model.Materials.Any( m => m.IsValid() && IsSkin( m.ResourcePath ) );
+		skinned[path] = has;
+		return has;
+	}
 
 	// The citizen's skin materials sit in models/citizen/skin, the humans' in
 	// models/citizen_human/bodies/male and female (body_mode_dark, female_body_mode_dark,
@@ -202,7 +232,24 @@ public static class ClothingFitter
 		return path.Contains( "/bodies/" ) && System.IO.Path.GetFileName( path ).Contains( "body" );
 	}
 
-	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin )
+	// The shape of a garment on a body, in the stock pose, for something else to be fitted
+	// under it. Fitted first if it hasn't been; on the stock body it is the garment as made.
+	static async Task<TriMesh> ShapeAsync( string bodyPath, string garmentPath, BodyKind madeFor )
+	{
+		if ( bodyPath == ReferencePaths[(int)madeFor] )
+		{
+			var file = ReadCompiled( garmentPath );
+			return await OnWorker( () => { var geo = CompiledModel.Read( file ); return new TriMesh( geo.Positions, geo.Indices ); } );
+		}
+
+		await FitAsync( bodyPath, garmentPath, madeFor, null, false, null );
+		await GameTask.MainThread();
+		if ( !shapes.TryGetValue( $"{bodyPath}|{Normalize( garmentPath )}", out var shape ) )
+			throw new FitException( $"{NameOf( garmentPath )} couldn't be fitted, so nothing can go under it" );
+		return await OnWorker( () => new TriMesh( shape.Positions, shape.Indices ) );
+	}
+
+	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin, string under )
 	{
 		int started = generation;
 		try
@@ -218,24 +265,33 @@ public static class ClothingFitter
 			await GameTask.MainThread();
 			if ( started != generation ) return null;   // Clear() was called meanwhile, whoever wants this will ask again
 
+			TriMesh underMesh = null;
+			if ( under != null )
+			{
+				underMesh = await ShapeAsync( bodyPath, under, madeFor );
+				await GameTask.MainThread();
+				if ( started != generation ) return null;
+				Log.Info( $"ClothingFitter: fitting {NameOf( garmentPath )} under {NameOf( under )} ({underMesh.TriCount} triangles)" );
+			}
+
 			var file = ReadCompiled( garmentPath );
 			var levels = await OnWorker( () => CompiledModel.ReadLods( file ) );
 			if ( started != generation ) return null;
-			if ( levels.Any( level => level.Draws.Any( draw => IsSkin( draw.Material ) ) ) )
-				skinned.Add( Normalize( garmentPath ) );
 			var atlases = ReadAtlases( levels );
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
 			// garment in the queue get done before anyone's detailed ones.
 			var done = new List<Fitted>();
 			Model model = null;
-			long worker = 0;
+			long worker = 0, roughest = 0;
 			double main = 0;
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh ) );
 				if ( started != generation ) return null;
+				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
+				if ( i == 0 ) shapes[key] = (result.StockFit, level.Indices);
 
 				var building = System.Diagnostics.Stopwatch.StartNew();
 				done.Insert( 0, result );
@@ -248,9 +304,28 @@ public static class ClothingFitter
 				foreach ( var show in job.Watching ) show( model );
 			}
 
+			// The rough levels were fitted on their own, which on a body far from the stock
+			// one leaves them a little off the detailed level. Now that it's there, they follow it.
+			if ( levels.Count > 1 )
+			{
+				for ( int i = 1; i < levels.Count; i++ )
+				{
+					var level = levels[i];
+					var detailed = done[0];
+					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed ) );
+					if ( started != generation ) return null;
+					done[i] = result;
+					worker += result.Milliseconds;
+				}
+
+				var building = System.Diagnostics.Stopwatch.StartNew();
+				model = Build( done, $"fitted/{key}/final" );
+				main += building.Elapsed.TotalMilliseconds;
+			}
+
 			job.Watching.Clear();
 			fitted[key] = model;
-			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {done[^1].Milliseconds} ms)" );
+			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {roughest} ms)" );
 			return model;
 		}
 		catch ( TaskCanceledException )
@@ -625,14 +700,31 @@ public static class ClothingFitter
 		return atlases;
 	}
 
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases )
+	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
-		var positions = GarmentFit.Fit( garment.Positions, garment.Indices, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found );
+		// A garment's own copy of the skin is cut to lie right on the body. Left in the fit
+		// when the skin is to be shown instead, it is what gets lifted over a bump of the body,
+		// and the cloth over it stays put. So it is fitted without that copy.
+		var skinCopy = GarmentFit.SkinCopies( garment, IsSkin );
+		var cloth = garment.Indices;
+		if ( withoutSkin )
+		{
+			var keep = new List<int>();
+			for ( int d = 0; d < garment.Draws.Count; d++ )
+				if ( !skinCopy[d] ) keep.AddRange( garment.Indices.Skip( garment.Draws[d].First ).Take( garment.Draws[d].Count ) );
+			cloth = keep.ToArray();
+		}
+		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under );
+		var stockFit = positions;
 
-		// The fit happens in the stock skeleton's proportions. Take it back to the body's.
+		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
+		// the body's.
 		positions = target.Pose.FromStockProportions( positions, bones, garment.BoneWeight, reference.Geo );
+		positions = target.Pose.ToBodyRest( positions, bones, garment.BoneWeight );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
@@ -661,11 +753,63 @@ public static class ClothingFitter
 			morphs[name] = (Shading.Turned( garment.Positions, positions, garment.Indices, move ), Shading.Turned( garment.Positions, positions, garment.Indices, turn ));
 		}
 
-		// One mesh per draw call, each with only the vertices it uses.
-		var result = new Fitted { Garment = garment };
-		foreach ( var (first, count, material) in garment.Draws )
+		// The garment's bones in the body's rest pose.
+		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][] };
+		var boneMap = GarmentFit.BoneMap( garment, reference.Geo );
+		for ( int i = 0; i < garment.BoneNames.Length; i++ )
 		{
-			if ( withoutSkin && IsSkin( material ) ) continue;
+			int s = boneMap[i];
+			// A bone the body has is the body's bone: its frame is whatever the body says it
+			// is, since that is what bone merging will hand the garment. Anything else hangs
+			// off the nearest such bone where the garment itself puts it.
+			(result.BonePositions[i], result.BoneRotations[i]) =
+				s >= 0 && target.Pose.BodyHas[s] && reference.Geo.BoneNames[s] == garment.BoneNames[i] ? (target.Pose.RestPositions[s], target.Pose.RestRotations[s])
+				: s >= 0 ? target.Pose.GarmentBoneRest( s, garment.BonePositions[i], garment.BoneRotations[i] )
+				: (garment.BonePositions[i], garment.BoneRotations[i]);
+		}
+
+		// A stock bone the body doesn't have (an older citizen without the twist bones, say)
+		// is left in its bind pose by bone merging while the rest of the body animates. So
+		// whatever is skinned to one is skinned to the nearest ancestor the body does have
+		// instead. The garment's own bones, like a hat's jiggle bone, are kept: those follow
+		// their parent. That ancestor needn't be in the garment at all (a shirt's sleeves can
+		// hang off the twist bones alone), so the fitted model gets a skeleton of its own.
+		var stock = reference.Geo;
+		var stockIndex = new Dictionary<string, int>();
+		for ( int i = 0; i < stock.BoneNames.Length; i++ ) stockIndex[stock.BoneNames[i]] = i;
+		var outIndex = new Dictionary<string, int>();
+		var redirect = new int[garment.BoneNames.Length];   // garment bone -> bone of the fitted model
+		for ( int i = 0; i < garment.BoneNames.Length; i++ )
+		{
+			string name = garment.BoneNames[i];
+			if ( stockIndex.TryGetValue( name, out int s ) && !target.Pose.BodyHas[s] )
+			{
+				int a = stock.BoneParents[s];
+				while ( a >= 0 && !target.Pose.BodyHas[a] ) a = stock.BoneParents[a];
+				if ( a >= 0 ) { name = stock.BoneNames[a]; s = a; }
+			}
+
+			if ( !outIndex.TryGetValue( name, out int index ) )
+			{
+				index = result.BoneNames.Count;
+				outIndex[name] = index;
+				result.BoneNames.Add( name );
+				result.BoneParents.Add( garment.BoneParents[i] >= 0 ? redirect[garment.BoneParents[i]] : -1 );
+				// A stand-in is a bone the body has, so it is the body's bone, frame and all.
+				var (position, rotation) = name == garment.BoneNames[i]
+					? (result.BonePositions[i], result.BoneRotations[i])
+					: (target.Pose.RestPositions[s], target.Pose.RestRotations[s]);
+				result.OutPositions.Add( position );
+				result.OutRotations.Add( rotation );
+			}
+
+			redirect[i] = index;
+		}
+
+		for ( int d = 0; d < garment.Draws.Count; d++ )
+		{
+			var (first, count, material) = garment.Draws[d];
+			if ( withoutSkin && skinCopy[d] ) continue;
 
 			var draw = new Draw { Material = material };
 			var remap = new Dictionary<int, int>();
@@ -676,7 +820,7 @@ public static class ClothingFitter
 				{
 					local = draw.Vertices.Count;
 					remap[v] = local;
-					draw.Vertices.Add( MakeVertex( garment, v, positions[v], normals[v], tangents[v], signs[v] ) );
+					draw.Vertices.Add( MakeVertex( garment, v, positions[v], normals[v], tangents[v], signs[v], redirect ) );
 				}
 				draw.Indices.Add( local );
 			}
@@ -745,16 +889,17 @@ public static class ClothingFitter
 		var g = levels[0].Garment;
 		var builder = Model.Builder.WithName( name );
 
-		// Same skeleton as the original garment, in the same order: the vertices index it.
-		// The builder wants each bone in model space. Its doc comment says "relative to the
-		// parent", but the engine's own importers (Sandbox.Mounting.GoldSrc) pass model space,
-		// and parent-relative transforms come out as a wrecked bind pose.
-		for ( int i = 0; i < g.BoneNames.Length; i++ )
+		// The fitted model's skeleton, in the body's rest pose. The builder wants each bone in
+		// model space. Its doc comment says "relative to the parent", but the engine's own
+		// importers (Sandbox.Mounting.GoldSrc) pass model space, and parent-relative
+		// transforms come out as a wrecked bind pose.
+		var skeleton = levels[0];
+		for ( int i = 0; i < skeleton.BoneNames.Count; i++ )
 		{
-			var p = g.BonePositions[i];
-			var r = g.BoneRotations[i];
-			int parent = g.BoneParents[i];
-			builder.AddBone( g.BoneNames[i], new Vector3( p.X, p.Y, p.Z ), new Rotation( r[0], r[1], r[2], r[3] ), parent >= 0 ? g.BoneNames[parent] : null );
+			var p = skeleton.OutPositions[i];
+			var r = skeleton.OutRotations[i];
+			int parent = skeleton.BoneParents[i];
+			builder.AddBone( skeleton.BoneNames[i], new Vector3( p.X, p.Y, p.Z ), new Rotation( r[0], r[1], r[2], r[3] ), parent >= 0 ? skeleton.BoneNames[parent] : null );
 		}
 
 		for ( int lod = 0; lod < g.LodDistances.Length && lod < 8; lod++ )
@@ -792,7 +937,7 @@ public static class ClothingFitter
 		return builder.Create();
 	}
 
-	static FittedVertex MakeVertex( SkinnedGeometry g, int v, Vec3 p, Vec3 n, Vec3 t, float sign )
+	static FittedVertex MakeVertex( SkinnedGeometry g, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] redirect )
 	{
 		// Weights go out as bytes and have to add up to exactly 255.
 		Span<int> bone = stackalloc int[4];
@@ -802,7 +947,7 @@ public static class ClothingFitter
 		{
 			int index = g.BoneIndex[v * 4 + j];
 			float w = index >= 0 ? g.BoneWeight[v * 4 + j] : 0f;
-			bone[j] = Math.Max( index, 0 );
+			bone[j] = index >= 0 ? redirect[index] : 0;
 			weight[j] = (int)MathF.Round( w * 255f );
 			total += weight[j];
 			if ( weight[j] > weight[heaviest] ) heaviest = j;

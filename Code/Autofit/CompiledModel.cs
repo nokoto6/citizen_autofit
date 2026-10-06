@@ -83,6 +83,14 @@ public static class CompiledModel
 		return ReadMeshes( model, model.MeshesOf( 0 ), 255 );
 	}
 
+	/// <summary>Just the skeleton, for a model whose meshes can't be read.</summary>
+	public static SkinnedGeometry ReadSkeletonOnly( byte[] file )
+	{
+		var result = new SkinnedGeometry();
+		ReadSkeleton( Open( file ).Doc, result );
+		return result;
+	}
+
 	/// <summary>
 	/// Every LOD, most detailed first. Levels that draw the same meshes come back as one entry
 	/// with all their bits in <see cref="SkinnedGeometry.LodMask"/>, so a model without LODs
@@ -395,7 +403,8 @@ public static class CompiledModel
 			{
 				int at = attributes + a * 56;
 				int end = Array.IndexOf( file, (byte)0, at, 32 );
-				string name = Encoding.ASCII.GetString( file, at, (end < 0 ? at + 32 : end) - at );
+				// Older compilers wrote these in lower case, and "blendweights" with an s.
+				string name = Encoding.ASCII.GetString( file, at, (end < 0 ? at + 32 : end) - at ).ToUpperInvariant();
 				int semanticIndex = BitConverter.ToInt32( file, at + 32 );
 				int format = BitConverter.ToInt32( file, at + 36 );
 				int offset = BitConverter.ToInt32( file, at + 40 );
@@ -405,7 +414,7 @@ public static class CompiledModel
 				else if ( name == "TEXCOORD" ) { uvAt = offset; uvFormat = format; }
 				else if ( name == "NORMAL" ) { normalAt = offset; normalFormat = format; }
 				else if ( name == "BLENDINDICES" ) { indexAt = offset; indexFormat = format; }
-				else if ( name == "BLENDWEIGHT" ) weightAt = offset;
+				else if ( name == "BLENDWEIGHT" || name == "BLENDWEIGHTS" ) weightAt = offset;
 			}
 
 			if ( posAt < 0 )

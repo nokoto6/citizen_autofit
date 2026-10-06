@@ -136,6 +136,10 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	// way to reach the scene open in the editor, so they sign in here themselves.
 	static readonly HashSet<FitDresser> Live = new();
 
+	// Garments still fading in, and when each started.
+	readonly Dictionary<SkinnedModelRenderer, float> fading = new();
+	const float FadeTime = 0.3f;
+
 	protected override void OnUpdate()
 	{
 		Live.Add( this );
@@ -151,6 +155,18 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 	protected override void OnPreRender()
 	{
+		foreach ( var (renderer, started) in fading.ToArray() )
+		{
+			float t = (Time.Now - started) / FadeTime;
+			if ( !renderer.IsValid() || t >= 1f )
+			{
+				if ( renderer.IsValid() ) renderer.Tint = renderer.Tint.WithAlpha( 1 );
+				fading.Remove( renderer );
+				continue;
+			}
+			renderer.Tint = renderer.Tint.WithAlpha( t );
+		}
+
 		if ( !BodyTarget.IsValid() ) return;
 
 		// A model built at runtime has no per-bone extents, so the engine works out the bounds
@@ -259,8 +275,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		};
 		if ( Overtaken() ) return;
 
-		// Ask for everything up front so the garments are fitted side by side.
-		var wearing = new List<(Clothing Item, string StockPath, Task<bool> Fitted)>();
+		// Which model of each garment to wear.
+		var models = new List<(ClothingContainer.ClothingEntry Entry, string StockPath, ClothingFitter.BodyKind MadeFor)>();
 		foreach ( var entry in worn )
 		{
 			var item = entry.Clothing;
@@ -287,8 +303,16 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			if ( string.IsNullOrEmpty( stockPath ) )
 				continue;
 
-			wearing.Add( (item, stockPath, WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken )) );
+			models.Add( (entry, stockPath, madeFor) );
 		}
+
+		// Hair goes under the hat, if there is one: fitted so that it doesn't come through it.
+		string hat = models.FirstOrDefault( x => HairGoesUnder( x.Entry.Clothing ) ).StockPath;
+
+		// Ask for everything up front so the garments are fitted side by side.
+		var wearing = new List<(Clothing Item, string StockPath, Task<bool> Fitted)>();
+		foreach ( var (entry, stockPath, madeFor) in models )
+			wearing.Add( (entry.Clothing, stockPath, WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken, IsHair( entry.Clothing ) ? hat : null )) );
 
 		int fittedCount = 0, stockCount = 0;
 		var skinless = new HashSet<Clothing>();
@@ -332,7 +356,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
-	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, Material skin, Material eyes, Func<bool> overtaken )
+	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, Material skin, Material eyes, Func<bool> overtaken, string under = null )
 	{
 		var item = entry.Clothing;
 		SkinnedModelRenderer renderer = null;
@@ -369,10 +393,19 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			if ( item.AllowTintSelect )
 				renderer.Tint = item.TintSelection.Evaluate( entry.Tint?.Clamp( 0, 1 ) ?? item.TintDefault );
 
+			// Something appearing out of nothing, a moment after the character did, is
+			// better eased in than popped in. Swapping in a more detailed model later isn't.
+			renderer.Tint = renderer.Tint.WithAlpha( 0 );
+			fading[renderer] = Time.Now;
+
 			go.Enabled = true;
 		}
 
-		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, RemoveSkinFromClothing ) : null;
+		// Only a garment that carries a copy of the skin has anything to lose. Clearing the
+		// skin lifts cloth that sat level with it, which is wrong for a boot's sole under a
+		// foot that stays hidden anyway.
+		bool withoutSkin = RemoveSkinFromClothing && ClothingFitter.HasSkin( stockPath );
+		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under ) : null;
 		if ( overtaken() )
 			return false;
 
@@ -396,15 +429,35 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			return ClothingContainer.CreateFromLocalUser();
 
 		// Going through Add() drops items that can't be worn together, like the stock dresser.
+		// Except hair with a hat: the engine keeps those apart because hair comes through a
+		// hat, and here the hair is fitted under it instead. Not under a mask over the whole
+		// head: hair would only show in its eye holes.
 		var container = new ClothingContainer();
 		foreach ( var entry in Clothing )
 		{
-			if ( entry?.Clothing is not null )
-				container.Add( entry );
+			if ( entry?.Clothing is null || IsHair( entry.Clothing ) ) continue;
+			container.Add( entry );
+		}
+
+		foreach ( var entry in Clothing )
+		{
+			if ( entry?.Clothing is null || !IsHair( entry.Clothing ) ) continue;
+			if ( container.Clothing.All( x => HairGoesUnder( x.Clothing ) || x.Clothing.CanBeWornWith( entry.Clothing ) ) )
+				container.Clothing.Add( entry );
 		}
 
 		return container;
 	}
+
+	// A hat on top of the head, which hair can be fitted under. Not a mask or a helmet that
+	// also covers the face, or a costume head in place of the head.
+	static bool HairGoesUnder( Clothing item )
+	{
+		if ( !item.IsValid() || !item.Category.ToString().StartsWith( "Hat" ) ) return false;
+		var slots = item.SlotsUnder | item.SlotsOver;
+		return slots.HasFlag( Sandbox.Clothing.Slots.HeadTop ) && !slots.HasFlag( Sandbox.Clothing.Slots.HeadBottom ) && !item.HideBody.HasFlag( Sandbox.Clothing.BodyGroups.Head );
+	}
+	static bool IsHair( Clothing item ) => item.IsValid() && item.Category.ToString().StartsWith( "Hair" );
 
 	static Material FirstMaterial( IEnumerable<string> paths )
 	{

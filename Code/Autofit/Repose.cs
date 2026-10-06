@@ -41,6 +41,23 @@ public sealed class Repose
 	/// </summary>
 	public List<(Vec3 At, Vec3 Shift)> Landmarks = new();
 
+	/// <summary>
+	/// The body's rest pose, per stock bone: where that bone is on the body and which way it
+	/// points, in the body's model space. A stock bone the body doesn't have is placed under
+	/// the nearest one it does have, where the stock skeleton puts it.
+	/// </summary>
+	public Vec3[] RestPositions;
+	public float[][] RestRotations;
+
+	/// <summary>Per stock bone, whether the body has a bone of that name.</summary>
+	public bool[] BodyHas;
+
+	// Per stock bone: the stock bind pose, to take things out of, and the rotation that
+	// carries something placed in it over to the body's rest pose.
+	Vec3[] stockPositions;
+	float[][] stockRotations;
+	float[][] carry;
+
 	public static Repose ToStockPose( SkinnedGeometry body, SkinnedGeometry stock )
 	{
 		var result = new Repose();
@@ -86,20 +103,68 @@ public sealed class Repose
 			scale[i] = Math.Clamp( ratios[i][ratios[i].Count / 2], 0.4f, 2.5f );
 		}
 
-		// Per bone: rotation, scale and offset that take a point from the body's rest pose to
-		// the stock one.
+		int stockCount = stock.BoneNames.Length;
+		var bodyBone = new int[stockCount];   // per stock bone, the body's bone of that name
+		Array.Fill( bodyBone, -1 );
+		for ( int i = 0; i < bones; i++ )
+			if ( from[i] == i ) bodyBone[to[i]] = i;
+
+		// Per stock bone the body has: the rotation from the stock bind pose to the body's
+		// rest pose, the difference of the two bone frames. It is exactly what bone merging
+		// applies to a garment made in the stock pose.
+		result.carry = new float[stockCount][];
+		for ( int s = 0; s < stockCount; s++ )
+			if ( bodyBone[s] >= 0 ) result.carry[s] = Quat.Multiply( body.BoneRotations[bodyBone[s]], Quat.Inverse( stock.BoneRotations[s] ) );
+
+		// Per body bone: rotation, scale and offset that take a point from the body's rest
+		// pose to the stock one.
 		var turn = new float[bones][];
 		var shrink = new float[bones];
 		var offset = new Vec3[bones];
-		result.BoneScale = new float[stock.BoneNames.Length];
+		result.BoneScale = new float[stockCount];
 		Array.Fill( result.BoneScale, 1f );
 		for ( int i = 0; i < bones; i++ )
 		{
 			if ( to[i] < 0 ) continue;
-			turn[i] = Quat.Multiply( stock.BoneRotations[to[i]], Quat.Inverse( body.BoneRotations[from[i]] ) );
+			turn[i] = Quat.Inverse( result.carry[to[i]] );
 			shrink[i] = 1f / scale[from[i]];
 			offset[i] = stock.BonePositions[to[i]] - Quat.Rotate( turn[i], body.BonePositions[from[i]] ) * shrink[i];
 			if ( from[i] == i ) result.BoneScale[to[i]] = scale[i];
+		}
+
+		// The body's rest pose in the stock skeleton's terms. Clothing is built in this pose,
+		// so it is bone-merged onto the body as if it had been made for it. A garment made in
+		// the citizen's bind pose and merged onto a body with another one comes out
+		// mangled once the body animates, even with every bone name matching.
+		result.RestPositions = new Vec3[stockCount];
+		result.RestRotations = new float[stockCount][];
+		result.stockPositions = stock.BonePositions;
+		result.stockRotations = stock.BoneRotations;
+		result.BodyHas = new bool[stockCount];
+		for ( int s = 0; s < stockCount; s++ )   // parents come first here too
+		{
+			int b = bodyBone[s];
+			if ( b >= 0 )
+			{
+				result.BodyHas[s] = true;
+				result.RestPositions[s] = body.BonePositions[b];
+				result.RestRotations[s] = body.BoneRotations[b];
+				continue;
+			}
+
+			int parent = stock.BoneParents[s];
+			if ( parent < 0 )
+			{
+				result.carry[s] = new[] { 0f, 0f, 0f, 1f };
+				result.RestPositions[s] = stock.BonePositions[s];
+				result.RestRotations[s] = stock.BoneRotations[s];
+				continue;
+			}
+
+			// Where the parent went, the child goes too.
+			result.carry[s] = result.carry[parent];
+			result.RestPositions[s] = result.RestPositions[parent] + Quat.Rotate( result.carry[s], stock.BonePositions[s] - stock.BonePositions[parent] );
+			result.RestRotations[s] = Quat.Multiply( result.carry[s], stock.BoneRotations[s] );
 		}
 
 		for ( int i = 0; i < bones; i++ )
@@ -155,6 +220,46 @@ public sealed class Repose
 		}
 
 		return weight > 1e-6f ? sum / weight : 1f;
+	}
+
+	/// <summary>
+	/// Takes a garment from the stock bind pose into the body's rest pose, bone by bone, the
+	/// way bone merging will. With the garment built in this pose and with <see cref="RestPositions"/>
+	/// as its bones, the body's animation moves it exactly as it moves the body.
+	/// </summary>
+	/// <param name="boneIndex">Four bone slots per garment vertex, as stock bone indices.</param>
+	public Vec3[] ToBodyRest( Vec3[] fitted, int[] boneIndex, float[] boneWeight )
+	{
+		var turn = carry;
+		var result = new Vec3[fitted.Length];
+		for ( int v = 0; v < fitted.Length; v++ )
+		{
+			var sum = Vec3.Zero;
+			float weight = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = boneIndex[v * 4 + j];
+				float w = boneWeight[v * 4 + j];
+				if ( bone < 0 || w <= 0 ) continue;
+				sum += (Quat.Rotate( turn[bone], fitted[v] - stockPositions[bone] ) + RestPositions[bone]) * w;
+				weight += w;
+			}
+
+			result[v] = weight > 1e-6f ? sum / weight : fitted[v];
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// A garment bone's rest transform on the body. For a bone the stock skeleton has, the
+	/// body's; for one it doesn't (a hat's own jiggle bone), placed under the nearest stock
+	/// bone the way the garment itself places it.
+	/// </summary>
+	public (Vec3 Position, float[] Rotation) GarmentBoneRest( int stockBone, Vec3 position, float[] rotation )
+	{
+		var c = carry[stockBone];
+		return (RestPositions[stockBone] + Quat.Rotate( c, position - stockPositions[stockBone] ), Quat.Multiply( c, rotation ));
 	}
 
 	/// <summary>

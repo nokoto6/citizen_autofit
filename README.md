@@ -32,8 +32,10 @@ fitted when it was put on.
 | Fit At Runtime | Off: clothing is worn as is, for comparison. |
 | Version | Which version of each garment to wear: Auto, Citizen, Human Male, Human Female. Auto goes by the skeleton. It tells a citizen from a human well, but not a male human from a female one, so set it by hand when it guesses wrong. |
 | Height | How tall the character is, 0 to 1, same as the stock Dresser. Scales the body through its animation graph; the clothing follows. |
-| Remove Skin From Clothing | Some clothing hides a part of the body and draws its own copy of that skin as part of the garment (37 of the stock citizen garments, 63 of the human ones). The copy has the stock body's shape. With this on, such clothing is worn without it and the body part stays visible. |
+| Remove Skin From Clothing | Some clothing hides a part of the body and draws its own copy of that skin as part of the garment (37 of the stock citizen garments, 63 of the human ones). The copy has the stock body's shape. With this on, such clothing is worn without it (and without the layers painted on it, like a cap of chest hair) and the body part stays visible. Such clothing was never made to clear the body it hid, so it is also held a few millimetres above the skin wherever it sat level with it or creased into it. |
 | Apply On Start | Dress when the component starts. |
+
+A garment that appears out of nothing (the first LOD of a fit arriving a moment after the character) fades in over 0.3 s; later LOD swaps don't.
 
 Buttons: **Apply Clothing**, **Clear Clothing**, **Randomize** (same groups and odds as the stock
 Dresser), **Refit Clothing** (forget everything fitted so far and dress again; use it after
@@ -85,12 +87,27 @@ workshop player models, each with a Fit Dresser.
 - **Rigid things stay rigid.** A piece whose vertices all share the same skin weights can't bend
   in animation, so it is moved as a whole: rotated and shifted, scaled only if it wraps the body.
   Glasses keep their lenses in the frame, a sword on a strap doesn't bend with the neck.
-- **Hair made of cards.** Each card follows the scalp on its own.
+- **A hat over hair.** The engine never wears the two together, because hair comes up through
+  a hat. Here the hair is fitted under the hat: any bit of hair that can't be reached from the
+  head without going through the hat is pulled back under it, what hangs out below the brim
+  stays, what sits deep inside the crown isn't seen anyway. Tall and floppy hats too. Masks
+  over the whole head (a balaclava, boxing headgear, a costume head) still drop the hair as the
+  engine does: it would only show in their eye holes. Works on the stock body too.
+- **Hair made of cards.** Each card follows the scalp on its own. A long one, a dreadlock from
+  the crown to the chest, bends along its length instead of moving as one piece: a bigger chest
+  moves its lower end, not the part on the head.
+- **Older citizen rigs.** A model made on an earlier citizen skeleton (the old twist bone names,
+  no helper bones, a bind pose that faces another way) breaks stock clothing on merge: the engine
+  leaves a garment bone the body doesn't have in its bind pose while the rest animates, so
+  sleeves that hang off the twist bones stay in the A-pose. Here whatever is skinned to such a
+  bone is skinned to the nearest bone the body does have, and the fitted model is built in the
+  body's own bind pose.
 - **Normals.** Each normal is turned the same way the surface around its vertex turned, so
   shading stays right where a garment bends around a new shape, and hard edges and smoothing stay
   as the artist made them. Tangents are rebuilt from the UVs.
 - **LODs.** Every LOD of a garment is fitted and the fitted model switches between them at the
-  garment's own distances.
+  garment's own distances. The rough ones are fitted first so the garment is worn sooner, then
+  brought in line with the detailed fit once it is there.
 - **Morph targets.** A beard or a moustache keeps following the mouth: the garment's morphs are
   read from its morph texture, turned and scaled with the fit and put on the fitted model.
 - **Jiggle bones.** They are run by the garment's animation graph, which a model built at
@@ -103,7 +120,9 @@ workshop player models, each with a Fit Dresser.
 
 - A garment's material groups are not carried over to the fitted model.
 - Clothing follows bones by name. A model that shares fewer than half of the bones gets a
-  warning in the log and clothing won't sit on it properly.
+  warning in the log and clothing won't sit on it properly. Rigs with other naming (Mixamo,
+  Source's bip01, Unreal's mannequin) are not mapped: the body has to be on the citizen's or
+  the humans' skeleton.
 - Each garment is fitted to the body on its own. Two layers don't know about each other, so on a
   body with hard edges a shirt can show through a jacket in places.
 - The dresser doesn't apply avatar age or skin tint, and doesn't network anything: every client
@@ -158,8 +177,9 @@ them.
 3. **Touch-up.** Vertices and points inside triangles that ended up under the new skin are pushed
    out to the gap they had on the stock body. Then the other way round: wherever a vertex of the
    skin comes up through the cloth, the cloth above it is lifted.
-4. **Build.** The result becomes a new skinned model with the garment's own skeleton and
-   weights, bone-merged onto the body like any other clothing.
+4. **Build.** The result becomes a new skinned model with the garment's own skeleton (less the
+   bones the body hasn't got, plus the ones that stand in for them) in the body's bind pose,
+   bone-merged onto the body like any other clothing.
 
 ## Layout
 

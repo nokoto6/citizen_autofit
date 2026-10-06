@@ -161,8 +161,15 @@ public static class GarmentFit
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
 	const float CoverReach = 0.02f * Units.Metre; // a skin vertex further out of the cloth than this is a bad match, not a bump
 	const float Hidden = 0.005f * Units.Metre;   // further under the stock skin than this was never meant to be seen
+	const float ClearGap = 0.004f * Units.Metre;  // what cloth that used to hide the skin is held above it once the skin shows
+	const float ClearDepth = 0.015f * Units.Metre; // how far under the skin such cloth may have dipped (a crease) and still be lifted
+	const float OnSkinCopy = 0.002f * Units.Metre; // a draw call this close to the garment's skin copy is a layer painted on it
+	const float TuckGap = 0.005f * Units.Metre;    // how far under a hat's surface hair that came through it is put back
+	const float TuckDepth = 0.002f * Units.Metre;  // how far under the skin the way out to a bit of hair starts; deeper, it would cross the edge of a hat sunk into the head
+	const float TuckFar = 0.4f * Units.Metre;      // hair further than this from the body can't be under a hat
 	const float Touching = 0.002f * Units.Metre; // rigid pieces this close together are parts of one object
 	const int LoosePieces = 16;                  // more rigid pieces than this in one heap is hair or the like, not an object
+	const float LooseLength = 0.15f * Units.Metre; // a loose piece longer than this bends like cloth rather than moving as one
 
 	// Points inside each triangle to test: centre, edge midpoints and one near each corner.
 	static readonly float[][] Samples =
@@ -174,8 +181,83 @@ public static class GarmentFit
 	/// <param name="boneIndex">Four bone slots per garment vertex, as indices into the stock body's bones (-1 for none).</param>
 	/// <param name="skinMove">What <see cref="BodyMap"/> worked out for this pair of bodies.</param>
 	/// <param name="skinFound"><see cref="BodyMap.Found"/>, or null if every vertex was found.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null )
+	/// <summary>
+	/// Moves a rough version of a garment the way its detailed version moved: each vertex
+	/// takes the displacement of the nearest point of the detailed one. The rough LODs of a
+	/// garment are fitted on their own first, to be worn sooner, then brought in line with the
+	/// detailed fit this way so that they don't pop against it.
+	/// </summary>
+	/// <param name="detailedOld">The detailed version as it was.</param>
+	/// <param name="detailedNew">The detailed version as fitted.</param>
+	/// <summary>
+	/// Which of a garment's draw calls are its copy of the body's skin. The ones in a skin
+	/// material, and the layers painted over those (a cap of chest hair a millimetre above
+	/// the skin copy, a tattoo): they were made to sit on the garment's skin, not the body's.
+	/// </summary>
+	/// <param name="isSkinMaterial">Whether a material is one of the body's skin materials.</param>
+	public static bool[] SkinCopies( SkinnedGeometry garment, Func<string, bool> isSkinMaterial )
 	{
+		var result = new bool[garment.Draws.Count];
+		var skinTris = new List<int>();
+		for ( int d = 0; d < result.Length; d++ )
+		{
+			result[d] = isSkinMaterial( garment.Draws[d].Material );
+			if ( !result[d] ) continue;
+			for ( int i = garment.Draws[d].First; i < garment.Draws[d].First + garment.Draws[d].Count; i++ ) skinTris.Add( garment.Indices[i] );
+		}
+		if ( skinTris.Count == 0 ) return result;
+
+		var copy = new TriMesh( garment.Positions, skinTris.ToArray() );
+		for ( int d = 0; d < result.Length; d++ )
+		{
+			if ( result[d] ) continue;
+			var (first, count, _) = garment.Draws[d];
+			int onCopy = 0, seen = 0;
+			var done = new HashSet<int>();
+			for ( int i = first; i < first + count; i++ )
+			{
+				int v = garment.Indices[i];
+				if ( !done.Add( v ) ) continue;
+				seen++;
+				if ( copy.Nearest( garment.Positions[v], out _, out _ ) < OnSkinCopy ) onCopy++;
+			}
+			result[d] = seen > 0 && onCopy >= 0.9f * seen;
+		}
+
+		return result;
+	}
+
+	/// <returns>Per vertex, how far to move it. Goes into <see cref="Fit"/> as the given move.</returns>
+	public static Vec3[] Follow( Vec3[] verts, Vec3[] detailedOld, int[] detailedTris, Vec3[] detailedNew )
+	{
+		var surface = new TriMesh( detailedOld, detailedTris );
+		var result = new Vec3[verts.Length];
+		for ( int i = 0; i < verts.Length; i++ )
+		{
+			surface.Nearest( verts[i], out var point, out int tri );
+			int a = detailedTris[tri * 3], b = detailedTris[tri * 3 + 1], c = detailedTris[tri * 3 + 2];
+			Barycentric( point, detailedOld[a], detailedOld[b], detailedOld[c], out float u, out float v, out float w );
+			result[i] = (detailedNew[a] - detailedOld[a]) * u + (detailedNew[b] - detailedOld[b]) * v + (detailedNew[c] - detailedOld[c]) * w;
+		}
+
+		return result;
+	}
+
+	/// <param name="clearSkin">
+	/// Keep every bit of the cloth above the skin, even where it sat level with it or dipped
+	/// under. For a garment that hid the body part under it and so was never made to clear it:
+	/// a shirt whose creases dent into the arms. Once the body part is shown after all, it
+	/// would come through.
+	/// </param>
+	/// <param name="givenMove">
+	/// Where each vertex goes, worked out elsewhere (a rough level following a detailed one).
+	/// Only the collision passes run then: the given moves put the cloth in the right place,
+	/// but a coarse triangle still cuts through a bump the detailed level goes around.
+	/// </param>
+	/// <param name="under">A garment this one is worn under (hair under a hat), in the same stock pose. Whatever comes through it is put back under.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null )
+	{
+		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
 		var firstOf = new int[n];
 		for ( int i = verts.Length - 1; i >= 0; i-- )
@@ -232,6 +314,7 @@ public static class GarmentFit
 			gap0[i] = old.Inside( x ) ? -distance : distance;
 			if ( distance > 1e-7f * Units.Metre )
 				away[i] = (x - from) / distance * (gap0[i] >= 0 ? 1f : -1f);
+			if ( givenMove != null ) move[i] = givenMove[src];
 		}
 
 		// Loose cloth hanging between two limbs flips between them from vertex to vertex.
@@ -239,7 +322,7 @@ public static class GarmentFit
 		var edges = MeshTools.Edges( tris, weld );
 		var all = new bool[n];
 		Array.Fill( all, true );
-		MeshTools.Relax( move, all, edges, 2, 0.5f );
+		if ( givenMove == null ) MeshTools.Relax( move, all, edges, 2, 0.5f );
 
 		var fitted = new Vec3[n];
 		for ( int i = 0; i < n; i++ ) fitted[i] = pts[i] + move[i];
@@ -255,9 +338,11 @@ public static class GarmentFit
 			// Garments have geometry that was under the skin all along: caps that close a
 			// sleeve from the inside, hair roots, the tips of a pair of glasses. It has no gap
 			// to keep, and dragging it out takes the visible cloth around it along.
-			if ( oldGap < -Hidden ) return false;
+			if ( oldGap < -hidden ) return false;
 			float gap = other.SignedGap( p, out var s );
-			float need = MathF.Min( oldGap, GapCap ) - gap;
+			float want = MathF.Min( oldGap, GapCap );
+			if ( clearSkin ) want = MathF.Max( want, ClearGap );
+			float need = want - gap;
 			if ( need <= 1e-4f * Units.Metre || need > MaxPush ) return false;
 			Vec3 v = p - s;
 			float length = v.Length();
@@ -346,14 +431,21 @@ public static class GarmentFit
 			parts.Add( r );
 		}
 
+		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
 		foreach ( var parts in solids.Values )
 		{
 			// Dozens of pieces in a heap are not one object. That is hair cards, feathers or
 			// scales, which lie loosely on the body and follow it one by one, the way cloth
-			// would.
+			// would. A long one (a dreadlock from the crown down to the chest) doesn't even
+			// move as one: moved whole, it takes the average of what the skin did along its
+			// length and comes off the head when only the chest changed. It bends instead.
 			if ( parts.Count > LoosePieces )
 			{
-				foreach ( int r in parts ) FitRigid( rigid[r], pts, move, gap0, away, fitted, Push, true );
+				foreach ( int r in parts )
+				{
+					if ( (hi[r] - lo[r]).Length() > LooseLength ) bends.Add( piece[rigid[r][0]] );
+					else FitRigid( rigid[r], pts, move, gap0, away, fitted, Push, true );
+				}
 				continue;
 			}
 
@@ -365,7 +457,7 @@ public static class GarmentFit
 		var clothTris = new List<int>();
 		foreach ( var (root, idx) in members )
 		{
-			if ( IsRigid( idx, firstOf, boneIndex, boneWeight ) ) continue;
+			if ( !bends.Contains( root ) && IsRigid( idx, firstOf, boneIndex, boneWeight ) ) continue;
 
 			// Interpolation and smoothing can leave a vertex a little under the new skin.
 			for ( int pass = 0; pass < 2; pass++ )
@@ -411,7 +503,7 @@ public static class GarmentFit
 				for ( int t = 0; t < mine.Count; t += 3 )
 				{
 					// A triangle with a corner deep under the stock skin dives into the body on purpose.
-					if ( gap0[mine[t]] < -Hidden || gap0[mine[t + 1]] < -Hidden || gap0[mine[t + 2]] < -Hidden ) continue;
+					if ( gap0[mine[t]] < -hidden || gap0[mine[t + 1]] < -hidden || gap0[mine[t + 2]] < -hidden ) continue;
 					for ( int k = 0; k < Samples.Length; k++ )
 					{
 						var bw = Samples[k];
@@ -429,11 +521,87 @@ public static class GarmentFit
 			}
 		}
 
-		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound );
+		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound, clearSkin );
+		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
 		return result;
+	}
+
+	/// <summary>
+	/// Hair under a hat. The engine won't wear the two together because hair comes up through
+	/// a hat, so this puts whatever comes through back under it. Hair grows out of the head, so
+	/// a bit of hair is through the hat when the way to it from inside the head crosses the hat:
+	/// it is pulled back along that way to just short of the hat. Hair deep inside the crown and
+	/// hair beside the hat (past its edge, below the brim) have nothing in the way and are left
+	/// alone. Going by the hat's own sides instead fails on a tall or floppy hat, whose middle
+	/// is far from the head, and on a brim, whose top and underside are both its outside.
+	/// </summary>
+	static void Tuck( Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, TriMesh under, TriMesh body )
+	{
+		var push = new Vec3[fitted.Length];
+		var all = new bool[fitted.Length];
+		Array.Fill( all, true );
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int pass = 0; pass < 6; pass++ )
+		{
+			Array.Clear( push );
+			int moved = 0;
+			// The middle of a card can come through where the hat folds inwards between its corners.
+			for ( int t = 0; t < tris.Length; t += 3 )
+			{
+				int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
+				foreach ( var bw in Samples )
+				{
+					var p = fitted[a] * bw[0] + fitted[b] * bw[1] + fitted[c] * bw[2];
+					if ( !PastHat( p, under, body, hits, out var from, out var way, out float stop ) ) continue;
+					var d = from + way * stop - p;
+					foreach ( int v in stackalloc[] { a, b, c } )
+						if ( d.LengthSquared() > push[v].LengthSquared() ) push[v] = d;
+					moved++;
+				}
+			}
+
+			// A corner that is through itself goes where its own way says.
+			for ( int i = 0; i < fitted.Length; i++ )
+			{
+				if ( !PastHat( fitted[i], under, body, hits, out var from, out var way, out float stop ) ) continue;
+				push[i] = from + way * stop - fitted[i];
+				moved++;
+			}
+
+			if ( moved == 0 ) break;
+			// Smoothed, so a card bends rather than kinks; the last pass goes in full, so
+			// nothing stubborn is left sticking out.
+			if ( pass < 5 ) MeshTools.Relax( push, all, edges, 1, 0.5f );
+			for ( int i = 0; i < fitted.Length; i++ ) fitted[i] += push[i];
+		}
+	}
+
+	/// <summary>
+	/// Whether a point of hair is through a hat or closer than <see cref="TuckGap"/> under it.
+	/// If so, <paramref name="from"/> + <paramref name="way"/> * <paramref name="stop"/> is
+	/// where it belongs.
+	/// </summary>
+	public static bool PastHat( Vec3 p, TriMesh under, TriMesh body, List<(float T, bool Leaving, int Tri)> hits, out Vec3 from, out Vec3 way, out float stop )
+	{
+		from = way = Vec3.Zero;
+		stop = 0;
+		if ( body.Nearest( p, out var skin, out int tri ) > TuckFar || tri < 0 ) return false;
+		var n = body.TriNormals[tri];
+		float area = n.Length();
+		if ( area < 1e-12f ) return false;
+		from = skin - n / area * TuckDepth;
+
+		way = p - from;
+		float length = way.Length();
+		if ( length < 1e-6f * Units.Metre ) return false;
+		way /= length;
+		under.Crossings( from, way, length + TuckGap, hits );
+		if ( hits.Count == 0 ) return false;
+		stop = MathF.Max( 0, hits[0].T - TuckGap );
+		return stop < length;
 	}
 
 	/// <summary>
@@ -443,7 +611,7 @@ public static class GarmentFit
 	/// vertex that sat under the cloth on the stock body has to be at least as far under it on
 	/// the new one, and the triangle above it is lifted until it is.
 	/// </summary>
-	static void CoverSkin( Vec3[] pts, Vec3[] fitted, float[] gap0, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound )
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, float[] gap0, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin )
 	{
 		if ( clothTris.Count == 0 ) return;
 		var cloth = new TriMesh( pts, clothTris.ToArray() );
@@ -476,12 +644,17 @@ public static class GarmentFit
 			if ( tri < 0 || distance > GapCap ) continue;
 
 			// Straight above, not off to the side: the nearest cloth to skin just past a hem is
-			// the hem's edge, and that skin was never covered.
+			// the hem's edge, and that skin was never covered. Skin that came through the cloth
+			// on the stock body (cloth straight below it) only counts when the skin is to be
+			// cleared, and then it wants the clearing gap like everything else.
 			float gap = Vec3.Dot( above - old.Verts[v], outBefore[v] );
-			if ( gap <= 0 || gap < 0.7f * distance ) continue;
+			if ( MathF.Abs( gap ) < 0.7f * distance ) continue;
+			if ( gap <= 0 && (!clearSkin || gap < -ClearDepth) ) continue;
+			if ( clearSkin ) gap = MathF.Max( gap, ClearGap );
 
 			int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];
-			if ( gap0[a] < -Hidden || gap0[b] < -Hidden || gap0[c] < -Hidden ) continue;
+			float hidden = clearSkin ? ClearDepth : Hidden;
+			if ( gap0[a] < -hidden || gap0[b] < -hidden || gap0[c] < -hidden ) continue;
 			Barycentric( above, pts[a], pts[b], pts[c], out float bu, out float bv, out float bw );
 			under.Add( (v, tri, bu, bv, bw, gap) );
 		}
@@ -495,7 +668,7 @@ public static class GarmentFit
 				int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];
 				Vec3 above = fitted[a] * bu + fitted[b] * bv + fitted[c] * bw;
 				float need = gap - Vec3.Dot( above - (old.Verts[skin] + skinMove[skin]), outAfter[skin] );
-				if ( need <= 1e-4f * Units.Metre || need > CoverReach ) continue;
+				if ( need <= 1e-4f * Units.Metre || need > (clearSkin ? ClearDepth + ClearGap : CoverReach) ) continue;
 
 				Vec3 push = outAfter[skin] * need;
 				if ( bu > 0.05f && (!lift.TryGetValue( a, out var have ) || push.LengthSquared() > have.LengthSquared()) ) lift[a] = push;
@@ -513,7 +686,8 @@ public static class GarmentFit
 	/// vertex as indices into the body's bones. A bone the body doesn't have (older garments
 	/// carry a few) stands in for the nearest ancestor the body does have.
 	/// </summary>
-	public static int[] BonesOnBody( SkinnedGeometry garment, SkinnedGeometry body )
+	/// <summary>Per garment bone, the body's bone of the same name, or the nearest ancestor the body has. -1 for none.</summary>
+	public static int[] BoneMap( SkinnedGeometry garment, SkinnedGeometry body )
 	{
 		var byName = new Dictionary<string, int>();
 		for ( int i = 0; i < body.BoneNames.Length; i++ )
@@ -528,6 +702,12 @@ public static class GarmentFit
 			map[i] = bone >= 0 ? byName[garment.BoneNames[bone]] : -1;
 		}
 
+		return map;
+	}
+
+	public static int[] BonesOnBody( SkinnedGeometry garment, SkinnedGeometry body )
+	{
+		var map = BoneMap( garment, body );
 		var result = new int[garment.BoneIndex.Length];
 		for ( int i = 0; i < result.Length; i++ )
 			result[i] = garment.BoneIndex[i] >= 0 ? map[garment.BoneIndex[i]] : -1;
