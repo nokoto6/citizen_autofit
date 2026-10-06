@@ -557,8 +557,9 @@ public static class GarmentFit
 					var p = fitted[a] * bw[0] + fitted[b] * bw[1] + fitted[c] * bw[2];
 					if ( !PastHat( p, under, body, hits, out var from, out var way, out float stop ) ) continue;
 					var d = from + way * stop - p;
-					foreach ( int v in stackalloc[] { a, b, c } )
-						if ( d.LengthSquared() > push[v].LengthSquared() ) push[v] = d;
+					if ( d.LengthSquared() > push[a].LengthSquared() ) push[a] = d;
+					if ( d.LengthSquared() > push[b].LengthSquared() ) push[b] = d;
+					if ( d.LengthSquared() > push[c].LengthSquared() ) push[c] = d;
 					moved++;
 				}
 			}
