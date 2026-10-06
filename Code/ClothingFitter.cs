@@ -325,6 +325,8 @@ public static class ClothingFitter
 				if ( i == 0 && levels.Count > 1 ) break;
 				if ( i > 0 && !preview ) continue;
 
+				await BuildTurn();
+				if ( started != generation ) return null;
 				var building = System.Diagnostics.Stopwatch.StartNew();
 				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
 				main += building.Elapsed.TotalMilliseconds;
@@ -349,6 +351,8 @@ public static class ClothingFitter
 					worker += result.Milliseconds;
 				}
 
+				await BuildTurn();
+				if ( started != generation ) return null;
 				var building = System.Diagnostics.Stopwatch.StartNew();
 				model = Build( done, $"fitted/{key}/final" );
 				main += building.Elapsed.TotalMilliseconds;
@@ -500,25 +504,72 @@ public static class ClothingFitter
 	// Runs one step on a worker thread and comes back to the main thread with what it made.
 	// The engine warns about a step that keeps a worker busy for over a second, which is why
 	// the work is cut into steps rather than done in one go.
+	// How many steps run on worker threads at once. A scene full of dressers asks for every
+	// garment the moment it loads; without a limit that was dozens of threads at once and a
+	// main thread swamped with their results.
+	const int Workers = 3;
+	static int working;
+	static readonly Queue<TaskCompletionSource<bool>> waiting = new();
+
 	static async Task<T> OnWorker<T>( Func<T> step )
 	{
+		// Wait for a free worker, first come first served: the rough levels of every garment
+		// asked for are queued before anyone's detailed ones.
+		await GameTask.MainThread();
+		if ( working >= Workers )
+		{
+			var turn = new TaskCompletionSource<bool>();
+			waiting.Enqueue( turn );
+			await turn.Task;
+			await GameTask.MainThread();
+		}
+		else
+		{
+			working++;
+		}
+
 		T result = default;
 		string error = null;
-		await GameTask.RunInThreadAsync( () =>
+		try
 		{
-			try
+			await GameTask.RunInThreadAsync( () =>
 			{
-				result = step();
-			}
-			catch ( Exception e )
-			{
-				error = $"{e.GetType().Name}: {e.Message} {Where( e )}";
-			}
-		} );
-		await GameTask.MainThread();
+				try
+				{
+					result = step();
+				}
+				catch ( Exception e )
+				{
+					error = $"{e.GetType().Name}: {e.Message} {Where( e )}";
+				}
+			} );
+		}
+		finally
+		{
+			await GameTask.MainThread();
+			// Hand the worker straight to whoever waits longest, or give it back.
+			if ( waiting.Count > 0 ) waiting.Dequeue().SetResult( true );
+			else working--;
+		}
 
 		if ( error != null ) throw new FitException( error );
 		return result;
+	}
+
+	// Models are made on the main thread, and a scene of dressers finishes many at once. One
+	// per frame or so keeps loading from stalling a frame on a pile of them.
+	const float BuildEvery = 0.016f;
+	static float lastBuild = float.MinValue;
+
+	static async Task BuildTurn()
+	{
+		await GameTask.MainThread();
+		while ( RealTime.Now - lastBuild < BuildEvery && RealTime.Now >= lastBuild )
+		{
+			await GameTask.DelayRealtime( 5 );
+			await GameTask.MainThread();
+		}
+		lastBuild = RealTime.Now;
 	}
 
 	static string Describe( Exception e ) =>
