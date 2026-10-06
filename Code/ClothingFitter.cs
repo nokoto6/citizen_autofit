@@ -133,12 +133,31 @@ public static class ClothingFitter
 	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under
 	static int generation;
 
+	// Models taken out of use, held on to for a while. A model let go of right away can be
+	// freed while the frame that still draws it is in flight, and the GPU then composites the
+	// morphs of a texture that is gone (VK_ERROR_DEVICE_LOST in morph_composite).
+	static readonly List<(Model Model, float At)> retired = new();
+	const float RetireTime = 5f;
+
+	/// <summary>
+	/// Lets go of a model no longer worn, but not before the frames that may still draw it
+	/// are done with it.
+	/// </summary>
+	internal static void Retire( Model model )
+	{
+		float now = RealTime.Now;
+		retired.RemoveAll( x => now - x.At > RetireTime );
+		if ( model.IsValid() ) retired.Add( (model, now) );
+	}
+
 	/// <summary>
 	/// Forgets everything fitted so far. Call it after a body model has been re-exported,
 	/// otherwise clothing keeps being fitted to the old shape.
 	/// </summary>
 	public static void Clear()
 	{
+		foreach ( var model in fitted.Values ) Retire( model );
+		foreach ( var job in pending.Values ) Retire( job.Rough );
 		Array.Clear( references, 0, references.Length );
 		bodies.Clear();
 		fitted.Clear();
@@ -285,6 +304,11 @@ public static class ClothingFitter
 			Model model = null;
 			long worker = 0, roughest = 0;
 			double main = 0;
+
+			// A garment with morph targets (a beard) goes on once, finished. Every model swapped
+			// under a renderer that composites morphs is one more chance to hand the GPU a morph
+			// texture that has just been freed.
+			bool preview = !levels.Any( x => x.Morphs.Any( set => set.Morphs.Count > 0 ) );
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
@@ -293,13 +317,20 @@ public static class ClothingFitter
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
 				if ( i == 0 ) shapes[key] = (result.StockFit, level.Indices);
 
-				var building = System.Diagnostics.Stopwatch.StartNew();
 				done.Insert( 0, result );
-				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
 				worker += result.Milliseconds;
+
+				// With rough levels, the model is built once more below, after they follow the
+				// detailed one. Building it here too would only make a model to throw away.
+				if ( i == 0 && levels.Count > 1 ) break;
+				if ( i > 0 && !preview ) continue;
+
+				var building = System.Diagnostics.Stopwatch.StartNew();
+				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
 				main += building.Elapsed.TotalMilliseconds;
 
 				if ( i == 0 ) break;
+				Retire( job.Rough );
 				job.Rough = model;
 				foreach ( var show in job.Watching ) show( model );
 			}
@@ -324,6 +355,8 @@ public static class ClothingFitter
 			}
 
 			job.Watching.Clear();
+			Retire( job.Rough );
+			job.Rough = null;
 			fitted[key] = model;
 			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {roughest} ms)" );
 			return model;

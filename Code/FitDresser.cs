@@ -98,8 +98,10 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 		foreach ( var child in BodyTarget.GameObject.Children.ToArray() )
 		{
-			if ( child.Tags.Has( ClothingTag ) )
-				child.Destroy();
+			if ( !child.Tags.Has( ClothingTag ) ) continue;
+			foreach ( var renderer in child.Components.GetAll<SkinnedModelRenderer>() )
+				ClothingFitter.Retire( renderer.Model );
+			child.Destroy();
 		}
 
 		BodyTarget.BodyGroups = BodyTarget.Model?.Parts.DefaultMask ?? 0;
@@ -368,6 +370,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 			if ( renderer.IsValid() )
 			{
+				if ( renderer.Model == model ) return;
+				ClothingFitter.Retire( renderer.Model );
 				renderer.Model = model;
 				return;
 			}
