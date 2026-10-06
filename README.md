@@ -93,6 +93,8 @@ workshop player models, each with a Fit Dresser.
   stays, what sits deep inside the crown isn't seen anyway. Tall and floppy hats too. Masks
   over the whole head (a balaclava, boxing headgear, a costume head) still drop the hair as the
   engine does: it would only show in their eye holes. Works on the stock body too.
+
+  ![A cowboy hat and a baseball cap worn over hair, the hair tucked under each](hat_and_hairs.png)
 - **Hair made of cards.** Each card follows the scalp on its own. A long one, a dreadlock from
   the crown to the chest, bends along its length instead of moving as one piece: a bigger chest
   moves its lower end, not the part on the head.
