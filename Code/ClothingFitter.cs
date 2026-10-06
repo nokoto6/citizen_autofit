@@ -811,6 +811,9 @@ public static class ClothingFitter
 	const float MorphFloor = 0.0001f * Units.Metre;   // 0.1 mm
 	const float TurnFloor = 0.02f;                    // a normal turned by about a degree
 
+	static bool Seen( Vec3 move, Vec3 turn ) =>
+		move.LengthSquared() >= MorphFloor * MorphFloor || turn.LengthSquared() >= TurnFloor * TurnFloor;
+
 	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -857,10 +860,15 @@ public static class ClothingFitter
 			}
 		}
 
-		foreach ( string name in morphs.Keys.ToArray() )
+		// The same turn for every morph, worked out once: a beard has dozens of them.
+		if ( morphs.Count > 0 )
 		{
-			var (move, turn) = morphs[name];
-			morphs[name] = (Shading.Turned( garment.Positions, positions, garment.Indices, move ), Shading.Turned( garment.Positions, positions, garment.Indices, turn ));
+			var frames = Shading.TurnFrames( garment.Positions, positions, garment.Indices );
+			foreach ( var (move, turn) in morphs.Values )
+			{
+				Shading.TurnInPlace( frames, move );
+				Shading.TurnInPlace( frames, turn );
+			}
 		}
 
 		// The garment's bones in the body's rest pose.
@@ -939,14 +947,19 @@ public static class ClothingFitter
 
 			foreach ( var (name, (move, turn)) in morphs )
 			{
-				var deltas = new List<MorphDelta>();
-				foreach ( var (v, local) in remap )
-				{
-					if ( move[v].LengthSquared() < MorphFloor * MorphFloor && turn[v].LengthSquared() < TurnFloor * TurnFloor ) continue;
-					deltas.Add( new MorphDelta( local, new Vector3( move[v].X, move[v].Y, move[v].Z ), new Vector3( turn[v].X, turn[v].Y, turn[v].Z ) ) );
-				}
+				// Counted first so the array is made once at its size: these run to hundreds of
+				// thousands, and every regrown list is garbage the size of a garment.
+				int seen = 0;
+				foreach ( var (v, _) in remap )
+					if ( Seen( move[v], turn[v] ) ) seen++;
+				if ( seen == 0 ) continue;
 
-				if ( deltas.Count > 0 ) draw.Morphs[name] = deltas.ToArray();
+				var deltas = new MorphDelta[seen];
+				int at = 0;
+				foreach ( var (v, local) in remap )
+					if ( Seen( move[v], turn[v] ) )
+						deltas[at++] = new MorphDelta( local, new Vector3( move[v].X, move[v].Y, move[v].Z ), new Vector3( turn[v].X, turn[v].Y, turn[v].Z ) );
+				draw.Morphs[name] = deltas;
 			}
 
 			result.Draws.Add( draw );

@@ -455,10 +455,15 @@ public static class GarmentFit
 		}
 
 		var clothTris = new List<int>();
+		// Each piece of cloth is worked on its own, but pieces share no edges, so the smoothing
+		// in the middle is done for all of them at once: one pass over the edges instead of one
+		// per piece, and no garment-sized scratch arrays per piece (hair is thousands of pieces).
+		var cloth = new List<(int Root, List<int> Idx)>();
 		foreach ( var (root, idx) in members )
-		{
-			if ( !bends.Contains( root ) && IsRigid( idx, firstOf, boneIndex, boneWeight ) ) continue;
+			if ( bends.Contains( root ) || !IsRigid( idx, firstOf, boneIndex, boneWeight ) ) cloth.Add( (root, idx) );
 
+		foreach ( var (root, idx) in cloth )
+		{
 			// Interpolation and smoothing can leave a vertex a little under the new skin.
 			for ( int pass = 0; pass < 2; pass++ )
 			{
@@ -471,16 +476,21 @@ public static class GarmentFit
 				}
 				if ( moved == 0 ) break;
 			}
+		}
 
-			// Each push is decided for one vertex at a time, which leaves spikes where a vertex
-			// was pushed and its neighbours weren't (armpits, mostly). Spread the pushes over
-			// the neighbours so the cloth stays smooth.
-			var pushField = new Vec3[n];
-			var mask = new bool[n];
+		// Each push is decided for one vertex at a time, which leaves spikes where a vertex
+		// was pushed and its neighbours weren't (armpits, mostly). Spread the pushes over the
+		// neighbours so the cloth stays smooth.
+		var pushField = new Vec3[n];
+		var mask = new bool[n];
+		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) { pushField[i] = fitted[i] - (pts[i] + move[i]); mask[i] = true; }
-			MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
+		MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
+		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
 
+		foreach ( var (root, idx) in cloth )
+		{
 			// The skin can still come through the middle of a triangle, typically a hard edge
 			// of the body between two cloth vertices. Check a few points inside each triangle
 			// and lift its corners. This goes last and is not smoothed: it is what keeps edges
@@ -540,6 +550,10 @@ public static class GarmentFit
 	/// </summary>
 	static void Tuck( Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, TriMesh under, TriMesh body )
 	{
+		var start = new Vec3[fitted.Length];
+		var known = new bool[fitted.Length];
+		var own = new Vec3[fitted.Length];
+		var through = new bool[fitted.Length];
 		var push = new Vec3[fitted.Length];
 		var all = new bool[fitted.Length];
 		Array.Fill( all, true );
@@ -548,14 +562,29 @@ public static class GarmentFit
 		{
 			Array.Clear( push );
 			int moved = 0;
-			// The middle of a card can come through where the hat folds inwards between its corners.
+
+			// Where each corner's way starts, and whether the corner itself is through. Finding
+			// the start is the costly part, so it is found for the corners only.
+			for ( int i = 0; i < fitted.Length; i++ )
+			{
+				known[i] = InsideHead( fitted[i], body, out start[i] );
+				through[i] = false;
+				if ( !known[i] || !Through( fitted[i], start[i], under, hits, out var way, out float stop ) ) continue;
+				through[i] = true;
+				own[i] = start[i] + way * stop - fitted[i];
+			}
+
+			// The middle of a card can come through where the hat folds inwards between its
+			// corners. A point inside a triangle starts its way from the blend of its corners' starts.
 			for ( int t = 0; t < tris.Length; t += 3 )
 			{
 				int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
-				foreach ( var bw in Samples )
+				if ( !known[a] || !known[b] || !known[c] ) continue;
+				foreach ( var bw in Between )
 				{
 					var p = fitted[a] * bw[0] + fitted[b] * bw[1] + fitted[c] * bw[2];
-					if ( !PastHat( p, under, body, hits, out var from, out var way, out float stop ) ) continue;
+					var from = start[a] * bw[0] + start[b] * bw[1] + start[c] * bw[2];
+					if ( !Through( p, from, under, hits, out var way, out float stop ) ) continue;
 					var d = from + way * stop - p;
 					if ( d.LengthSquared() > push[a].LengthSquared() ) push[a] = d;
 					if ( d.LengthSquared() > push[b].LengthSquared() ) push[b] = d;
@@ -567,8 +596,8 @@ public static class GarmentFit
 			// A corner that is through itself goes where its own way says.
 			for ( int i = 0; i < fitted.Length; i++ )
 			{
-				if ( !PastHat( fitted[i], under, body, hits, out var from, out var way, out float stop ) ) continue;
-				push[i] = from + way * stop - fitted[i];
+				if ( !through[i] ) continue;
+				push[i] = own[i];
 				moved++;
 			}
 
@@ -580,6 +609,13 @@ public static class GarmentFit
 		}
 	}
 
+	// Points inside a triangle to test, its corners being tested on their own: the centre and
+	// the edge midpoints.
+	static readonly float[][] Between =
+	{
+		new[] { 1 / 3f, 1 / 3f, 1 / 3f }, new[] { 0.5f, 0.5f, 0f }, new[] { 0f, 0.5f, 0.5f }, new[] { 0.5f, 0f, 0.5f },
+	};
+
 	/// <summary>
 	/// Whether a point of hair is through a hat or closer than <see cref="TuckGap"/> under it.
 	/// If so, <paramref name="from"/> + <paramref name="way"/> * <paramref name="stop"/> is
@@ -587,14 +623,27 @@ public static class GarmentFit
 	/// </summary>
 	public static bool PastHat( Vec3 p, TriMesh under, TriMesh body, List<(float T, bool Leaving, int Tri)> hits, out Vec3 from, out Vec3 way, out float stop )
 	{
-		from = way = Vec3.Zero;
+		way = Vec3.Zero;
 		stop = 0;
+		return InsideHead( p, body, out from ) && Through( p, from, under, hits, out way, out stop );
+	}
+
+	// A point just under the skin nearest to a bit of hair: where the way out to it starts.
+	static bool InsideHead( Vec3 p, TriMesh body, out Vec3 from )
+	{
+		from = Vec3.Zero;
 		if ( body.Nearest( p, out var skin, out int tri ) > TuckFar || tri < 0 ) return false;
 		var n = body.TriNormals[tri];
 		float area = n.Length();
 		if ( area < 1e-12f ) return false;
 		from = skin - n / area * TuckDepth;
+		return true;
+	}
 
+	// Whether the way from inside the head to a point crosses the hat, and where to stop short of it.
+	static bool Through( Vec3 p, Vec3 from, TriMesh under, List<(float T, bool Leaving, int Tri)> hits, out Vec3 way, out float stop )
+	{
+		stop = 0;
 		way = p - from;
 		float length = way.Length();
 		if ( length < 1e-6f * Units.Metre ) return false;

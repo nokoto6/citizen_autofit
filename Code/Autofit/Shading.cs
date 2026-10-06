@@ -31,6 +31,19 @@ public static class Shading
 	/// </summary>
 	public static Vec3[] Turned( Vec3[] before, Vec3[] after, int[] tris, Vec3[] vectors )
 	{
+		var result = new Vec3[vectors.Length];
+		for ( int i = 0; i < result.Length; i++ ) result[i] = vectors[i];
+		TurnInPlace( TurnFrames( before, after, tris ), result );
+		return result;
+	}
+
+	/// <summary>
+	/// Per vertex, which way the surface faced before and after, for turning many sets of
+	/// vectors (every morph target of a garment) without working it out again for each.
+	/// A vertex whose surface has no direction gets zero for both and isn't turned.
+	/// </summary>
+	public static (Vec3[] From, Vec3[] To) TurnFrames( Vec3[] before, Vec3[] after, int[] tris )
+	{
 		var weld = MeshTools.Weld( before, out int n );
 		var faceBefore = new Vec3[n];
 		var faceAfter = new Vec3[n];
@@ -46,17 +59,28 @@ public static class Shading
 			}
 		}
 
-		var result = new Vec3[vectors.Length];
-		for ( int i = 0; i < vectors.Length; i++ )
+		var from = new Vec3[before.Length];
+		var to = new Vec3[before.Length];
+		for ( int i = 0; i < before.Length; i++ )
 		{
-			Vec3 from = faceBefore[weld[i]], to = faceAfter[weld[i]];
-			float lf = from.Length(), lt = to.Length();
-			result[i] = vectors[i];
-			if ( lf < 1e-12f || lt < 1e-12f || vectors[i].LengthSquared() < 1e-20f ) continue;
-			result[i] = Turn( vectors[i], from / lf, to / lt );
+			Vec3 f = faceBefore[weld[i]], t = faceAfter[weld[i]];
+			float lf = f.Length(), lt = t.Length();
+			if ( lf < 1e-12f || lt < 1e-12f ) continue;
+			from[i] = f / lf;
+			to[i] = t / lt;
 		}
 
-		return result;
+		return (from, to);
+	}
+
+	/// <summary>Turns each vector the way its vertex's surface turned (see <see cref="TurnFrames"/>).</summary>
+	public static void TurnInPlace( (Vec3[] From, Vec3[] To) frames, Vec3[] vectors )
+	{
+		for ( int i = 0; i < vectors.Length; i++ )
+		{
+			if ( frames.From[i].LengthSquared() == 0 || vectors[i].LengthSquared() < 1e-20f ) continue;
+			vectors[i] = Turn( vectors[i], frames.From[i], frames.To[i] );
+		}
 	}
 
 	/// <summary>Plain smooth normals from the triangles, for when the model's own aren't available.</summary>
