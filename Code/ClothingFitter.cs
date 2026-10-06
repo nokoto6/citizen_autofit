@@ -96,7 +96,7 @@ public static class ClothingFitter
 		public string Material;
 		public List<FittedVertex> Vertices = new();
 		public List<int> Indices = new();
-		public Dictionary<string, List<MorphDelta>> Morphs = new();
+		public Dictionary<string, MorphDelta[]> Morphs = new();
 	}
 
 	// The pixels of a morph texture, read on the main thread for a worker to decode.
@@ -162,6 +162,7 @@ public static class ClothingFitter
 		bodies.Clear();
 		fitted.Clear();
 		shapes.Clear();
+		atlasCache.Clear();
 		pending.Clear();
 		failed.Clear();
 		generation++;
@@ -296,14 +297,16 @@ public static class ClothingFitter
 			var file = ReadCompiled( garmentPath );
 			var levels = await OnWorker( () => CompiledModel.ReadLods( file ) );
 			if ( started != generation ) return null;
+			var reading = System.Diagnostics.Stopwatch.StartNew();
 			var atlases = ReadAtlases( levels );
+			double readingMs = reading.Elapsed.TotalMilliseconds;
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
 			// garment in the queue get done before anyone's detailed ones.
 			var done = new List<Fitted>();
 			Model model = null;
 			long worker = 0, roughest = 0;
-			double main = 0;
+			double main = readingMs;
 
 			// A garment with morph targets (a beard) goes on once, finished. Every model swapped
 			// under a renderer that composites morphs is one more chance to hand the GPU a morph
@@ -362,7 +365,7 @@ public static class ClothingFitter
 			Retire( job.Rough );
 			job.Rough = null;
 			fitted[key] = model;
-			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {roughest} ms)" );
+			Log.Info( $"ClothingFitter: fitted {NameOf( garmentPath )} to {NameOf( bodyPath )} in {worker} ms on worker threads and {main:F1} ms on the main thread{(readingMs >= 1 ? $" ({readingMs:F1} of them reading its morphs)" : "")} ({levels.Count} LODs, {string.Join( " + ", levels.Select( x => x.Positions.Length ) )} verts, roughest ready after {roughest} ms)" );
 			return model;
 		}
 		catch ( TaskCanceledException )
@@ -765,12 +768,21 @@ public static class ClothingFitter
 	// them. Only reads the reference and the body, so any number of these can run at once.
 	// Main thread. A garment's morph targets (a beard that follows the mouth) are stored as
 	// textures. Only the engine can read those, so the pixels are fetched here.
+	// Atlases read so far. Reading one makes the main thread wait for the GPU, and the same
+	// beard on several bodies needs the same atlas each time.
+	static readonly Dictionary<string, Atlas> atlasCache = new();
+
 	static Dictionary<string, Atlas> ReadAtlases( List<SkinnedGeometry> levels )
 	{
 		var atlases = new Dictionary<string, Atlas>();
 		foreach ( var set in levels.SelectMany( level => level.Morphs ) )
 		{
 			if ( string.IsNullOrEmpty( set.AtlasPath ) || atlases.ContainsKey( set.AtlasPath ) ) continue;
+			if ( atlasCache.TryGetValue( set.AtlasPath, out var known ) )
+			{
+				atlases[set.AtlasPath] = known;
+				continue;
+			}
 
 			var texture = Texture.Load( set.AtlasPath, false );
 			if ( !texture.IsValid() || texture.IsError || texture.Width <= 0 ) continue;
@@ -786,12 +798,19 @@ public static class ClothingFitter
 			}
 
 			atlases[set.AtlasPath] = atlas;
+			atlasCache[set.AtlasPath] = atlas;
 		}
 
 		return atlases;
 	}
 
 	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
+	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
+	// moves as a whole has close to a million deltas, all copied on the main thread when the
+	// model is made. Most of the ones under the floor are the atlas's 8-bit rounding anyway.
+	const float MorphFloor = 0.0001f * Units.Metre;   // 0.1 mm
+	const float TurnFloor = 0.02f;                    // a normal turned by about a degree
+
 	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -923,11 +942,11 @@ public static class ClothingFitter
 				var deltas = new List<MorphDelta>();
 				foreach ( var (v, local) in remap )
 				{
-					if ( move[v].LengthSquared() < 1e-10f && turn[v].LengthSquared() < 1e-10f ) continue;
+					if ( move[v].LengthSquared() < MorphFloor * MorphFloor && turn[v].LengthSquared() < TurnFloor * TurnFloor ) continue;
 					deltas.Add( new MorphDelta( local, new Vector3( move[v].X, move[v].Y, move[v].Z ), new Vector3( turn[v].X, turn[v].Y, turn[v].Z ) ) );
 				}
 
-				if ( deltas.Count > 0 ) draw.Morphs[name] = deltas;
+				if ( deltas.Count > 0 ) draw.Morphs[name] = deltas.ToArray();
 			}
 
 			result.Draws.Add( draw );
@@ -967,7 +986,7 @@ public static class ClothingFitter
 		mesh.CreateIndexBuffer( draw.Indices.Count, draw.Indices );
 		mesh.Bounds = BBox.FromPoints( draw.Vertices.Select( x => x.Position ) );
 		foreach ( var (morph, deltas) in draw.Morphs )
-			mesh.AddMorph( morph, deltas.ToArray() );
+			mesh.AddMorph( morph, deltas );
 		return mesh;
 	}
 
