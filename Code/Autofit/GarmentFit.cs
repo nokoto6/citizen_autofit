@@ -597,6 +597,7 @@ public static class GarmentFit
 		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound, clearSkin );
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, hidden );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
+		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
 
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
@@ -723,6 +724,106 @@ public static class GarmentFit
 	{
 		Barycentric( q, mesh.Verts[mesh.Tris[tri * 3]], mesh.Verts[mesh.Tris[tri * 3 + 1]], mesh.Verts[mesh.Tris[tri * 3 + 2]], out float u, out float v, out float w );
 		return new[] { u, v, w };
+	}
+
+	const float SeamReach = 0.002f * Units.Metre;    // open edges of two pieces this close are sewn together
+	const int SeamFade = 3;                          // rings of vertices a seam's closing fades out over
+
+	/// <summary>
+	/// A garment made of separate pieces (a sleeve set into a bodice, the two halves of a back)
+	/// has them meeting edge to edge. Each piece is fitted on its own, so where the body under
+	/// a seam changes shape the two edges go different ways and the seam opens: skin showed
+	/// through the maid dress's shoulders and down its middle. Edges of two pieces that met on
+	/// the stock garment are moved back together, each by half of what parted them, and the
+	/// closing fades out over a few rings of vertices into each piece so no crease is left.
+	/// </summary>
+	static void Seams( Vec3[] pts, Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, int[] piece )
+	{
+		// Open edges: used by one triangle.
+		var uses = new Dictionary<long, int>();
+		for ( int t = 0; t < tris.Length; t += 3 )
+			for ( int k = 0; k < 3; k++ )
+			{
+				int a = weld[tris[t + k]], b = weld[tris[t + (k + 1) % 3]];
+				if ( a == b ) continue;
+				if ( a > b ) (a, b) = (b, a);
+				long key = ((long)a << 32) | (uint)b;
+				uses[key] = uses.GetValueOrDefault( key ) + 1;
+			}
+		var open = new HashSet<int>();
+		foreach ( var (key, count) in uses )
+			if ( count == 1 ) { open.Add( (int)(key >> 32) ); open.Add( (int)(key & 0xffffffff) ); }
+		if ( open.Count == 0 ) return;
+
+		// Open edges of other pieces within reach, by a grid of cells as big as the reach.
+		float cell = SeamReach;
+		(int, int, int) Cell( Vec3 p ) => ((int)MathF.Floor( p.X / cell ), (int)MathF.Floor( p.Y / cell ), (int)MathF.Floor( p.Z / cell ));
+		var grid = new Dictionary<(int, int, int), List<int>>();
+		foreach ( int v in open )
+		{
+			var c = Cell( pts[v] );
+			if ( !grid.TryGetValue( c, out var list ) ) grid[c] = list = new List<int>();
+			list.Add( v );
+		}
+		var shift = new Dictionary<int, Vec3>();
+		foreach ( int v in open )
+		{
+			var (cx, cy, cz) = Cell( pts[v] );
+			var sum = Vec3.Zero;
+			int count = 0;
+			for ( int dx = -1; dx <= 1; dx++ )
+				for ( int dy = -1; dy <= 1; dy++ )
+					for ( int dz = -1; dz <= 1; dz++ )
+					{
+						if ( !grid.TryGetValue( (cx + dx, cy + dy, cz + dz), out var list ) ) continue;
+						foreach ( int w in list )
+						{
+							if ( piece[w] == piece[v] || (pts[w] - pts[v]).LengthSquared() > SeamReach * SeamReach ) continue;
+							// Half of how much further the other edge moved than this one.
+							sum += ((fitted[w] - pts[w]) - (fitted[v] - pts[v])) * 0.5f;
+							count++;
+						}
+					}
+			if ( count == 0 ) continue;
+			shift[v] = sum / count;
+		}
+		if ( shift.Count == 0 ) return;
+
+		// Fading into each piece: every ring carries on the mean of the closing its neighbours in
+		// the ring before carry, and takes less of it the further in it is.
+		var near = new Dictionary<int, List<int>>();
+		foreach ( var (a, b) in edges )
+		{
+			if ( piece[a] != piece[b] ) continue;
+			if ( !near.TryGetValue( a, out var la ) ) near[a] = la = new List<int>();
+			if ( !near.TryGetValue( b, out var lb ) ) near[b] = lb = new List<int>();
+			la.Add( b ); lb.Add( a );
+		}
+		var done = new Dictionary<int, Vec3>( shift );
+		var ring = new List<int>( shift.Keys );
+		for ( int r = 1; r <= SeamFade; r++ )
+		{
+			float keep = 1f - r / (SeamFade + 1f);
+			var next = new Dictionary<int, (Vec3 Sum, int Count)>();
+			foreach ( int v in ring )
+			{
+				if ( !near.TryGetValue( v, out var list ) ) continue;
+				foreach ( int w in list )
+				{
+					if ( done.ContainsKey( w ) ) continue;
+					var (sum, count) = next.GetValueOrDefault( w );
+					next[w] = (sum + shift[v], count + 1);
+				}
+			}
+			ring.Clear();
+			foreach ( var (w, (sum, count)) in next )
+			{
+				shift[w] = sum / count;
+				done[w] = shift[w] * keep;
+				ring.Add( w );
+			}
+		}
+		foreach ( var (v, d) in done ) fitted[v] += d;
 	}
 
 	const float LayerReach = 0.03f * Units.Metre;    // another piece this close is a layer this one may lie on
