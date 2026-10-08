@@ -56,6 +56,9 @@ public static class ClothingFitter
 		public Repose Pose;
 		public TriMesh Mesh;
 		public BodyMap Map;
+		public int[] BodyBones;     // the body's skinning, as the reference's bones
+		public float[] BodyWeights;
+		public bool[] Pivots;       // reference bones that only turn something (the eyes), not skin to follow
 		public long Milliseconds;
 		public Task Exposed;   // finding the body's outer surface, started when a garment first needs it
 	}
@@ -729,7 +732,10 @@ public static class ClothingFitter
 
 				// The body's own skinning, in terms of the reference's bones, tells which part of it
 				// belongs to which bone.
-				var skin = new SkinByBone( result.Mesh, GarmentFit.BonesOnBody( geo, reference.Geo ), geo.BoneWeight, reference.Geo.BoneParents );
+				result.BodyBones = GarmentFit.BonesOnBody( geo, reference.Geo );
+				result.BodyWeights = geo.BoneWeight;
+				result.Pivots = reference.Geo.BoneNames.Select( x => x.StartsWith( "eye_" ) ).ToArray();
+				var skin = new SkinByBone( result.Mesh, result.BodyBones, geo.BoneWeight, reference.Geo.BoneParents );
 				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks );
 				result.Milliseconds = watch.ElapsedMilliseconds;
 				return result;
@@ -831,13 +837,15 @@ public static class ClothingFitter
 			cloth = keep.ToArray();
 		}
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under );
+		var solid = new bool[garment.Positions.Length];
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray() );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
-		// the body's.
-		positions = target.Pose.FromStockProportions( positions, bones, garment.BoneWeight, reference.Geo );
-		positions = target.Pose.ToBodyRest( positions, bones, garment.BoneWeight );
+		// the body's, each bit of cloth the way the skin under it came in.
+		var (backBones, backWeights) = Repose.SkinUnder( positions, garment.Indices, target.Mesh, target.BodyBones, target.BodyWeights, bones, garment.BoneWeight, solid, target.Pivots );
+		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
+		positions = target.Pose.ToBodyRest( positions, backBones, backWeights );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
@@ -854,7 +862,7 @@ public static class ClothingFitter
 					morphs[name] = morph = (new Vec3[positions.Length], new Vec3[positions.Length]);
 				foreach ( var (vertex, move, turn) in deltas )
 				{
-					morph.Position[vertex] = move * target.Pose.ScaleAt( vertex, bones, garment.BoneWeight );
+					morph.Position[vertex] = move * target.Pose.ScaleAt( vertex, backBones, backWeights );
 					morph.Normal[vertex] = turn;
 				}
 			}

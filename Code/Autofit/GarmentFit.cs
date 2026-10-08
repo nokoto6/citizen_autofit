@@ -255,7 +255,9 @@ public static class GarmentFit
 	/// but a coarse triangle still cuts through a bump the detailed level goes around.
 	/// </param>
 	/// <param name="under">A garment this one is worn under (hair under a hat), in the same stock pose. Whatever comes through it is put back under.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null )
+	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
+	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -432,6 +434,7 @@ public static class GarmentFit
 		}
 
 		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
+		var isSolid = new bool[n];
 		foreach ( var parts in solids.Values )
 		{
 			// Dozens of pieces in a heap are not one object. That is hair cards, feathers or
@@ -452,6 +455,12 @@ public static class GarmentFit
 			var whole = new List<int>();
 			foreach ( int r in parts ) whole.AddRange( rigid[r] );
 			FitRigid( whole, pts, move, gap0, away, fitted, Push, false );
+			if ( eyes != null && OnTheEyes( whole, pts, eyes ) )
+			{
+				PutOnTheEyes( whole, pts, fitted, eyes );
+				PushOut( whole, fitted, gap0, away, Push, false );
+			}
+			foreach ( int i in whole ) isSolid[i] = true;
 		}
 
 		var clothTris = new List<int>();
@@ -536,6 +545,8 @@ public static class GarmentFit
 
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
+		if ( solidOut != null )
+			for ( int i = 0; i < verts.Length; i++ ) solidOut[i] = isSolid[weld[i]];
 		return result;
 	}
 
@@ -825,6 +836,52 @@ public static class GarmentFit
 			fitted[i] = targetMean + p;
 		}
 
+		PushOut( idx, fitted, gap0, away, push, keepGaps );
+	}
+
+	const float EyewearHeight = 0.08f * Units.Metre;   // a solid across both eyes no taller than this is eyewear, not a helmet
+
+	/// <summary>
+	/// A solid object worn across the eyes: it spans both of them side to side, the eyes are
+	/// within its height, and it isn't tall. Glasses, goggles, a visor band.
+	/// </summary>
+	static bool OnTheEyes( List<int> idx, Vec3[] pts, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		if ( eyes.Length != 2 ) return false;
+		float minY = float.MaxValue, maxY = float.MinValue, minZ = float.MaxValue, maxZ = float.MinValue;
+		foreach ( int i in idx )
+		{
+			minY = MathF.Min( minY, pts[i].Y ); maxY = MathF.Max( maxY, pts[i].Y );
+			minZ = MathF.Min( minZ, pts[i].Z ); maxZ = MathF.Max( maxZ, pts[i].Z );
+		}
+		float eyeLo = MathF.Min( eyes[0].Stock.Y, eyes[1].Stock.Y ), eyeHi = MathF.Max( eyes[0].Stock.Y, eyes[1].Stock.Y );
+		float eyeZ = 0.5f * (eyes[0].Stock.Z + eyes[1].Stock.Z);
+		return minY <= eyeLo && maxY >= eyeHi && minZ <= eyeZ && maxZ >= eyeZ && maxZ - minZ <= EyewearHeight;
+	}
+
+	/// <summary>
+	/// Moves eyewear up or down and sideways so it sits on this body's eyes the way it sat on
+	/// the stock body's. The skin it rests on (nose bridge, temples) doesn't say where the eyes
+	/// are; on a face with eyes set lower or higher the lenses would end up on the brows.
+	/// How far in front of the face it sits is left to the fit and the push out of the skin.
+	/// </summary>
+	static void PutOnTheEyes( List<int> idx, Vec3[] pts, Vec3[] fitted, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		Vec3 stockMid = 0.5f * (eyes[0].Stock + eyes[1].Stock), bodyMid = 0.5f * (eyes[0].Body + eyes[1].Body);
+		float apart = (eyes[1].Stock - eyes[0].Stock).Length();
+		float ratio = apart > 1e-4f * Units.Metre ? (eyes[1].Body - eyes[0].Body).Length() / apart : 1f;
+		var made = Vec3.Zero;
+		var now = Vec3.Zero;
+		foreach ( int i in idx ) { made += pts[i]; now += fitted[i]; }
+		made /= idx.Count;
+		now /= idx.Count;
+		Vec3 want = bodyMid + (made - stockMid) * ratio;
+		var shift = new Vec3( 0, want.Y - now.Y, want.Z - now.Z );
+		foreach ( int i in idx ) fitted[i] += shift;
+	}
+
+	static void PushOut( List<int> idx, Vec3[] fitted, float[] gap0, Vec3[] away, PushTest push, bool keepGaps )
+	{
 		// If it still digs in somewhere, shift the whole piece out. A solid object only has to
 		// stop going deeper than it used to. How far off the skin it floats is the fit's
 		// business; restoring that here would lift glasses off a flat face by the depth of the

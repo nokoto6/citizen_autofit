@@ -35,11 +35,37 @@ public sealed class Repose
 	public float[] BoneScale;
 
 	/// <summary>
+	/// For each stock bone, how many times longer the body is along it. Same as <see cref="BoneScale"/>
+	/// except for a bone measured on its skin (the head), which can be wider and no taller.
+	/// </summary>
+	public float[] BoneLengthScale;
+
+	// Each stock bone's own direction in the stock bind pose, what BoneLengthScale goes along.
+	Vec3[] stockAxes;
+
+	/// <summary>An offset from a stock bone's joint, grown to the body's size around that bone (or shrunk, with <paramref name="shrink"/>).</summary>
+	Vec3 Scaled( Vec3 offset, int bone, bool shrink )
+	{
+		float across = BoneScale[bone], along = BoneLengthScale[bone];
+		if ( shrink ) { across = 1f / across; along = 1f / along; }
+		Vec3 axis = stockAxes[bone];
+		float d = Vec3.Dot( offset, axis );
+		return axis * (d * along) + (offset - axis * d) * across;
+	}
+
+	/// <summary>
 	/// Face landmarks: where each of the citizen's eyes is, and how far this body's eye is from
 	/// there once the head has been lined up. Rays from the bones can't tell where a face's
 	/// features are, the eye bones can.
 	/// </summary>
-	public List<(Vec3 At, Vec3 Shift)> Landmarks = new();
+	public List<(Vec3 At, Vec3 Shift, float Reach)> Landmarks = new();
+
+	/// <summary>The front of each eye, on the stock body and on this one (in the stock pose). What glasses go by.</summary>
+	public List<(Vec3 Stock, Vec3 Body)> Eyes = new();
+
+	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
+	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
+	const float MinBust = 0.02f * Units.Metre;     // a chest front standing out less than this is flat
 
 	/// <summary>
 	/// The body's rest pose, per stock bone: where that bone is on the body and which way it
@@ -88,19 +114,47 @@ public sealed class Repose
 		{
 			int parent = body.BoneParents[i];
 			if ( parent < 0 || from[i] != i || from[parent] != parent ) continue;
+			// An eye bone is the pivot of an eyeball, put wherever the eye is built to turn about:
+			// on the face for the humans, deep in the head for a VRoid eye. It says nothing about
+			// how big the head is.
+			if ( body.BoneNames[i].StartsWith( "eye_" ) ) continue;
 			float theirs = (body.BonePositions[i] - body.BonePositions[parent]).Length();
 			float ours = (stock.BonePositions[to[i]] - stock.BonePositions[to[parent]]).Length();
 			if ( ours < 0.02f * Units.Metre ) continue;   // too short to say anything
 			(ratios[parent] ??= new List<float>()).Add( theirs / ours );
 		}
 
+		// A bone with skin but nothing to measure it by (the head, once the eyes don't count) is
+		// measured on the skin itself rather than taking its parent's scale: an anime head is
+		// big on a short neck.
+		// Such a bone is also measured along itself, to the top of the skin: a head can be wider
+		// than the citizen's and no taller, and scaled the same both ways about a joint at its
+		// bottom, a hat on it rises off the top.
+		TriMesh bodyMesh = null, stockMesh = null;
+		var lengthRatio = new float[bones];
+		for ( int i = 0; i < bones; i++ )
+		{
+			if ( ratios[i] != null || from[i] != i || body.BoneParents[i] < 0 || !HasChildren( body, i ) ) continue;
+			bodyMesh ??= new TriMesh( body.Positions, body.Indices );
+			stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
+			float theirs = Thickness( body, bodyMesh, i, out float theirLength );
+			if ( theirs <= 0 ) continue;
+			float ours = Thickness( stock, stockMesh, to[i], out float ourLength );
+			if ( ours <= 0 ) continue;
+			ratios[i] = new List<float> { theirs / ours };
+			lengthRatio[i] = Math.Clamp( theirLength / ourLength, 0.4f, 2.5f );
+		}
+
+		var lengthScale = new float[bones];
 		for ( int i = 0; i < bones; i++ )   // parents come first
 		{
 			int parent = body.BoneParents[i];
 			scale[i] = parent >= 0 ? scale[parent] : 1f;
+			lengthScale[i] = parent >= 0 ? lengthScale[parent] : 1f;
 			if ( ratios[i] == null ) continue;
 			ratios[i].Sort();
 			scale[i] = Math.Clamp( ratios[i][ratios[i].Count / 2], 0.4f, 2.5f );
+			lengthScale[i] = lengthRatio[i] > 0 ? lengthRatio[i] : scale[i];
 		}
 
 		int stockCount = stock.BoneNames.Length;
@@ -122,14 +176,19 @@ public sealed class Repose
 		var shrink = new float[bones];
 		var offset = new Vec3[bones];
 		result.BoneScale = new float[stockCount];
+		result.BoneLengthScale = new float[stockCount];
 		Array.Fill( result.BoneScale, 1f );
+		Array.Fill( result.BoneLengthScale, 1f );
+		result.stockAxes = new Vec3[stockCount];
+		for ( int s = 0; s < stockCount; s++ )
+			result.stockAxes[s] = Quat.Rotate( stock.BoneRotations[s], new Vec3( 1, 0, 0 ) );
 		for ( int i = 0; i < bones; i++ )
 		{
 			if ( to[i] < 0 ) continue;
 			turn[i] = Quat.Inverse( result.carry[to[i]] );
 			shrink[i] = 1f / scale[from[i]];
 			offset[i] = stock.BonePositions[to[i]] - Quat.Rotate( turn[i], body.BonePositions[from[i]] ) * shrink[i];
-			if ( from[i] == i ) result.BoneScale[to[i]] = scale[i];
+			if ( from[i] == i ) { result.BoneScale[to[i]] = scale[i]; result.BoneLengthScale[to[i]] = lengthScale[i]; }
 		}
 
 		// The body's rest pose in the stock skeleton's terms. Clothing is built in this pose,
@@ -167,16 +226,11 @@ public sealed class Repose
 			result.RestRotations[s] = Quat.Multiply( result.carry[s], stock.BoneRotations[s] );
 		}
 
+		// The skin an eye bone drives goes the way of the head. The eye bone is a pivot,
+		// somewhere else on every face; carried by it, a painted iris lands off the face.
+		var carrier = new int[bones];
 		for ( int i = 0; i < bones; i++ )
-		{
-			// The eye bone itself lands exactly on the citizen's. What says where the eye
-			// really is on this face is its position carried along with the head.
-			int parent = body.BoneParents[i];
-			if ( !body.BoneNames[i].StartsWith( "eye_" ) || from[i] != i || parent < 0 || turn[parent] == null ) continue;
-			Vec3 shift = Quat.Rotate( turn[parent], body.BonePositions[i] ) * shrink[parent] + offset[parent] - stock.BonePositions[to[i]];
-			if ( shift.Length() < 0.15f * Units.Metre )
-				result.Landmarks.Add( (stock.BonePositions[to[i]], shift) );
-		}
+			carrier[i] = body.BoneNames[i].StartsWith( "eye_" ) && body.BoneParents[i] >= 0 && turn[body.BoneParents[i]] != null ? body.BoneParents[i] : i;
 
 		result.Positions = new Vec3[body.Positions.Length];
 		double total = 0;
@@ -190,7 +244,8 @@ public sealed class Repose
 				int bone = body.BoneIndex[v * 4 + j];
 				float w = body.BoneWeight[v * 4 + j];
 				if ( bone < 0 || w <= 0 || turn[bone] == null ) continue;
-				sum += (Quat.Rotate( turn[bone], p ) * shrink[bone] + offset[bone]) * w;
+				bone = carrier[bone];
+				sum += (stock.BonePositions[to[bone]] + result.Scaled( Quat.Rotate( turn[bone], p - body.BonePositions[from[bone]] ), to[bone], true )) * w;
 				weight += w;
 			}
 
@@ -199,7 +254,181 @@ public sealed class Repose
 		}
 
 		result.Moved = result.Positions.Length > 0 ? (float)(total / result.Positions.Length) : 0;
+
+		// Face landmarks. Where an eye is on the face is told by the eye itself: the front of
+		// what its bone drives (an eyeball, a painted iris). The bone is only the pivot the eye
+		// turns about, on the face for the humans, deep in the head for a VRoid eye.
+		for ( int i = 0; i < bones; i++ )
+		{
+			if ( !body.BoneNames[i].StartsWith( "eye_" ) || from[i] != i ) continue;
+			int s = to[i];
+			if ( !EyeFront( stock, stock.Positions, s, out var ours ) ) continue;
+			if ( !EyeFront( body, result.Positions, i, out var theirs ) )
+			{
+				// Nothing on this face moves with the eye; the pivot is all there is to go by.
+				int parent = body.BoneParents[i];
+				if ( parent < 0 || turn[parent] == null ) continue;
+				theirs = Quat.Rotate( turn[parent], body.BonePositions[i] ) * shrink[parent] + offset[parent];
+				ours = stock.BonePositions[s];
+			}
+			Vec3 shift = theirs - ours;
+			if ( shift.Length() < 0.15f * Units.Metre )
+			{
+				result.Landmarks.Add( (ours, shift, EyeReach) );
+				result.Eyes.Add( (ours, theirs) );
+			}
+		}
+
+		// The front of the chest on each side: a bust sits higher or lower on one body than on
+		// another, and rays from the spine only move skin towards or away from it. Cloth made to
+		// bulge over the citizen's chest would bulge where the chest isn't.
+		// Only a chest with a bust has a front to go by. On a flat one the foremost point is
+		// anywhere across it and jumps between two bodies of the same shape.
+		var fronts = new List<(Vec3 Ours, Vec3 Theirs)>();
+		float bust = 0;
+		for ( int side = -1; side <= 1; side += 2 )
+		{
+			if ( !ChestFront( stock, stock.Positions, side, out var ours, out float stands ) ) continue;
+			if ( !ChestFront( stock, result.Positions, side, out var theirs, out _ ) ) continue;
+			bust = MathF.Max( bust, stands );
+			fronts.Add( (ours, theirs) );
+		}
+		if ( bust >= MinBust )
+		{
+			foreach ( var (ours, theirs) in fronts )
+			{
+				Vec3 shift = theirs - ours;
+				if ( shift.Length() < 0.15f * Units.Metre )
+					result.Landmarks.Add( (ours, shift, BustReach) );
+			}
+		}
+
 		return result;
+	}
+
+	const float EyeWeight = 0.2f;              // a vertex this much on the eye bone is part of the eye
+	const float EyeFrontDepth = 0.003f * Units.Metre;   // the front of an eye: this close to its foremost point
+
+	/// <summary>
+	/// The middle of the front of an eye: the vertices the eye bone drives that are furthest
+	/// forward (+X, the way the stock body faces), in the given positions.
+	/// </summary>
+	static bool EyeFront( SkinnedGeometry geo, Vec3[] positions, int eyeBone, out Vec3 front )
+	{
+		front = Vec3.Zero;
+		float most = float.MinValue;
+		for ( int pass = 0; pass < 2; pass++ )
+		{
+			int count = 0;
+			var sum = Vec3.Zero;
+			for ( int v = 0; v < positions.Length; v++ )
+			{
+				bool onEye = false;
+				for ( int j = 0; j < 4 && !onEye; j++ )
+					onEye = geo.BoneIndex[v * 4 + j] == eyeBone && geo.BoneWeight[v * 4 + j] >= EyeWeight;
+				if ( !onEye ) continue;
+				if ( pass == 0 ) most = MathF.Max( most, positions[v].X );
+				else if ( positions[v].X >= most - EyeFrontDepth ) { sum += positions[v]; count++; }
+			}
+			if ( pass == 1 )
+			{
+				if ( count == 0 ) return false;
+				front = sum / count;
+			}
+			else if ( most == float.MinValue ) return false;
+		}
+		return true;
+	}
+
+	/// <summary>
+	/// The foremost point of the chest on one side (+1 left, -1 right), in positions that are in
+	/// the stock pose: between the middle spine bone and the collarbones in height, between the
+	/// middle and the shoulder joint across. Averaged over what is within a few millimetres of it.
+	/// </summary>
+	/// <param name="bust">How far the front stands out from the chest just under it.</param>
+	static bool ChestFront( SkinnedGeometry stock, Vec3[] positions, int side, out Vec3 front, out float bust )
+	{
+		front = Vec3.Zero;
+		bust = 0;
+		int low = Array.IndexOf( stock.BoneNames, "spine_1" ), high = Array.IndexOf( stock.BoneNames, side > 0 ? "clavicle_L" : "clavicle_R" );
+		int shoulder = Array.IndexOf( stock.BoneNames, side > 0 ? "arm_upper_L" : "arm_upper_R" );
+		if ( low < 0 || high < 0 || shoulder < 0 ) return false;
+		float z0 = stock.BonePositions[low].Z, z1 = stock.BonePositions[high].Z;
+		float centre = stock.BonePositions[low].Y, reach = MathF.Abs( stock.BonePositions[shoulder].Y - centre ) * 0.8f;
+		float most = float.MinValue;
+		foreach ( var p in positions )
+		{
+			float across = (p.Y - centre) * side;
+			if ( p.Z < z0 || p.Z > z1 || across < 0.15f * reach || across > reach ) continue;
+			most = MathF.Max( most, p.X );
+		}
+		if ( most == float.MinValue ) return false;
+		int count = 0;
+		foreach ( var p in positions )
+		{
+			float across = (p.Y - centre) * side;
+			if ( p.Z < z0 || p.Z > z1 || across < 0.15f * reach || across > reach || p.X < most - 0.004f * Units.Metre ) continue;
+			front += p;
+			count++;
+		}
+		front /= count;
+
+		// The chest under the front: the foremost skin a bust-depth lower, on the same side.
+		float under = float.MinValue, below = front.Z - 0.08f * Units.Metre;
+		foreach ( var p in positions )
+		{
+			float across = (p.Y - centre) * side;
+			if ( MathF.Abs( p.Z - below ) > 0.01f * Units.Metre || across < 0.15f * reach || across > reach ) continue;
+			under = MathF.Max( under, p.X );
+		}
+		bust = under == float.MinValue ? 0 : front.X - under;
+		return true;
+	}
+
+	static bool HasChildren( SkinnedGeometry geo, int bone )
+	{
+		for ( int i = 0; i < geo.BoneParents.Length; i++ )
+			if ( geo.BoneParents[i] == bone ) return true;
+		return false;
+	}
+
+	/// <summary>
+	/// How thick the body is around a bone with no child to measure it by: the bone runs along
+	/// itself up to where it leaves the skin, and rays straight out from it at a quarter, half
+	/// and three quarters of that, twelve around at each, leave the skin at a median distance.
+	/// Geometry only, so two bodies with different skin weights are measured the same way.
+	/// 0 if too few rays got out.
+	/// </summary>
+	static float Thickness( SkinnedGeometry geo, TriMesh mesh, int bone, out float length )
+	{
+		length = 0;
+		Vec3 start = geo.BonePositions[bone];
+		Vec3 axis = Quat.Rotate( geo.BoneRotations[bone], new Vec3( 1, 0, 0 ) );
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		mesh.Crossings( start, axis, Units.Metre, hits );
+		int leave = hits.FindIndex( h => h.Leaving );
+		if ( leave < 0 || hits[leave].T < 0.02f * Units.Metre ) return 0;
+		length = hits[leave].T;
+
+		Vec3 side = MathF.Abs( axis.Z ) < 0.9f ? Vec3.Cross( axis, new Vec3( 0, 0, 1 ) ) : Vec3.Cross( axis, new Vec3( 1, 0, 0 ) );
+		side /= side.Length();
+		Vec3 other = Vec3.Cross( axis, side );
+		var found = new List<float>();
+		foreach ( float t in new[] { 0.25f, 0.5f, 0.75f } )
+		{
+			Vec3 at = start + axis * (length * t);
+			for ( int k = 0; k < 12; k++ )
+			{
+				float a = k * MathF.PI / 6f;
+				mesh.Crossings( at, side * MathF.Cos( a ) + other * MathF.Sin( a ), Units.Metre, hits );
+				leave = hits.FindIndex( h => h.Leaving );
+				if ( leave >= 0 ) found.Add( hits[leave].T );
+			}
+		}
+
+		if ( found.Count < 12 ) return 0;
+		found.Sort();
+		return found[found.Count / 2];
 	}
 
 	/// <summary>
@@ -270,6 +499,156 @@ public sealed class Repose
 	/// <param name="boneIndex">Four bone slots per garment vertex, as stock bone indices.</param>
 	public Vec3[] FromStockProportions( Vec3[] fitted, int[] boneIndex, float[] boneWeight, SkinnedGeometry stock )
 	{
+		return Grow( fitted, boneIndex, boneWeight, stock );
+	}
+
+
+	/// <summary>
+	/// The body's skin weights under each garment vertex: those of the nearest point of the
+	/// body, as stock bones. Taken back to the body by these instead of its own weights,
+	/// cloth comes back exactly the way the skin under it went in. By its own weights, cloth
+	/// over a part the garment and the body weight differently (a chest the body gives to the
+	/// upper spine and the garment to the lower, a collar on a neck that sits elsewhere on
+	/// this body) comes back a different size or in a different place than the skin.
+	/// </summary>
+	/// <param name="body">The body in the stock pose and proportions (<see cref="Positions"/>).</param>
+	/// <param name="bodyBones">The body's four bone slots per vertex, as stock bone indices.</param>
+	/// <param name="ownBones">The garment's own bone slots, kept where <paramref name="solid"/> is set: a solid object goes back whole.</param>
+	/// <param name="skip">Stock bones whose weights don't count (the eyes: what an eye bone drives is the eye, not skin anything rests on).</param>
+	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip )
+	{
+		var weld = MeshTools.Weld( fitted, out int n );
+		var first = new int[n];
+		for ( int i = fitted.Length - 1; i >= 0; i-- ) first[weld[i]] = i;
+
+		// Per welded vertex: the skin's weights near the skin, the garment's own further out,
+		// blended by how far off the skin it is. Bones get a column each, for the smoothing.
+		var column = new Dictionary<int, int>();
+		var cells = new List<(int Vertex, int Column, float Weight)>();
+		var fixedRow = new bool[n];
+		var blend = new Dictionary<int, float>();
+		for ( int r = 0; r < n; r++ )
+		{
+			int v = first[r];
+			blend.Clear();
+			float skinShare = 0;
+			if ( solid == null || !solid[v] )
+			{
+				float d = body.Nearest( fitted[v], out var q, out int tri );
+				skinShare = Math.Clamp( (SkinFar - d) / (SkinFar - SkinNear), 0f, 1f );
+				fixedRow[r] = d <= SkinNear;   // on the skin: exactly the skin's way back, not evened out
+				if ( tri >= 0 && skinShare > 0 )
+				{
+					int a = body.Tris[tri * 3], b = body.Tris[tri * 3 + 1], c = body.Tris[tri * 3 + 2];
+					var bary = Barycentric( q, body.Verts[a], body.Verts[b], body.Verts[c] );
+					float total = 0;
+					for ( int k = 0; k < 3; k++ )
+					{
+						int corner = k == 0 ? a : k == 1 ? b : c;
+						for ( int j = 0; j < 4; j++ )
+						{
+							int bone = bodyBones[corner * 4 + j];
+							float w = bodyWeights[corner * 4 + j] * bary[k];
+							if ( bone < 0 || w <= 0 || skip[bone] ) continue;
+							blend[bone] = blend.TryGetValue( bone, out float sum ) ? sum + w : w;
+							total += w;
+						}
+					}
+					if ( total > 1e-6f )
+						foreach ( int bone in new List<int>( blend.Keys ) ) blend[bone] = blend[bone] / total * skinShare;
+					else
+						skinShare = 0;
+				}
+				else
+				{
+					skinShare = 0;
+				}
+			}
+			else
+			{
+				fixedRow[r] = true;
+			}
+
+			float own = 0;
+			for ( int j = 0; j < 4; j++ ) if ( ownBones[v * 4 + j] >= 0 ) own += ownWeights[v * 4 + j];
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = ownBones[v * 4 + j];
+				if ( bone < 0 || own <= 0 ) continue;
+				float w = ownWeights[v * 4 + j] / own * (1f - skinShare);
+				blend[bone] = blend.TryGetValue( bone, out float sum ) ? sum + w : w;
+			}
+
+			foreach ( var (bone, w) in blend )
+			{
+				if ( !column.TryGetValue( bone, out int col ) ) column[bone] = col = column.Count;
+				cells.Add( (r, col, w) );
+			}
+		}
+
+		int k2 = column.Count;
+		var grid = new float[n * k2];
+		foreach ( var (r, col, w) in cells ) grid[r * k2 + col] += w;
+
+		// Neighbours off the skin that took their weights from different bits of it (the padding
+		// of a glove over fingers and over the palm) would pull a garment apart. Even them out
+		// over the garment's own edges; cloth on the skin keeps exactly what is under it.
+		var edges = MeshTools.Edges( tris, weld );
+		var next = new float[grid.Length];
+		var count = new int[n];
+		foreach ( var (a, b) in edges ) { count[a]++; count[b]++; }
+		for ( int pass = 0; pass < SmoothPasses; pass++ )
+		{
+			Array.Clear( next );
+			foreach ( var (a, b) in edges )
+				for ( int c = 0; c < k2; c++ ) { next[a * k2 + c] += grid[b * k2 + c]; next[b * k2 + c] += grid[a * k2 + c]; }
+			for ( int r = 0; r < n; r++ )
+			{
+				if ( fixedRow[r] || count[r] == 0 ) continue;
+				for ( int c = 0; c < k2; c++ ) grid[r * k2 + c] = 0.5f * grid[r * k2 + c] + 0.5f * next[r * k2 + c] / count[r];
+			}
+		}
+
+		var boneOf = new int[k2];
+		foreach ( var (bone, col) in column ) boneOf[col] = bone;
+		var bones = new int[fitted.Length * 4];
+		var weights = new float[fitted.Length * 4];
+		var row = new float[k2];
+		for ( int v = 0; v < fitted.Length; v++ )
+		{
+			// Keep the four that count most, the way skinning would.
+			Array.Copy( grid, weld[v] * k2, row, 0, k2 );
+			for ( int slot = 0; slot < 4; slot++ )
+			{
+				int best = -1;
+				float most = 0;
+				for ( int c = 0; c < k2; c++ ) if ( row[c] > most ) { most = row[c]; best = c; }
+				bones[v * 4 + slot] = best >= 0 ? boneOf[best] : -1;
+				if ( best < 0 ) continue;
+				weights[v * 4 + slot] = most;
+				row[best] = 0;
+			}
+		}
+
+		return (bones, weights);
+	}
+
+	const float SkinNear = 0.03f * Units.Metre;   // cloth this close to the skin goes back with it
+	const float SkinFar = 0.06f * Units.Metre;    // and this far off, by its own weights
+	const int SmoothPasses = 3;
+
+	static float[] Barycentric( Vec3 p, Vec3 a, Vec3 b, Vec3 c )
+	{
+		Vec3 e0 = b - a, e1 = c - a, e2 = p - a;
+		float d00 = Vec3.Dot( e0, e0 ), d01 = Vec3.Dot( e0, e1 ), d11 = Vec3.Dot( e1, e1 ), d20 = Vec3.Dot( e2, e0 ), d21 = Vec3.Dot( e2, e1 );
+		float den = d00 * d11 - d01 * d01;
+		if ( MathF.Abs( den ) < 1e-20f ) return new[] { 1f, 0f, 0f };
+		float v = (d11 * d20 - d01 * d21) / den, w = (d00 * d21 - d01 * d20) / den;
+		return new[] { 1f - v - w, v, w };
+	}
+
+	Vec3[] Grow( Vec3[] fitted, int[] boneIndex, float[] boneWeight, SkinnedGeometry stock )
+	{
 		var result = new Vec3[fitted.Length];
 		for ( int v = 0; v < fitted.Length; v++ )
 		{
@@ -281,7 +660,7 @@ public sealed class Repose
 				float w = boneWeight[v * 4 + j];
 				if ( bone < 0 || w <= 0 ) continue;
 				Vec3 joint = stock.BonePositions[bone];
-				sum += (joint + (fitted[v] - joint) * BoneScale[bone]) * w;
+				sum += (joint + Scaled( fitted[v] - joint, bone, false )) * w;
 				weight += w;
 			}
 

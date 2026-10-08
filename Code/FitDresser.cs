@@ -62,6 +62,18 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	public float Height { get; set; } = 0.5f;
 
 	/// <summary>
+	/// Skin tone, same as the stock Dresser's tint: 0 to 1 across the skin shader's range of
+	/// tones, set on the body and on any skin a garment carries. With Use Local Avatar the
+	/// avatar's own tone is used.
+	/// </summary>
+	[Property, Range( 0, 1 ), HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnSkinChanged ) )]
+	public float Tint { get; set; } = 0.5f;
+
+	/// <summary>Skin age, same as the stock Dresser's: how worn the skin shader draws the skin.</summary>
+	[Property, Range( 0, 1 ), HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnSkinChanged ) )]
+	public float Age { get; set; } = 0.5f;
+
+	/// <summary>
 	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
 	/// part of the garment. The copy has the stock body's shape and doesn't suit another body.
 	/// With this on, such clothing is worn without its skin and the body part it meant to hide
@@ -257,6 +269,9 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 		var container = BuildContainer();
 		ApplyHeight( UseLocalAvatar ? container.Height : Height );
+		skinTint = UseLocalAvatar ? container.Tint : Tint;
+		skinAge = UseLocalAvatar ? container.Age : Age;
+		ApplySkin();
 		var worn = container.Clothing
 			.Where( x => x.Clothing is not null )
 			.ToList();
@@ -349,6 +364,32 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			ApplyHeight( after );
 	}
 
+	// The tone and age the body and every garment on it are drawn with right now.
+	float skinTint = 0.5f, skinAge = 0.5f;
+
+	void OnSkinChanged( float before, float after )
+	{
+		if ( UseLocalAvatar ) return;
+		skinTint = Tint;
+		skinAge = Age;
+		ApplySkin();
+	}
+
+	// Same attributes as the stock Dresser: the skin shader reads them off each renderer.
+	void ApplySkin()
+	{
+		if ( !BodyTarget.IsValid() ) return;
+		SetSkin( BodyTarget );
+		foreach ( var renderer in BodyTarget.GameObject.Children.Where( x => x.Tags.Has( ClothingTag ) ).SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ) )
+			SetSkin( renderer );
+	}
+
+	void SetSkin( SkinnedModelRenderer renderer )
+	{
+		renderer.Attributes.Set( "skin_tint", skinTint );
+		renderer.Attributes.Set( "skin_age", skinAge );
+	}
+
 	// Same parameter and range as the stock Dresser.
 	void ApplyHeight( float height )
 	{
@@ -390,6 +431,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			renderer.BoneMergeTarget = BodyTarget;
 			renderer.SetMaterialOverride( skin, "skin" );
 			renderer.SetMaterialOverride( eyes, "eyes" );
+			SetSkin( renderer );
 
 			if ( !string.IsNullOrEmpty( item.MaterialGroup ) )
 				renderer.MaterialGroup = item.MaterialGroup;

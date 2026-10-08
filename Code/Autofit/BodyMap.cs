@@ -33,7 +33,6 @@ public sealed class BodyMap
 	const float UvMaxMove = 0.15f * Units.Metre;    // a UV match further away than this is a different UV layout
 	const int MinOwnTriangles = 8;                  // a bone needs this many skin triangles of its own to get an axis
 	const float MinWeight = 0.05f;
-	const float LandmarkReach = 0.07f * Units.Metre;  // how far around a landmark the skin moves with it
 
 	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs ) =>
 		Build( stock, old, other, otherUvs, null, null );
@@ -43,8 +42,8 @@ public sealed class BodyMap
 	/// hits on skin that bone or a bone near it drives, so a ray from the spine can't slip
 	/// between two ribs and land on an arm.
 	/// </param>
-	/// <param name="landmarks">Face landmarks from <see cref="Repose"/>: skin near each one shifts along the surface with it.</param>
-	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs, SkinByBone otherSkin, List<(Vec3 At, Vec3 Shift)> landmarks )
+	/// <param name="landmarks">Landmarks from <see cref="Repose"/> (eyes, the front of the chest): skin within reach of each one shifts along the surface with it.</param>
+	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs, SkinByBone otherSkin, List<(Vec3 At, Vec3 Shift, float Reach)> landmarks )
 	{
 		var result = new BodyMap();
 		var weld = MeshTools.Weld( old.Verts, out int n );
@@ -111,9 +110,9 @@ public sealed class BodyMap
 				if ( landmarks != null )
 				{
 					Vec3 normal = oldNormals[v] / MathF.Max( oldNormals[v].Length(), 1e-20f );
-					foreach ( var (at, shift) in landmarks )
+					foreach ( var (at, shift, reach) in landmarks )
 					{
-						float d = (s - at).Length() / LandmarkReach;
+						float d = (s - at).Length() / reach;
 						float w = MathF.Exp( -0.5f * d * d );
 						if ( w > 0.01f ) move[i] += (shift - normal * Vec3.Dot( normal, shift )) * w;
 					}
