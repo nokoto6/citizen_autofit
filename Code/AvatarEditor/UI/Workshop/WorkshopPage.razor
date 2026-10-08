@@ -1,0 +1,118 @@
+@using System;
+@using System.Collections.Generic;
+@using System.Linq;
+@using System.Threading.Tasks;
+@using Sandbox;
+@using Sandbox.UI;
+@namespace FitAvatar
+
+@* The avatar editor's workshop page, cut down to what a game can do: find community clothing
+   and put it on. The menu's voting and reviews go through the menu's own overlays. *@
+
+<root>
+
+	<div class="body-left">
+		<div class="title">Workshop</div>
+		<div class="subtitle">Community clothing from the workshop. Click an item to put it on, click it again to take it off. On Aurora each one is refitted to her first, which takes a few seconds.</div>
+
+		<FormRow Label="Search">
+			<Content>
+				<TextEntry placeholder="Search clothing" Value:bind="@Query" onsubmit=@Search></TextEntry>
+			</Content>
+		</FormRow>
+
+		<FormRow Label="Sort">
+			<Content>
+				<div class="buttongroup bg-round">
+					<div class="@(sort == "newest" ? "active" : "")" onclick=@(() => Sort( "newest" ))>Newest</div>
+					<div class="@(sort == "popular" ? "active" : "")" onclick=@(() => Sort( "popular" ))>Popular</div>
+					<div class="@(sort == "quality" ? "active" : "")" onclick=@(() => Sort( "quality" ))>Voted</div>
+				</div>
+			</Content>
+		</FormRow>
+	</div>
+
+	<div class="body-center">
+
+	</div>
+
+	<div class="body-right">
+
+		<div class="package-grid">
+			@foreach ( var package in found )
+			{
+				var worn = loaded.TryGetValue( package.FullIdent, out var clothing ) && Manager.IsSelected( clothing );
+
+				<div class="workshop-item @(worn ? "active" : "") @(loading.Contains( package.FullIdent ) ? "loading" : "")" tooltip="@package.Title" onclick=@(() => Wear( package ))>
+					<div class="card-image" style="background-image: url( @package.Thumb )"></div>
+					<div class="card-title">@package.Title</div>
+				</div>
+			}
+
+			@if ( result is not null && found.Count < result.TotalCount )
+			{
+				<div class="workshop-more" onclick=@(() => _ = Fetch())><i>expand_more</i></div>
+			}
+		</div>
+
+	</div>
+
+</root>
+
+@code
+{
+	AvatarEditManager Manager => Scene.GetAll<AvatarEditManager>().First();
+
+	public string Query { get; set; } = "";
+	string sort = "newest";
+	Package.FindResult result;
+	readonly List<Package> found = new();
+	readonly Dictionary<string, Clothing> loaded = new();
+	readonly HashSet<string> loading = new();
+
+	protected override void OnAfterTreeRender( bool firstTime )
+	{
+		base.OnAfterTreeRender( firstTime );
+		if ( firstTime ) Search();
+	}
+
+	void Sort( string by )
+	{
+		sort = by;
+		Search();
+	}
+
+	void Search()
+	{
+		found.Clear();
+		result = null;
+		_ = Fetch();
+	}
+
+	async Task Fetch()
+	{
+		var query = $"type:clothing sort:{sort} {Query}".Trim();
+		result = await Package.FindAsync( query, 60, found.Count );
+		if ( result?.Packages != null ) found.AddRange( result.Packages );
+		StateHasChanged();
+	}
+
+	async void Wear( Package package )
+	{
+		if ( loaded.TryGetValue( package.FullIdent, out var known ) )
+		{
+			Manager.OnClothingToggle( known );
+			StateHasChanged();
+			return;
+		}
+
+		if ( !loading.Add( package.FullIdent ) ) return;
+		StateHasChanged();
+		var clothing = await Manager.WearPackageAsync( package );
+		loading.Remove( package.FullIdent );
+		if ( clothing.IsValid() ) loaded[package.FullIdent] = clothing;
+		StateHasChanged();
+	}
+
+	protected override int BuildHash() => HashCode.Combine( found.Count, loading.Count, loaded.Count, sort, Manager?.OutfitHash );
+}

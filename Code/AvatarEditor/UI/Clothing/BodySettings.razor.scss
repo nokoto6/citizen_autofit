@@ -1,0 +1,85 @@
+BodySettings
+{
+    flex-direction: column;
+    gap: 8px;
+}
+
+TextEntry
+{
+    font-size: 32px;
+    margin-bottom: 32px;
+}
+
+.skin-items
+{
+    gap: 10px;
+    flex-wrap: wrap;
+
+    ClothingIcon
+    {
+        width: 70px;
+        height: 70px;
+        aspect-ratio: 1;
+        border-radius: 8px;
+    }
+}
+
+.eye-items
+{
+    gap: 8px;
+    flex-wrap: wrap;
+    pointer-events: all;
+
+    .eye
+    {
+        width: 40px;
+        height: 40px;
+        border-radius: 20px;
+        cursor: pointer;
+        border: 2px solid #fff3;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: brightness( 0.4 ) blur( 10px );
+
+        i
+        {
+            font-family: "Material Icons";
+            font-size: 22px;
+            opacity: 0.6;
+        }
+
+        &.active
+        {
+            border: 3px solid white;
+        }
+    }
+}
+
+.actions
+{
+    margin-top: 32px;
+    gap: 10px;
+}
+
+// Four bodies in one row: the menu's two fit with room to spare, these would wrap mid-word.
+.buttongroup
+{
+    font-size: 16px;
+
+    > *
+    {
+        white-space: nowrap;
+        flex-shrink: 0;
+        padding: 8px 12px;
+    }
+}
+
+FormRow > .label
+{
+    width: 110px;
+}
+
+FormRow > .content
+{
+    width: 380px;
+}

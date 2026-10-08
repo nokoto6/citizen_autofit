@@ -310,6 +310,25 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		Apply();
 	}
 
+	/// <summary>
+	/// Recolours a garment that is on (one with a colour to pick), in place: the colour is the
+	/// renderer's tint, nothing is dressed anew. The colour is kept in Clothing for the next Apply.
+	/// </summary>
+	public void SetClothingTint( Sandbox.Clothing item, float tint )
+	{
+		foreach ( var entry in Clothing )
+			if ( entry.Clothing == item ) entry.Tint = tint;
+		if ( !BodyTarget.IsValid() || item is null || !item.AllowTintSelect ) return;
+		var color = item.TintSelection.Evaluate( tint.Clamp( 0, 1 ) );
+		string name = $"Clothing - {item.ResourceName}";
+		foreach ( var child in BodyTarget.GameObject.Children )
+		{
+			if ( child.Name != name || !child.Tags.Has( ClothingTag ) ) continue;
+			foreach ( var renderer in child.Components.GetAll<SkinnedModelRenderer>() )
+				renderer.Tint = color.WithAlpha( renderer.Tint.a );
+		}
+	}
+
 	[Button( "Apply Clothing" )]
 	public void Apply()
 	{
@@ -577,8 +596,10 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		var metal = metalMap ? Valid( original.GetTexture( "g_tMetalness" ) ) : null;
 		made.Set( "g_tToonMetal", metal ?? Texture.White );
 		made.Set( "g_flToonMetalInColor", metalMap && metal is null && !cutOut ? 1f : 0f );
-		// A cut-out's colour alpha is its cut, so where its map can't be found it gets none.
-		made.Set( "g_flToonMetal", metalMap ? (metal is not null || !cutOut ? 1f : 0f) : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
+		// A cut-out (hair cards, lace) is never metal in the toon look. Its colour alpha is its cut,
+		// not a metal map, and the stock hair sets a metalness of 0.96 as a sheen: drawn as metal,
+		// with no colour of its own, white hair came out black.
+		made.Set( "g_flToonMetal", cutOut ? 0f : metalMap ? 1f : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
 		// Skin keeps its occlusion in the green of its mask texture (the humans' faces have it).
 		bool skin = shader.Contains( "skin" );
 		var ao = complex ? Valid( original.GetTexture( "g_tAmbientOcclusion" ) ) : skin ? Valid( original.GetTexture( "g_tCombinedMasks" ) ) : null;

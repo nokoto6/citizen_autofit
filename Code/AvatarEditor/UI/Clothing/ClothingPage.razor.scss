@@ -1,0 +1,22 @@
+ClothingPage
+{
+    display: contents;
+}
+
+ClothingPage > .body-right
+{
+    flex-direction: column;
+}
+
+ClothingPage > .body-right > .category
+{
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: 16px;
+}
+
+ClothingPage > .body-right > .items
+{
+    position: relative;
+    flex-grow: 1;
+}

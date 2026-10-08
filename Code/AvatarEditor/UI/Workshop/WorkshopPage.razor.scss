@@ -1,0 +1,139 @@
+WorkshopPage
+{
+    display: contents;
+}
+
+WorkshopPage > .body-left
+{
+    flex-direction: column;
+    position: relative;
+	max-width: 500px;
+
+
+	.title
+	{
+		font-size: 48px;
+		font-weight: 650;
+	}
+
+	.subtitle
+	{
+		font-size: 16px;
+		margin-bottom: 64px;
+	}
+}
+
+WorkshopPage > .body-right
+{
+	flex-direction: column;
+	position: relative;
+	max-width: 550px;
+}
+
+WorkshopPage > .body-right > .category
+{
+    justify-content: center;
+    flex-shrink: 0;
+    margin-bottom: 16px;
+}
+
+WorkshopPage > .body-right > .items
+{
+    position: relative;
+    flex-grow: 1;
+}
+
+.body-content
+{
+	position: absolute;
+	opacity: 1;
+	transition: all 0.1s ease-out;
+	transform: translateY( 0px );
+	max-height: 100%;
+	flex-shrink: 0;
+	height: 100%;
+
+	&:intro
+	{
+		opacity: 0;
+		transform: translateY( -40px );
+	}
+
+	&.hidden
+	{
+		opacity: 0;
+		pointer-events: none;
+		transform: translateY( -40px );
+	}
+}
+.package-grid
+{
+	flex-wrap: wrap;
+	align-content: flex-start;
+	gap: 8px;
+	overflow-y: scroll;
+	pointer-events: all;
+	flex-grow: 1;
+}
+
+.workshop-item
+{
+	width: 128px;
+	height: 150px;
+	background-color: #0008;
+	border-radius: 4px;
+	padding: 4px;
+	flex-direction: column;
+	backdrop-filter: blur( 10px );
+	transition: all 0.1s ease;
+	cursor: pointer;
+
+	&:hover
+	{
+		background-color: #000d;
+	}
+
+	&.active
+	{
+		background-color: #08f;
+	}
+
+	&.loading
+	{
+		opacity: 0.5;
+	}
+
+	.card-image
+	{
+		background-position: center;
+		background-size: contain;
+		background-repeat: no-repeat;
+		flex-grow: 1;
+	}
+
+	.card-title
+	{
+		font-size: 12px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		padding: 2px 4px;
+	}
+}
+
+.workshop-more
+{
+	width: 128px;
+	height: 150px;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	backdrop-filter: brightness( 0.4 ) blur( 10px );
+	border-radius: 4px;
+
+	i
+	{
+		font-family: "Material Icons";
+		font-size: 40px;
+	}
+}

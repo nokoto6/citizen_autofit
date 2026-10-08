@@ -1,0 +1,22 @@
+@using System;
+@using System.Linq;
+@using System.Collections.Generic;
+@using System.Threading.Tasks;
+@using Sandbox;
+@using Sandbox.UI;
+@namespace FitAvatar
+@inherits Panel
+
+<root>
+
+    <div class="label">@Label</div>
+    <div class="content">@Content</div>
+
+</root>
+
+@code
+{
+    [Parameter] public string Label { get; set; }
+    [Parameter] public RenderFragment Content { get; set; }
+
+}
