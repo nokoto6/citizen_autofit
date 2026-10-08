@@ -62,9 +62,18 @@ public sealed class Repose
 
 	/// <summary>The front of each eye, on the stock body and on this one (in the stock pose). What glasses go by.</summary>
 	public List<(Vec3 Stock, Vec3 Body)> Eyes = new();
+	/// <summary>The face down its middle, top to bottom: between the eyes, the tip of the nose, the mouth, the chin. Empty when a face has no mouth to find.</summary>
+	public List<(Vec3 Stock, Vec3 Body)> Face = new();
 
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
+	const float FaceReach = 0.03f * Units.Metre;   // how far around the nose, the mouth and the chin
+	const float MouthFrontDepth = 0.004f * Units.Metre;  // how deep the front of the mouth is taken
+	const float ProfileHalfWidth = 0.006f * Units.Metre; // how far either side of the middle the profile is read
+	const float ProfileDepth = 0.17f * Units.Metre;      // how far below the eyes
+	const float ProfileSlice = 0.003f * Units.Metre;
+	const float NoseDepth = 0.09f * Units.Metre;         // the nose is no further below the eyes than this
+	const float ChinBack = 0.045f * Units.Metre;         // the profile this far behind the nose tip is the neck
 	const float MinBust = 0.02f * Units.Metre;     // a chest front standing out less than this is flat
 	const float BustDepth = 0.1f * Units.Metre;    // how far under the front of the chest to look for the fold under a bust
 	const float MinTipAcross = 0.4f;                // a bust tip is at least this far out to the shoulder
@@ -320,6 +329,29 @@ public sealed class Repose
 			}
 		}
 
+		// The lower face: the tip of the nose, the mouth and the chin. Skin found by rays from
+		// the skull lands at the same angle on the other face, and a face with its features
+		// set lower and closer together (an anime face, the eyes big and low, the mouth near the
+		// chin) then has the stock upper lip on its nose: a moustache sat there.
+		if ( result.Eyes.Count > 0 )
+		{
+			Vec3 eyeOurs = Vec3.Zero, eyeTheirs = Vec3.Zero;
+			foreach ( var (ours, theirs) in result.Eyes ) { eyeOurs += ours; eyeTheirs += theirs; }
+			eyeOurs /= result.Eyes.Count;
+			eyeTheirs /= result.Eyes.Count;
+			if ( LowerFace( stock, stock.Positions, eyeOurs, out var stockFace ) && LowerFace( body, result.Positions, eyeTheirs, out var bodyFace ) )
+			{
+				result.Face.Add( (eyeOurs, eyeTheirs) );
+				for ( int k = 0; k < stockFace.Length; k++ )
+				{
+					result.Face.Add( (stockFace[k], bodyFace[k]) );
+					Vec3 shift = bodyFace[k] - stockFace[k];
+					if ( shift.Length() < 0.15f * Units.Metre )
+						result.Landmarks.Add( (stockFace[k], shift, FaceReach) );
+				}
+			}
+		}
+
 		// The front of the chest on each side: a bust sits higher or lower on one body than on
 		// another, and rays from the spine only move skin towards or away from it. Cloth made to
 		// bulge over the citizen's chest would bulge where the chest isn't.
@@ -425,6 +457,58 @@ public sealed class Repose
 	/// The middle of the front of an eye: the vertices the eye bone drives that are furthest
 	/// forward (+X, the way the stock body faces), in the given positions.
 	/// </summary>
+	/// <summary>
+	/// The tip of the nose, the middle of the mouth and the bottom of the chin, in positions in
+	/// the stock pose (forward is +x). The mouth is the front of what is drawn with a mouth
+	/// material (the inside of the mouth, the teeth): a face paints its lips, so they can't be
+	/// told from the skin. The nose and the chin are read off the face's profile down its
+	/// middle: the nose stands out most below the eyes, and the chin is where the profile,
+	/// going down, drops away to the neck.
+	/// </summary>
+	static bool LowerFace( SkinnedGeometry geo, Vec3[] positions, Vec3 eye, out Vec3[] marks )
+	{
+		marks = null;
+		var mouth = new HashSet<int>();
+		foreach ( var (first, count, material) in geo.Draws )
+			if ( material != null && material.Contains( "mouth", StringComparison.OrdinalIgnoreCase ) )
+				for ( int k = first; k < first + count; k++ ) mouth.Add( geo.Indices[k] );
+		if ( mouth.Count == 0 ) return false;
+		float most = float.MinValue;
+		foreach ( int v in mouth ) most = MathF.Max( most, positions[v].X );
+		var mouthFront = Vec3.Zero;
+		int inFront = 0;
+		foreach ( int v in mouth )
+			if ( positions[v].X >= most - MouthFrontDepth ) { mouthFront += positions[v]; inFront++; }
+		mouthFront /= inFront;
+
+		// The profile: the foremost point in each slice of height, down the middle of the face.
+		int slices = (int)(ProfileDepth / ProfileSlice);
+		var front = new Vec3[slices];
+		var found = new bool[slices];
+		foreach ( var p in positions )
+		{
+			if ( MathF.Abs( p.Y - eye.Y ) > ProfileHalfWidth || p.Z >= eye.Z || p.Z <= eye.Z - ProfileDepth ) continue;
+			int k = Math.Min( slices - 1, (int)((eye.Z - p.Z) / ProfileSlice) );
+			if ( !found[k] || p.X > front[k].X ) { front[k] = p; found[k] = true; }
+		}
+		int nose = -1;
+		for ( int k = 0; k < slices && (k + 1) * ProfileSlice <= NoseDepth; k++ )
+			if ( found[k] && (nose < 0 || front[k].X > front[nose].X) ) nose = k;
+		if ( nose < 0 ) return false;
+		int chin = nose, gap = 0;
+		for ( int k = nose + 1; k < slices && gap <= 2; k++ )
+		{
+			if ( !found[k] ) { gap++; continue; }
+			if ( front[k].X < front[nose].X - ChinBack ) break;
+			chin = k;
+			gap = 0;
+		}
+		// A chin has to be below the mouth, or the profile ran off somewhere else.
+		if ( front[chin].Z >= mouthFront.Z ) return false;
+		marks = new[] { front[nose], mouthFront, front[chin] };
+		return true;
+	}
+
 	static bool EyeFront( SkinnedGeometry geo, Vec3[] positions, int eyeBone, out Vec3 front )
 	{
 		front = Vec3.Zero;

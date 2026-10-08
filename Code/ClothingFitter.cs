@@ -351,6 +351,9 @@ public static class ClothingFitter
 			if ( started != generation ) return null;
 			var reading = System.Diagnostics.Stopwatch.StartNew();
 			var atlases = ReadAtlases( levels );
+			// A garment with morphs (a beard) takes them off the body's face, see FaceMorphs.
+			bool morphed = levels.Any( x => x.Morphs.Any( set => set.Morphs.Count > 0 ) );
+			var bodyAtlases = morphed ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
 			double readingMs = reading.Elapsed.TotalMilliseconds;
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
@@ -363,11 +366,11 @@ public static class ClothingFitter
 			// A garment with morph targets (a beard) goes on once, finished. Every model swapped
 			// under a renderer that composites morphs is one more chance to hand the GPU a morph
 			// texture that has just been freed.
-			bool preview = !levels.Any( x => x.Morphs.Any( set => set.Morphs.Count > 0 ) );
+			bool preview = !morphed;
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
 				if ( i == 0 ) shapes[key] = (result.StockFit, level.Indices);
@@ -400,7 +403,7 @@ public static class ClothingFitter
 				{
 					var level = levels[i];
 					var detailed = done[0];
-					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed ) );
+					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body.Geo, bodyAtlases ) );
 					if ( started != generation ) return null;
 					done[i] = result;
 					worker += result.Milliseconds;
@@ -866,6 +869,60 @@ public static class ClothingFitter
 	}
 
 	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
+	const float MorphFull = 0.015f * Units.Metre;   // a garment this close to the skin moves with it in full
+	const float MorphReach = 0.04f * Units.Metre;   // and from this far keeps its own morphs
+
+	/// <summary>
+	/// A beard's morphs are made for the stock face: its jaw drops so far and its lips spread so
+	/// wide. On a face of other proportions they open the beard where the mouth isn't. Each bit
+	/// of the garment takes, for every morph of the body, the move the skin under it makes, in
+	/// full close to the skin and less further off, where the garment's own morph of that name
+	/// takes over. Positions are the garment's in the body's rest pose, the same space as the
+	/// body's own morphs.
+	/// </summary>
+	static void FaceMorphs( Vec3[] positions, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs )
+	{
+		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
+		foreach ( var set in body.Morphs )
+		{
+			if ( set.AtlasPath == null || !bodyAtlases.TryGetValue( set.AtlasPath, out var atlas ) ) continue;
+			foreach ( var (name, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height ) )
+			{
+				if ( !skin.TryGetValue( name, out var morph ) )
+					skin[name] = morph = (new Vec3[body.Positions.Length], new Vec3[body.Positions.Length]);
+				foreach ( var (vertex, move, turn) in deltas )
+				{
+					morph.Position[vertex] = move;
+					morph.Normal[vertex] = turn;
+				}
+			}
+		}
+		if ( skin.Count == 0 ) return;
+
+		var mesh = new TriMesh( body.Positions, body.Indices );
+		for ( int v = 0; v < positions.Length; v++ )
+		{
+			float d = mesh.Nearest( positions[v], out var at, out int tri );
+			if ( tri < 0 ) continue;
+			float w = Math.Clamp( (MorphReach - d) / (MorphReach - MorphFull), 0f, 1f );
+			if ( w <= 0 ) continue;
+			int a = body.Indices[tri * 3], b = body.Indices[tri * 3 + 1], c = body.Indices[tri * 3 + 2];
+			GarmentFit.Barycentric( at, body.Positions[a], body.Positions[b], body.Positions[c], out float u, out float bv, out float bw );
+			foreach ( var (name, (move, turn)) in skin )
+			{
+				var dp = move[a] * u + move[b] * bv + move[c] * bw;
+				var dn = turn[a] * u + turn[b] * bv + turn[c] * bw;
+				if ( !morphs.TryGetValue( name, out var own ) )
+				{
+					if ( !Seen( dp * w, dn * w ) ) continue;
+					morphs[name] = own = (new Vec3[positions.Length], new Vec3[positions.Length]);
+				}
+				own.Position[v] = own.Position[v] * (1 - w) + dp * w;
+				own.Normal[v] = own.Normal[v] * (1 - w) + dn * w;
+			}
+		}
+	}
+
 	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
 	// moves as a whole has close to a million deltas, all copied on the main thread when the
 	// model is made. Most of the ones under the floor are the atlas's 8-bit rounding anyway.
@@ -875,7 +932,7 @@ public static class ClothingFitter
 	static bool Seen( Vec3 move, Vec3 turn ) =>
 		move.LengthSquared() >= MorphFloor * MorphFloor || turn.LengthSquared() >= TurnFloor * TurnFloor;
 
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null )
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, SkinnedGeometry body = null, Dictionary<string, Atlas> bodyAtlases = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
@@ -893,7 +950,7 @@ public static class ClothingFitter
 		}
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
 		var solid = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked );
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray() );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
@@ -932,6 +989,7 @@ public static class ClothingFitter
 				Shading.TurnInPlace( frames, move );
 				Shading.TurnInPlace( frames, turn );
 			}
+			if ( body != null && bodyAtlases != null ) FaceMorphs( positions, body, bodyAtlases, morphs );
 		}
 
 		// The garment's bones in the body's rest pose.

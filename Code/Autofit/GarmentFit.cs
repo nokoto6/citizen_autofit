@@ -270,7 +270,7 @@ public static class GarmentFit
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
 	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
 	/// <param name="stiff">Per stock bone, the part it belongs to that changes as a whole from body to body (a foot: its ankle bone), -1 for none. Garment on such a part follows one smooth change of it instead of every point of the skin.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null )
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -501,24 +501,18 @@ public static class GarmentFit
 			// landmark), the hair over it doesn't. A fringe that followed the eyes apart and
 			// down came out as cards stretched sideways over the cheeks. The whole heap, the
 			// long locks that bend like cloth included.
-			// Below the eyes it is the other way round. A beard grows on the face and goes where
-			// the face goes: kept from sliding with it, a moustache made for a face with its eyes
-			// 5 cm higher sat between Aurora's eyes.
-			float eyeZ = float.NaN;
-			if ( eyes != null && eyes.Length > 0 )
-			{
-				eyeZ = 0;
-				foreach ( var (stockEye, _) in eyes ) eyeZ += stockEye.Z;
-				eyeZ /= eyes.Length;
-			}
-			if ( landmarked != null && givenMove == null )
+			// A beard is the other way round: it grows on the face and goes where the face goes,
+			// every bit of it with the skin it grows from. Kept from sliding with the eyes, a
+			// moustache made for a face with its eyes 5 cm higher sat between Aurora's eyes, and
+			// moved as a whole (a lock's move) it kept the stock face's size on a smaller face,
+			// with no room left under it.
+			bool beard = Beard( loose, pts, old, eyes );
+			if ( beard && givenMove == null && face != null && face.Length == 4 )
+				FaceWarp( loose, pts, move, old, other, face );
+			else if ( landmarked != null && givenMove == null && !beard )
 				for ( int i = 0; i < n; i++ )
-				{
-					if ( isSolid[i] || old.Nearest( pts[i], out var s, out int tri ) >= SkinReach || tri < 0 ) continue;
-					float onFace = float.IsNaN( eyeZ ) ? 0 : Math.Clamp( (eyeZ - BeardTop - s.Z) / (BeardFull - BeardTop), 0, 1 );
-					move[i] -= FieldAt( landmarked, s, tri ) * (1 - onFace);
-				}
-			FitLoose( loose, pts, move, wanted, away, fitted, Push );
+					if ( !isSolid[i] && old.Nearest( pts[i], out var s, out int tri ) < SkinReach && tri >= 0 ) move[i] -= FieldAt( landmarked, s, tri );
+			FitLoose( loose, pts, move, wanted, away, fitted, Push, beard ? BeardReach : LockReach );
 		}
 
 		var clothTris = new List<int>();
@@ -855,7 +849,7 @@ public static class GarmentFit
 	/// other cards lie within reach, so the heap bends smoothly and no card leaves its
 	/// neighbours.
 	/// </summary>
-	static void FitLoose( List<int> loose, Vec3[] pts, Vec3[] move, float[] wanted, Vec3[] away, Vec3[] fitted, PushTest push )
+	static void FitLoose( List<int> loose, Vec3[] pts, Vec3[] move, float[] wanted, Vec3[] away, Vec3[] fitted, PushTest push, float lockReach )
 	{
 		// The skin's move is averaged over a lock's length: a card whose root took the
 		// scalp's move and whose tip took the face's turned to point out of the face. Pushes
@@ -863,7 +857,7 @@ public static class GarmentFit
 		var smooth = new Vec3[pts.Length];
 		var scratch = new Vec3[pts.Length];
 		foreach ( int i in loose ) smooth[i] = move[i];
-		var wide = new Neighbourhood( loose, pts, LockReach );
+		var wide = new Neighbourhood( loose, pts, lockReach );
 		for ( int pass = 0; pass < LoosePasses; pass++ )
 		{
 			wide.Blur( smooth, scratch );
@@ -945,8 +939,95 @@ public static class GarmentFit
 	const float LockReach = 0.08f * Units.Metre;    // and this close take one move: about a lock's length
 	const float SkinReach = 0.08f * Units.Metre;    // hair this far from the skin still took the skin's move
 	const int LoosePasses = 2;
-	const float BeardTop = 0.01f * Units.Metre;     // hair from this far below the eyes on starts going the face's way
-	const float BeardFull = 0.04f * Units.Metre;    // and from this far below goes all of it
+	const float BeardTop = 0.01f * Units.Metre;     // hair that grows this far below the eyes and lower
+	const float BeardBack = 0.09f * Units.Metre;    // and no further back than this behind them is on the face
+	const float BeardShare = 0.7f;                  // a heap of cards this much of which is on the face is a beard
+	const float BeardReach = 0.015f * Units.Metre;  // what a beard's move is averaged over: a few cards, not a lock
+
+	/// <summary>
+	/// A beard laid onto another face by the face's own marks rather than by the skin under each
+	/// card, which rays from the skull carry at the same height on the other head: on a face
+	/// with its features lower and closer together the stock upper lip lands on the nose. Down
+	/// the face, a point between two marks (the eyes, the nose tip, the mouth, the chin) goes
+	/// to the same place between them on the other face, so the beard takes the other face's
+	/// proportions. Across, it is narrowed or widened as the face is at that height. The pushes
+	/// off the skin that follow keep it lying on the face.
+	/// </summary>
+	static void FaceWarp( List<int> idx, Vec3[] pts, Vec3[] move, TriMesh stock, TriMesh body, (Vec3 Stock, Vec3 Body)[] face )
+	{
+		float stockSpan = face[0].Stock.Z - face[3].Stock.Z, bodySpan = face[0].Body.Z - face[3].Body.Z;
+		if ( stockSpan <= 0 || bodySpan <= 0 ) return;
+		var stockWidth = FaceWidths( stock, face[0].Stock, face[3].Stock.Z - FaceBelow, FaceBack );
+		var bodyWidth = FaceWidths( body, face[0].Body, face[3].Body.Z - FaceBelow * bodySpan / stockSpan, FaceBack * bodySpan / stockSpan );
+		foreach ( int i in idx )
+		{
+			var p = pts[i];
+			// Between which two marks, and how far between.
+			Vec3 shift;
+			if ( p.Z >= face[0].Stock.Z ) shift = face[0].Body - face[0].Stock;
+			else if ( p.Z <= face[3].Stock.Z ) shift = face[3].Body - face[3].Stock;
+			else
+			{
+				int k = 0;
+				while ( k < 2 && p.Z < face[k + 1].Stock.Z ) k++;
+				float span = face[k].Stock.Z - face[k + 1].Stock.Z;
+				float t = span > 1e-6f ? (face[k].Stock.Z - p.Z) / span : 0;
+				shift = (face[k].Body - face[k].Stock) * (1 - t) + (face[k + 1].Body - face[k + 1].Stock) * t;
+			}
+			var to = p + shift;
+			float ws = WidthAt( stockWidth, face[0].Stock.Z, p.Z ), wb = WidthAt( bodyWidth, face[0].Body.Z, to.Z );
+			float across = ws > 0 && wb > 0 ? Math.Clamp( wb / ws, 0.5f, 1.5f ) : 1f;
+			to = new Vec3( to.X, face[0].Body.Y + (p.Y - face[0].Stock.Y) * across, to.Z );
+			move[i] = to - p;
+		}
+	}
+
+	const float FaceSlice = 0.002f * Units.Metre;   // the face's width is measured in slices this high
+	const float FaceBelow = 0.08f * Units.Metre;    // and down to this far below the chin (a beard hangs)
+	const float FaceBack = 0.07f * Units.Metre;     // of the head no further back than this behind the eyes (not the ears)
+
+	// Half the face's width in slices from the eyes down, by the skin in front of the ears.
+	static float[] FaceWidths( TriMesh mesh, Vec3 eyes, float bottom, float back )
+	{
+		int slices = Math.Max( 1, (int)((eyes.Z - bottom) / FaceSlice) + 1 );
+		var width = new float[slices];
+		foreach ( var v in mesh.Verts )
+		{
+			if ( v.Z > eyes.Z || v.Z < bottom || v.X < eyes.X - back ) continue;
+			int k = Math.Min( slices - 1, (int)((eyes.Z - v.Z) / FaceSlice) );
+			width[k] = MathF.Max( width[k], MathF.Abs( v.Y - eyes.Y ) );
+		}
+		return width;
+	}
+
+	static float WidthAt( float[] width, float top, float z )
+	{
+		int k = Math.Clamp( (int)((top - z) / FaceSlice), 0, width.Length - 1 );
+		// The widest of a few slices round it: a slice can catch only a few vertices.
+		float most = 0;
+		for ( int j = Math.Max( 0, k - 2 ); j <= Math.Min( width.Length - 1, k + 2 ); j++ ) most = MathF.Max( most, width[j] );
+		return most;
+	}
+
+	/// <summary>
+	/// Whether a heap of cards grows on the face (a beard, a moustache, mutton chops) rather
+	/// than the scalp: most of it lies by skin below the eyes and in front, not behind them.
+	/// </summary>
+	static bool Beard( List<int> loose, Vec3[] pts, TriMesh old, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		if ( eyes == null || eyes.Length == 0 || loose.Count == 0 ) return false;
+		var eye = Vec3.Zero;
+		foreach ( var (stockEye, _) in eyes ) eye += stockEye;
+		eye /= eyes.Length;
+		int onFace = 0, near = 0;
+		foreach ( int i in loose )
+		{
+			if ( old.Nearest( pts[i], out var s, out _ ) >= SkinReach ) continue;
+			near++;
+			if ( s.Z < eye.Z - BeardTop && s.X > eye.X - BeardBack ) onFace++;
+		}
+		return near > 0 && onFace >= near * BeardShare;
+	}
 
 	/// <summary>
 	/// A foot changes as a whole from one body to another: longer, wider, flatter. Followed point
@@ -1712,7 +1793,7 @@ public static class GarmentFit
 	static Vec3 Blend( Vec3[] values, List<int> tris, int t, float[] w ) =>
 		values[tris[t]] * w[0] + values[tris[t + 1]] * w[1] + values[tris[t + 2]] * w[2];
 
-	static void Barycentric( Vec3 p, Vec3 a, Vec3 b, Vec3 c, out float u, out float v, out float w )
+	public static void Barycentric( Vec3 p, Vec3 a, Vec3 b, Vec3 c, out float u, out float v, out float w )
 	{
 		Vec3 v0 = b - a, v1 = c - a, v2 = p - a;
 		float d00 = Vec3.Dot( v0, v0 ), d01 = Vec3.Dot( v0, v1 ), d11 = Vec3.Dot( v1, v1 );

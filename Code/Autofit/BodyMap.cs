@@ -114,12 +114,22 @@ public sealed class BodyMap
 				if ( landmarks != null )
 				{
 					Vec3 normal = oldNormals[v] / MathF.Max( oldNormals[v].Length(), 1e-20f );
+					// Where several landmarks reach, their shifts are averaged, not added: between
+					// the eyes the skin went down by both eyes' drop at once.
+					var shifts = Vec3.Zero;
+					float weights = 0;
 					foreach ( var (at, shift, reach) in landmarks )
 					{
 						float d = (s - at).Length() / reach;
 						float w = MathF.Exp( -0.5f * d * d );
 						if ( w <= 0.01f ) continue;
-						var slide = (shift - normal * Vec3.Dot( normal, shift )) * w;
+						shifts += shift * w;
+						weights += w;
+					}
+					if ( weights > 0 )
+					{
+						var shift = shifts / MathF.Max( weights, 1f );
+						var slide = shift - normal * Vec3.Dot( normal, shift );
 						move[i] += slide;
 						landmarked[i] += slide;
 					}
