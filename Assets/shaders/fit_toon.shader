@@ -143,7 +143,9 @@ PS
 		float flRim = smoothstep( 1.0 - g_flToonRimWidth, 1.0 - g_flToonRimWidth * 0.5, 1.0 - saturate( dot( N, V ) ) );
 		float3 vRim = vAlbedo * ( vLit + vAmbient ) * flRim * g_flToonRim;
 
-		float4 color = float4( vAlbedo * vLight * vShade * m.AmbientOcclusion + vRim + m.Emission, m.Opacity );
+		// No ambient occlusion: a copied material has the occlusion texture only when its original
+		// was on the same inputs, and toon shading reads better without it anyway.
+		float4 color = float4( vAlbedo * vLight * vShade + vRim + m.Emission, m.Opacity );
 
 		if ( g_bWireframeMode )
 			return g_vWireframeColor;

@@ -418,7 +418,13 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			SetSkin( renderer );
 	}
 
-	void OnToonChanged( bool before, bool after ) => ApplyToon();
+	void OnToonChanged( bool before, bool after )
+	{
+		// Copies made by older code survive a hotload; switching the look makes them anew.
+		toonOf.Clear();
+		outlineOf.Clear();
+		ApplyToon();
+	}
 	void OnOutlineChanged( float before, float after ) => ApplyToon();
 
 	// A change callback has to take the property's own type, or it is never called.
@@ -508,6 +514,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	// textures and the features the look depends on. Null for a material that keeps its own
 	// look: see-through ones (glass, a lens), the painted iris on its own shader, and any
 	// without a colour texture to copy.
+	static Texture Valid( Texture texture ) => texture is not null && texture.IsValid() ? texture : null;
+
 	Material Copy( Material original, bool outline )
 	{
 		if ( original is null ) return null;
@@ -524,8 +532,10 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 		made = Material.Create( $"{original.ResourceName}_{(outline ? "outline" : "toon")}", outline ? OutlineShader : ToonShader );
 		made.Set( "g_tColor", color );
-		var normal = original.GetTexture( "g_tNormal" );
-		if ( normal is not null && normal.IsValid() ) made.Set( "g_tNormal", normal );
+		// Every texture the shader reads has to be given: one left unset on a material made at
+		// runtime is the engine's checkerboard.
+		made.Set( "g_tNormal", Valid( original.GetTexture( "g_tNormal" ) ) ?? Texture.Load( "materials/default/default_normal.tga" ) );
+		made.Set( "g_tRma", Valid( original.GetTexture( "g_tRma" ) ) ?? Texture.White );
 		made.SetFeature( "F_MORPH_SUPPORTED", 1 );
 		bool cutOut = original.GetFeature( "F_ALPHA_TEST" ) > 0;
 		if ( outline )
