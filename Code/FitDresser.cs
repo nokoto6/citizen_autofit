@@ -88,15 +88,11 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	/// <summary>
 	/// Anime look for the body and everything it wears: every material is swapped for a copy on
 	/// shaders/fit_toon.shader with the same textures (flat bands of light, coloured shade, a
-	/// rim of light), skin toned by Tint gets an anime skin tone, and an outline is drawn
-	/// round it all. See-through materials (glass) keep their own look.
+	/// rim of light, the original's gloss as a hard highlight and a reflection), and skin toned
+	/// by Tint gets an anime skin tone. See-through materials (glass) keep their own look.
 	/// </summary>
-	[Property, Group( "Toon" ), Change( nameof( OnToonChanged ) )]
+	[Property, Change( nameof( OnToonChanged ) )]
 	public bool Toon { get; set; }
-
-	/// <summary>The outline's width in pixels, 0 for none.</summary>
-	[Property, Group( "Toon" ), ShowIf( nameof( Toon ), true ), Range( 0, 6 ), Change( nameof( OnOutlineChanged ) )]
-	public float OutlineWidth { get; set; } = 1.5f;
 
 	/// <summary>
 	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
@@ -169,6 +165,29 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		foreach ( var dresser in Live.ToArray() )
 			dresser.Apply();
 		Log.Info( $"fitdresser_refit: {Live.Count} dressers" );
+	}
+
+	/// <summary>
+	/// Prints, for each dresser's body, what its toon copies were given: shader, colour texture
+	/// and features of each material slot. Changes nothing.
+	/// </summary>
+	[ConCmd( "fitdresser_toon_info" )]
+	public static void ToonInfo()
+	{
+		Live.RemoveWhere( x => !x.IsValid() );
+		foreach ( var dresser in Live )
+		{
+			var body = dresser.BodyTarget;
+			if ( !body.IsValid() || body.Model is null ) continue;
+			Log.Info( $"fitdresser_toon_info: '{dresser.GameObject.Name}' toon {dresser.Toon}, {body.Materials.Count} slots" );
+			for ( int i = 0; i < body.Materials.Count; i++ )
+			{
+				var original = body.Materials.GetOriginal( i );
+				var copy = body.Materials.GetOverride( i );
+				string Describe( Material m ) => m is null ? "none" : $"{m.Name} on {m.ShaderName}, colour {m.GetTexture( "g_tColor" )?.ResourceName ?? "missing"} {m.GetTexture( "g_tColor" )?.Width}x{m.GetTexture( "g_tColor" )?.Height}, rma {m.GetTexture( "g_tRma" )?.Width}, alpha test {m.GetFeature( "F_ALPHA_TEST" )}, morph {m.GetFeature( "F_MORPH_SUPPORTED" )}";
+				Log.Info( $"  slot {i}: {Describe( original )} -> {Describe( copy )}" );
+			}
+		}
 	}
 
 	// Every dresser that is currently alive, in the editor scene too. A console command has no
@@ -296,6 +315,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			return;
 
 		Clear();
+		// Fresh toon copies: ones made before a shader recompile have lost their textures.
+		toonOf.Clear();
 		int mine = outfit;
 		bool Overtaken() => mine != outfit || !this.IsValid() || !BodyTarget.IsValid();
 
@@ -422,10 +443,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	{
 		// Copies made by older code survive a hotload; switching the look makes them anew.
 		toonOf.Clear();
-		outlineOf.Clear();
 		ApplyToon();
 	}
-	void OnOutlineChanged( float before, float after ) => ApplyToon();
 
 	// A change callback has to take the property's own type, or it is never called.
 	void OnTintEyesChanged( bool before, bool after ) => OnSkinChanged( 0, 0 );
@@ -444,17 +463,18 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	static float ToLinear( float c ) => c <= 0.04045f ? c / 12.92f : MathF.Pow( (c + 0.055f) / 1.055f, 2.4f );
 
 	const string ToonShader = "shaders/fit_toon.shader";
-	const string OutlineShader = "shaders/fit_outline.shader";
-	const string OutlineName = "Toon Outline";
 
-	// The toon and outline copies of each original material, made once. Null where a material
+	// The toon copy of each original material, made once per outfit. Null where a material
 	// keeps its own look.
-	readonly Dictionary<Material, Material> toonOf = new(), outlineOf = new();
-	Material noOutline;
+	readonly Dictionary<Material, Material> toonOf = new();
+	static int toonCopies;
 
 	void ApplyToon()
 	{
 		if ( !BodyTarget.IsValid() ) return;
+		// An earlier version drew an outline as a hidden child of the body; take it away.
+		foreach ( var leftover in BodyTarget.GameObject.Children.Where( x => x.Name == "Toon Outline" ).ToArray() )
+			leftover.Destroy();
 		ToonRenderer( BodyTarget );
 		foreach ( var renderer in BodyTarget.GameObject.Children.Where( x => x.Tags.Has( ClothingTag ) ).SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ) )
 			ToonRenderer( renderer );
@@ -466,95 +486,55 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	{
 		if ( !renderer.IsValid() || renderer.Model is null ) return;
 		for ( int i = 0; i < renderer.Materials.Count; i++ )
-			renderer.Materials.SetOverride( i, Toon ? Copy( renderer.Materials.GetOriginal( i ), false ) : null );
-		Outline( renderer );
+			renderer.Materials.SetOverride( i, Toon ? ToonCopy( renderer.Materials.GetOriginal( i ) ) : null );
 	}
 
-	// The outline is a second renderer of the same model, bone-merged to the body, drawn blown
-	// up with only its back faces (fit_outline.shader). It casts no shadow.
-	void Outline( SkinnedModelRenderer renderer )
-	{
-		var shell = renderer.GameObject.Children.FirstOrDefault( x => x.Name == OutlineName );
-		if ( !Toon || OutlineWidth <= 0 )
-		{
-			shell?.Destroy();
-			return;
-		}
-
-		var outline = shell?.Components.Get<SkinnedModelRenderer>();
-		if ( !outline.IsValid() )
-		{
-			using var sceneScope = BodyTarget.Scene.Push();
-			var go = new GameObject( false, OutlineName );
-			go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.Hidden;
-			go.Parent = renderer.GameObject;
-			outline = go.Components.Create<SkinnedModelRenderer>();
-			outline.BoneMergeTarget = BodyTarget;
-			outline.RenderType = ModelRenderer.ShadowRenderType.Off;
-			go.Enabled = true;
-		}
-
-		outline.Model = renderer.Model;
-		outline.BodyGroups = renderer.BodyGroups;
-		for ( int i = 0; i < outline.Materials.Count; i++ )
-		{
-			var line = Copy( outline.Materials.GetOriginal( i ), true );
-			if ( line is null )
-			{
-				noOutline ??= Material.Create( "fitdresser_no_outline", OutlineShader );
-				noOutline.Set( "g_flOutlineSkip", 1f );
-				line = noOutline;
-			}
-			line.Set( "g_flOutlineWidth", OutlineWidth );
-			outline.Materials.SetOverride( i, line );
-		}
-	}
-
-	// A copy of a material on the toon or the outline shader, with its colour and normal
-	// textures and the features the look depends on. Null for a material that keeps its own
-	// look: see-through ones (glass, a lens), the painted iris on its own shader, and any
-	// without a colour texture to copy.
 	static Texture Valid( Texture texture ) => texture is not null && texture.IsValid() ? texture : null;
 
-	Material Copy( Material original, bool outline )
+	// A copy of a material on the toon shader, with its textures and the features the look
+	// depends on. Null for a material that keeps its own look: see-through ones (glass, a lens),
+	// the painted iris on its own shader, and any without a colour texture to copy.
+	Material ToonCopy( Material original )
 	{
 		if ( original is null ) return null;
-		var cache = outline ? outlineOf : toonOf;
-		if ( cache.TryGetValue( original, out var made ) ) return made;
+		if ( toonOf.TryGetValue( original, out var made ) ) return made;
 
 		string shader = original.ShaderName ?? "";
-		var color = original.GetTexture( "g_tColor" );
-		if ( original.GetFeature( "F_TRANSLUCENT" ) > 0 || shader.Contains( "glass" ) || shader.Contains( "aurora_iris" ) || color is null || !color.IsValid() )
+		var color = Valid( original.GetTexture( "g_tColor" ) );
+		if ( original.GetFeature( "F_TRANSLUCENT" ) > 0 || shader.Contains( "glass" ) || shader.Contains( "aurora_iris" ) || color is null )
 		{
-			cache[original] = null;
+			toonOf[original] = null;
 			return null;
 		}
 
-		made = Material.Create( $"{original.ResourceName}_{(outline ? "outline" : "toon")}", outline ? OutlineShader : ToonShader );
-		made.Set( "g_tColor", color );
+		// Each copy its own name: two made under one name (two dressers on the same body model)
+		// came out without their textures.
+		made = Material.Create( $"{original.ResourceName}_toon_{++toonCopies}", ToonShader );
+		// Features first: changing one reloads the material's combos.
+		bool cutOut = original.GetFeature( "F_ALPHA_TEST" ) > 0;
+		made.SetFeature( "F_MORPH_SUPPORTED", 1 );
+		if ( original.GetFeature( "F_RENDER_BACKFACES" ) > 0 ) made.SetFeature( "F_RENDER_BACKFACES", 1 );
+		if ( cutOut ) made.SetFeature( "F_ALPHA_TEST", 1 );
+
 		// Every texture the shader reads has to be given: one left unset on a material made at
 		// runtime is the engine's checkerboard.
+		made.Set( "g_tColor", color );
 		made.Set( "g_tNormal", Valid( original.GetTexture( "g_tNormal" ) ) ?? Texture.Load( "materials/default/default_normal.tga" ) );
 		made.Set( "g_tRma", Valid( original.GetTexture( "g_tRma" ) ) ?? Texture.White );
-		made.SetFeature( "F_MORPH_SUPPORTED", 1 );
-		bool cutOut = original.GetFeature( "F_ALPHA_TEST" ) > 0;
-		if ( outline )
-		{
-			// A shell of a cut-out card (hair, lace) is a box round it.
-			made.Set( "g_flOutlineSkip", cutOut ? 1f : 0f );
-		}
-		else
-		{
-			if ( original.GetFeature( "F_RENDER_BACKFACES" ) > 0 ) made.SetFeature( "F_RENDER_BACKFACES", 1 );
-			if ( cutOut )
-			{
-				made.SetFeature( "F_ALPHA_TEST", 1 );
-				made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
-			}
-			// Skin the stock shader tones by skin_tint (the citizen's tint mask).
-			if ( shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0 ) made.Set( "g_flToonSkin", 1f );
-		}
-		cache[original] = made;
+		if ( cutOut ) made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
+
+		// Skin the stock shader tones by skin_tint (the citizen's tint mask).
+		if ( shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0 ) made.Set( "g_flToonSkin", 1f );
+
+		// complex.shader packs roughness with the normal, which is what gives a jacket its sheen,
+		// and has metalness as a texture or a number.
+		bool complex = shader.Contains( "complex" );
+		made.Set( "g_flToonComplex", complex ? 1f : 0f );
+		var metal = complex && original.GetFeature( "F_METALNESS_TEXTURE" ) > 0 ? Valid( original.GetTexture( "g_tMetalness" ) ) : null;
+		made.Set( "g_tToonMetal", metal ?? Texture.White );
+		made.Set( "g_flToonMetal", metal is not null ? 1f : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
+
+		toonOf[original] = made;
 		return made;
 	}
 

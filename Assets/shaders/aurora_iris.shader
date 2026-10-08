@@ -47,10 +47,13 @@ VS
 
 PS
 {
+	// Before the includes: common/pixel.hlsl turns alpha-to-coverage on for alpha-tested
+	// materials only if it already knows they are.
+	StaticCombo( S_ALPHA_TEST, F_ALPHA_TEST, Sys( ALL ) );
+
 	#include "common/utils/Material.CommonInputs.hlsl"
 	#include "common/pixel.hlsl"
 
-	StaticCombo( S_ALPHA_TEST, F_ALPHA_TEST, Sys( ALL ) );
 	RenderState( CullMode, F_RENDER_BACKFACES ? NONE : DEFAULT );
 
 	// The body's own iris colour, linear, and the dresser's one. The dresser's is used while
