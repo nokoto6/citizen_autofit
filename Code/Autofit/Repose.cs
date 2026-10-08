@@ -289,14 +289,16 @@ public sealed class Repose
 		var fronts = new List<(Vec3 Ours, Vec3 Theirs)>();
 		TriMesh reposedMesh = null;
 		float bust = 0;
+		var tips = new List<Vec3>();
 		for ( int side = -1; side <= 1; side += 2 )
 		{
 			stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
 			reposedMesh ??= new TriMesh( result.Positions, body.Indices );
 			if ( !ChestFront( stock, stock.Positions, stockMesh, side, out var ours, out float stands ) ) continue;
-			if ( !ChestFront( stock, result.Positions, reposedMesh, side, out var theirs, out _ ) ) continue;
+			if ( !ChestFront( stock, result.Positions, reposedMesh, side, out var theirs, out float theirBust ) ) continue;
 			bust = MathF.Max( bust, stands );
 			fronts.Add( (ours, theirs) );
+			if ( theirBust >= MinBust ) tips.Add( theirs );
 		}
 		if ( bust >= MinBust )
 		{
@@ -308,8 +310,74 @@ public sealed class Repose
 			}
 		}
 
+		// Last: everything above goes by the skin as it is.
+		if ( tips.Count > 0 ) Drape( result.Positions, body, to, stock, tips );
+
 		return result;
 	}
+
+	/// <summary>
+	/// Cloth over a bust hangs from its tips: straight down to the ribs and straight across
+	/// between the two. It never goes into the fold under a breast or between them. Cloth
+	/// fitted to the skin does, wraps each breast on its own and makes the bust look blown up.
+	/// So the body the clothes are fitted to has those hollows filled: the front of the torso
+	/// is held no further back than a slope down and across from the skin around each tip.
+	/// The skin itself is not changed, only what the clothes are fitted to.
+	/// </summary>
+	static void Drape( Vec3[] positions, SkinnedGeometry body, int[] toStock, SkinnedGeometry stock, List<Vec3> tips )
+	{
+		var torso = new bool[stock.BoneNames.Length];
+		for ( int b = 0; b < torso.Length; b++ )
+			torso[b] = stock.BoneNames[b] == "pelvis" || stock.BoneNames[b].StartsWith( "spine_" );
+		int middle = Array.IndexOf( stock.BoneNames, "spine_1" );
+		if ( middle < 0 ) return;
+		Vec3 spine = stock.BonePositions[middle];
+		float centre = spine.Y;
+		float across = 0;
+		foreach ( var tip in tips ) across = MathF.Max( across, MathF.Abs( tip.Y - centre ) );
+
+		int n = positions.Length;
+
+		// The torso's skin, and of it what is around the tips: what the rest hangs from.
+		var onTorso = new bool[n];
+		var held = new List<Vec3>();
+		for ( int v = 0; v < n; v++ )
+		{
+			float share = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = body.BoneIndex[v * 4 + j];
+				if ( bone >= 0 && bone < toStock.Length && toStock[bone] >= 0 && torso[toStock[bone]] ) share += body.BoneWeight[v * 4 + j];
+			}
+			onTorso[v] = share >= 0.9f;
+			if ( !onTorso[v] ) continue;
+			foreach ( var tip in tips )
+				if ( (positions[v] - tip).Length() < DrapeFrom ) { held.Add( positions[v] ); break; }
+		}
+		if ( held.Count == 0 ) return;
+
+		for ( int v = 0; v < n; v++ )
+		{
+			if ( !onTorso[v] ) continue;
+			// Only the front half of the chest, and no further out to the side than the tips:
+			// past them cloth falls to the sides of the bust, not across it. The underside of
+			// a breast faces down, but it is part of the fold too.
+			if ( positions[v].X <= spine.X ) continue;
+			float amount = Math.Clamp( (across + DrapeSide - MathF.Abs( positions[v].Y - centre )) / DrapeSide, 0f, 1f );
+			if ( amount <= 0 ) continue;
+
+			var p = positions[v];
+			float hung = float.MinValue;
+			foreach ( var h in held )
+				hung = MathF.Max( hung, h.X - DrapeAcross * MathF.Abs( p.Y - h.Y ) - DrapeDown * MathF.Abs( p.Z - h.Z ) );
+			if ( hung > p.X ) positions[v] = new Vec3( p.X + (hung - p.X) * amount, p.Y, p.Z );
+		}
+	}
+
+	const float DrapeFrom = 0.04f * Units.Metre;   // skin this close to the tip of a bust is what cloth hangs from
+	const float DrapeDown = 0.6f;                  // how steeply cloth drops off it, per unit up or down
+	const float DrapeAcross = 0.25f;               // and per unit across
+	const float DrapeSide = 0.03f * Units.Metre;   // how far past the tips, to the side, the hanging fades out
 
 	const float EyeWeight = 0.2f;              // a vertex this much on the eye bone is part of the eye
 	const float EyeFrontDepth = 0.003f * Units.Metre;   // the front of an eye: this close to its foremost point

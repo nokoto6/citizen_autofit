@@ -161,6 +161,8 @@ public static class GarmentFit
 {
 	const int PushRounds = 6;                     // rounds of spreading the collision pushes and pushing again
 	const float AffineRidge = 0.05f;              // how hard the fit on a stiff bone holds on to its shape, as a share of how its skin spreads
+	const float LayerGap = 0.012f * Units.Metre;  // room a loose garment keeps over the skin, for whatever is worn under it
+	const float RoomStep = 0.001f * Units.Metre;  // a garment surface closer to a vertex than this is the vertex's own
 	const float GapCap = 0.05f * Units.Metre;    // gaps up to this size are restored, so a jacket stays above the shirt under it
 	const float MaxPush = 0.05f * Units.Metre;   // the collision pass is a touch-up; anything further is a misread
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
@@ -334,6 +336,13 @@ public static class GarmentFit
 		Array.Fill( all, true );
 		if ( givenMove == null ) MeshTools.Relax( move, all, edges, 2, 0.5f );
 
+		// A loose garment doesn't move out when the body under it grows: the growth takes up its
+		// room first (a bust in a jacket made for a flat chest), and only what is left over pushes
+		// the cloth out. Without this the cloth keeps its whole gap over the new bump, all round
+		// it, and the bump looks that much bigger.
+		var wanted = MeshTools.Copy( gap0 );
+		if ( givenMove == null ) TakeUpRoom( verts, tris, pts, move, gap0, away, wanted );
+
 		var fitted = new Vec3[n];
 		for ( int i = 0; i < n; i++ ) fitted[i] = pts[i] + move[i];
 
@@ -487,7 +496,7 @@ public static class GarmentFit
 				int moved = 0;
 				foreach ( int i in idx )
 				{
-					if ( !Push( fitted[i], gap0[i], away[i], out var p ) ) continue;
+					if ( !Push( fitted[i], wanted[i], away[i], out var p ) ) continue;
 					fitted[i] += p;
 					moved++;
 				}
@@ -510,7 +519,7 @@ public static class GarmentFit
 			MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
 			foreach ( var (_, idx) in cloth )
 				foreach ( int i in idx )
-					if ( Push( pts[i] + move[i] + pushField[i], gap0[i], away[i], out var p ) ) pushField[i] += p;
+					if ( Push( pts[i] + move[i] + pushField[i], wanted[i], away[i], out var p ) ) pushField[i] += p;
 		}
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
@@ -543,7 +552,8 @@ public static class GarmentFit
 					for ( int k = 0; k < Samples.Length; k++ )
 					{
 						var bw = Samples[k];
-						if ( !Push( Blend( fitted, mine, t, bw ), before[t / 3 * Samples.Length + k], Blend( away, mine, t, bw ), out var p ) ) continue;
+						float room = wanted[mine[t]] * bw[0] + wanted[mine[t + 1]] * bw[1] + wanted[mine[t + 2]] * bw[2];
+						if ( !Push( Blend( fitted, mine, t, bw ), MathF.Min( before[t / 3 * Samples.Length + k], room ), Blend( away, mine, t, bw ), out var p ) ) continue;
 						for ( int c = 0; c < 3; c++ )
 						{
 							if ( bw[c] <= 0 ) continue;
@@ -665,6 +675,36 @@ public static class GarmentFit
 			if ( Math.Abs( det ) < 1e-12 ) return null;
 			double s = 1 / det;
 			return new[] { (e * i - f * h) * s, (c * h - b * i) * s, (b * f - c * e) * s, (f * g - d * i) * s, (a * i - c * g) * s, (c * d - a * f) * s, (d * h - e * g) * s, (b * g - a * h) * s, (a * e - b * d) * s };
+		}
+	}
+
+	/// <summary>
+	/// The room a garment keeps over the skin once the body grows into it: enough for whatever
+	/// is worn under it, measured from the garment's inside layer, so a thick garment (a padded
+	/// apron) keeps its thickness instead of its outside sinking into its inside. What the
+	/// body's outward move takes up of the room beyond that is taken off the cloth's move, and
+	/// the collision pass holds the cloth no further out than the room it has left.
+	/// </summary>
+	static void TakeUpRoom( Vec3[] verts, int[] tris, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, float[] wanted )
+	{
+		TriMesh own = null;
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			if ( gap0[i] <= LayerGap ) continue;
+
+			// The furthest in of the garment's own surfaces between this vertex and the skin.
+			own ??= new TriMesh( verts, tris );
+			own.Crossings( pts[i] - away[i] * RoomStep, away[i] * -1f, gap0[i], hits );
+			float inside = 0;
+			foreach ( var hit in hits )
+				if ( hit.T > RoomStep ) inside = MathF.Max( inside, hit.T + RoomStep );
+
+			float room = gap0[i] - inside - LayerGap;
+			if ( room <= 0 ) continue;
+			wanted[i] = gap0[i] - room;
+			float grow = Vec3.Dot( move[i], away[i] );
+			if ( grow > 0 ) move[i] -= away[i] * MathF.Min( grow, room );
 		}
 	}
 
