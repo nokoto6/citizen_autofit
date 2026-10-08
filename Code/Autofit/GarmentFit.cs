@@ -162,6 +162,9 @@ public static class GarmentFit
 	const int PushRounds = 6;                     // rounds of spreading the collision pushes and pushing again
 	const float FootCover = 0.002f * Units.Metre;  // how far past the body's foot a garment on it reaches at least
 	const float FootSearch = 0.25f;               // how much further than the moved skin a foot is looked for, as a share of its size
+	const float FootSole = 0.35f;                 // how high up a foot its footprint is read from, as a share of its height
+	const float FootTurn = 0.35f;                 // the most a foot is turned to point the body's way, radians (20 degrees)
+	const float FootLong = 2f;                    // how many times longer than wide (in spread) a footprint must be to point
 	const float AffineRidge = 0.05f;              // how hard the fit on a stiff bone holds on to its shape, as a share of how its skin spreads
 	const float LayerGap = 0.012f * Units.Metre;  // room a loose garment keeps over the skin, for whatever is worn under it
 	const float RoomStep = 0.001f * Units.Metre;  // a garment surface closer to a vertex than this is the vertex's own
@@ -873,11 +876,12 @@ public static class GarmentFit
 		foreach ( var (group, list) in on )
 		{
 			if ( !fits.TryGetValue( group, out var fit ) || !fit.HasFoot ) continue;
+			// Along the foot and across it, in the body's foot's own frame.
 			float x0 = float.MaxValue, x1 = float.MinValue, y0 = float.MaxValue, y1 = float.MinValue;
 			foreach ( var (i, share) in list )
 			{
 				if ( share < 0.5f ) continue;
-				var p = pts[i] + move[i];
+				var p = Turn( pts[i] + move[i], -fit.FootYaw );
 				x0 = MathF.Min( x0, p.X ); x1 = MathF.Max( x1, p.X ); y0 = MathF.Min( y0, p.Y ); y1 = MathF.Max( y1, p.Y );
 			}
 			if ( x1 <= x0 || y1 <= y0 ) continue;
@@ -887,20 +891,28 @@ public static class GarmentFit
 			float sx = (tx1 - tx0) / (x1 - x0), sy = (ty1 - ty0) / (y1 - y0);
 			foreach ( var (i, share) in list )
 			{
-				var p = pts[i] + move[i];
+				var p = Turn( pts[i] + move[i], -fit.FootYaw );
 				var to = new Vec3( tx0 + (p.X - x0) * sx, ty0 + (p.Y - y0) * sy, p.Z );
-				move[i] += (to - p) * share;
+				move[i] += (Turn( to, fit.FootYaw ) - Turn( p, fit.FootYaw )) * share;
 			}
 		}
 	}
 
+
+	// Turned about the vertical by an angle in radians.
+	static Vec3 Turn( Vec3 p, float angle )
+	{
+		float c = MathF.Cos( angle ), s = MathF.Sin( angle );
+		return new Vec3( p.X * c - p.Y * s, p.X * s + p.Y * c, p.Z );
+	}
 
 	// x -> Linear * (x - From) + To
 	struct Affine
 	{
 		public bool Valid;
 		public bool HasFoot;     // the body's skin of this part was found, and where it spreads along the ground
-		public Vec3 FootLo, FootHi;
+		public Vec3 FootLo, FootHi;   // in the foot's frame: turned by -FootYaw about the vertical
+		public float FootYaw;    // which way the body's foot points, radians from forward
 		public Vec3 From, To;
 		public float[] Linear;   // 3x3, row by row
 
@@ -930,7 +942,19 @@ public static class GarmentFit
 
 			var moved = new Dictionary<int, Vec3>();
 			foreach ( int v in used ) moved[v] = skin.Verts[v] + skinMove[v];
-			fit.HasFoot = OntoBody( moved, body, out fit.FootLo, out fit.FootHi );
+			fit.HasFoot = OntoBody( moved, body, out fit.FootLo, out fit.FootHi, out fit.FootYaw, out bool pointed );
+			// How far the stock foot turns to point the body's way (the skin's move has already
+			// turned it some of the way).
+			float turn = 0;
+			if ( pointed )
+			{
+				float low = float.MaxValue, high = float.MinValue;
+				foreach ( int v in used ) { low = MathF.Min( low, skin.Verts[v].Z ); high = MathF.Max( high, skin.Verts[v].Z ); }
+				var stock = new List<Vec3>();
+				foreach ( int v in used ) stock.Add( skin.Verts[v] );
+				if ( Pointing( stock, low + (high - low) * FootSole, out float stockYaw ) )
+					turn = Math.Clamp( fit.FootYaw - stockYaw, -FootTurn, FootTurn );
+			}
 
 			Vec3 from = Vec3.Zero, to = Vec3.Zero;
 			foreach ( int v in used ) { from += skin.Verts[v]; to += moved[v]; }
@@ -939,9 +963,12 @@ public static class GarmentFit
 
 			var spread = new double[9];   // sum of d d^T over the stock skin
 			var carried = new double[9];  // sum of e d^T, e where d went
+			// The stock skin is turned first, so what holds the fit to its shape holds it to the
+			// turned shape: held to the unturned one, a foot (narrow, so held hardest across)
+			// turned only half way.
 			foreach ( int v in used )
 			{
-				var d = skin.Verts[v] - from;
+				var d = Turn( skin.Verts[v] - from, turn );
 				var e = moved[v] - to;
 				for ( int r = 0; r < 3; r++ )
 					for ( int c = 0; c < 3; c++ )
@@ -955,10 +982,19 @@ public static class GarmentFit
 
 			var inverse = Invert( spread );
 			if ( inverse == null ) return fit;
-			fit.Linear = new float[9];
+			var linear = new double[9];
 			for ( int r = 0; r < 3; r++ )
 				for ( int c = 0; c < 3; c++ )
-					fit.Linear[r * 3 + c] = (float)(carried[r * 3] * inverse[c] + carried[r * 3 + 1] * inverse[3 + c] + carried[r * 3 + 2] * inverse[6 + c]);
+					linear[r * 3 + c] = carried[r * 3] * inverse[c] + carried[r * 3 + 1] * inverse[3 + c] + carried[r * 3 + 2] * inverse[6 + c];
+			// And the turn put back in: Linear = linear * turn.
+			double cos = Math.Cos( turn ), sin = Math.Sin( turn );
+			fit.Linear = new float[9];
+			for ( int r = 0; r < 3; r++ )
+			{
+				fit.Linear[r * 3] = (float)(linear[r * 3] * cos + linear[r * 3 + 1] * sin);
+				fit.Linear[r * 3 + 1] = (float)(-linear[r * 3] * sin + linear[r * 3 + 1] * cos);
+				fit.Linear[r * 3 + 2] = (float)linear[r * 3 + 2];
+			}
 			fit.From = from;
 			fit.To = to;
 			fit.Valid = true;
@@ -969,10 +1005,16 @@ public static class GarmentFit
 		// toe bone keep the stock length and stand out in front of shorter toes, in the air. The
 		// moved skin is pulled in along the ground (forward and sideways) to the extent of the new
 		// body's skin around it, which is the foot it has to fit.
-		static bool OntoBody( Dictionary<int, Vec3> moved, TriMesh body, out Vec3 blo, out Vec3 bhi )
+		// The skin's move also keeps the stock foot's turn: the stock feet point out by 7 degrees,
+		// Aurora's by 2, and a shoe left turned out stuck the body's toes and heel through its
+		// sides. The moved skin is first turned about the vertical to point where the body's foot
+		// does, and the extents are taken along the foot and across it.
+		static bool OntoBody( Dictionary<int, Vec3> moved, TriMesh body, out Vec3 blo, out Vec3 bhi, out float yaw, out bool pointed )
 		{
 			blo = new( float.MaxValue, float.MaxValue, 0 );
 			bhi = new( float.MinValue, float.MinValue, 0 );
+			yaw = 0;
+			pointed = false;
 			Vec3 lo = new( float.MaxValue, float.MaxValue, float.MaxValue ), hi = new( float.MinValue, float.MinValue, float.MinValue );
 			static Vec3 Min( Vec3 a, Vec3 b ) => new( MathF.Min( a.X, b.X ), MathF.Min( a.Y, b.Y ), MathF.Min( a.Z, b.Z ) );
 			static Vec3 Max( Vec3 a, Vec3 b ) => new( MathF.Max( a.X, b.X ), MathF.Max( a.Y, b.Y ), MathF.Max( a.Z, b.Z ) );
@@ -980,16 +1022,37 @@ public static class GarmentFit
 			var size = hi - lo;
 			if ( size.X <= 0 || size.Y <= 0 ) return false;
 
-			int found = 0;
+			var feet = new List<Vec3>();
+			float bodyLow = float.MaxValue;
 			foreach ( var p in body.Verts )
 			{
 				if ( p.Z < lo.Z || p.Z > hi.Z ) continue;
 				if ( p.X < lo.X - size.X * FootSearch || p.X > hi.X + size.X * FootSearch ) continue;
 				if ( p.Y < lo.Y - size.Y * FootSearch || p.Y > hi.Y + size.Y * FootSearch ) continue;
-				blo = Min( blo, p ); bhi = Max( bhi, p );
-				found++;
+				feet.Add( p );
+				bodyLow = MathF.Min( bodyLow, p.Z );
 			}
-			if ( found < 8 ) return false;
+			if ( feet.Count < 8 ) return false;
+
+			// Which way each foot points, by its sole: the skin low on it, where the ankle and the
+			// shin don't round the shape off.
+			float sole = size.Z * FootSole;
+			if ( Pointing( feet, bodyLow + sole, out float bodyYaw ) && Pointing( moved.Values, lo.Z + sole, out float skinYaw ) )
+			{
+				float turn = Math.Clamp( bodyYaw - skinYaw, -FootTurn, FootTurn );
+				var middle = (lo + hi) * 0.5f;
+				foreach ( var v in new List<int>( moved.Keys ) )
+					moved[v] = Turn( moved[v] - middle, turn ) + middle;
+				yaw = skinYaw + turn;
+				pointed = true;
+			}
+
+			// Extents along the foot and across it.
+			lo = new( float.MaxValue, float.MaxValue, float.MaxValue );
+			hi = new( float.MinValue, float.MinValue, float.MinValue );
+			foreach ( var p in moved.Values ) { var q = Turn( p, -yaw ); lo = Min( lo, q ); hi = Max( hi, q ); }
+			size = hi - lo;
+			foreach ( var p in feet ) { var q = Turn( p, -yaw ); blo = Min( blo, q ); bhi = Max( bhi, q ); }
 
 			// Only ever pulled in. A foot that comes out shorter than the body's is a foot posed
 			// differently (a heeled shoe's tilted foot over a flat one), not skin left in the air.
@@ -998,9 +1061,26 @@ public static class GarmentFit
 			if ( !inX && !inY ) return true;
 			foreach ( var v in new List<int>( moved.Keys ) )
 			{
-				var p = moved[v];
-				moved[v] = new Vec3( inX ? blo.X + (p.X - lo.X) * sx : p.X, inY ? blo.Y + (p.Y - lo.Y) * sy : p.Y, p.Z );
+				var p = Turn( moved[v], -yaw );
+				moved[v] = Turn( new Vec3( inX ? blo.X + (p.X - lo.X) * sx : p.X, inY ? blo.Y + (p.Y - lo.Y) * sy : p.Y, p.Z ), yaw );
 			}
+			return true;
+		}
+
+		// The way a footprint (the points below top) is longest, radians from forward, by its
+		// spread along the ground. Only a footprint clearly longer than wide has a way it points.
+		static bool Pointing( IEnumerable<Vec3> pts, float top, out float yaw )
+		{
+			yaw = 0;
+			double n = 0, mx = 0, my = 0, xx = 0, xy = 0, yy = 0;
+			foreach ( var p in pts ) { if ( p.Z >= top ) continue; n++; mx += p.X; my += p.Y; xx += p.X * p.X; xy += p.X * p.Y; yy += p.Y * p.Y; }
+			if ( n < 8 ) return false;
+			mx /= n; my /= n;
+			xx = xx / n - mx * mx; xy = xy / n - mx * my; yy = yy / n - my * my;
+			double mean = (xx + yy) / 2, d = Math.Sqrt( (xx - yy) * (xx - yy) / 4 + xy * xy );
+			if ( mean - d <= 0 || (mean + d) / (mean - d) < FootLong ) return false;
+			// The long axis, taken pointing forward.
+			yaw = (float)(0.5 * Math.Atan2( 2 * xy, xx - yy ));
 			return true;
 		}
 
