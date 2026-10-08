@@ -156,6 +156,7 @@ public sealed class SkinByBone
 /// </summary>
 public static class GarmentFit
 {
+	const int PushRounds = 6;                     // rounds of spreading the collision pushes and pushing again
 	const float GapCap = 0.05f * Units.Metre;    // gaps up to this size are restored, so a jacket stays above the shirt under it
 	const float MaxPush = 0.05f * Units.Metre;   // the collision pass is a touch-up; anything further is a misread
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
@@ -488,13 +489,22 @@ public static class GarmentFit
 		}
 
 		// Each push is decided for one vertex at a time, which leaves spikes where a vertex
-		// was pushed and its neighbours weren't (armpits, mostly). Spread the pushes over the
-		// neighbours so the cloth stays smooth.
+		// was pushed and its neighbours weren't (armpits, mostly), and lumps where the new body
+		// pushed out a whole patch of cloth (a bust bigger than the stock one). Spread the pushes
+		// over the neighbours and push again, a few times over, so the cloth goes over what is
+		// under it in one smooth sweep. A push goes last: smoothing alone would pull the top of
+		// a bump back under the cloth.
 		var pushField = new Vec3[n];
 		var mask = new bool[n];
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) { pushField[i] = fitted[i] - (pts[i] + move[i]); mask[i] = true; }
-		MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
+		for ( int round = 0; round < PushRounds; round++ )
+		{
+			MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+					if ( Push( pts[i] + move[i] + pushField[i], gap0[i], away[i], out var p ) ) pushField[i] += p;
+		}
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
 

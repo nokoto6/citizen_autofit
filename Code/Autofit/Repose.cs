@@ -66,6 +66,8 @@ public sealed class Repose
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
 	const float MinBust = 0.02f * Units.Metre;     // a chest front standing out less than this is flat
+	const float BustDepth = 0.1f * Units.Metre;    // how far under the front of the chest to look for the fold under a bust
+	const float MinTipAcross = 0.4f;                // a bust tip is at least this far out to the shoulder
 
 	/// <summary>
 	/// The body's rest pose, per stock bone: where that bone is on the body and which way it
@@ -285,11 +287,14 @@ public sealed class Repose
 		// Only a chest with a bust has a front to go by. On a flat one the foremost point is
 		// anywhere across it and jumps between two bodies of the same shape.
 		var fronts = new List<(Vec3 Ours, Vec3 Theirs)>();
+		TriMesh reposedMesh = null;
 		float bust = 0;
 		for ( int side = -1; side <= 1; side += 2 )
 		{
-			if ( !ChestFront( stock, stock.Positions, side, out var ours, out float stands ) ) continue;
-			if ( !ChestFront( stock, result.Positions, side, out var theirs, out _ ) ) continue;
+			stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
+			reposedMesh ??= new TriMesh( result.Positions, body.Indices );
+			if ( !ChestFront( stock, stock.Positions, stockMesh, side, out var ours, out float stands ) ) continue;
+			if ( !ChestFront( stock, result.Positions, reposedMesh, side, out var theirs, out _ ) ) continue;
 			bust = MathF.Max( bust, stands );
 			fronts.Add( (ours, theirs) );
 		}
@@ -345,8 +350,8 @@ public sealed class Repose
 	/// the stock pose: between the middle spine bone and the collarbones in height, between the
 	/// middle and the shoulder joint across. Averaged over what is within a few millimetres of it.
 	/// </summary>
-	/// <param name="bust">How far the front stands out from the chest just under it.</param>
-	static bool ChestFront( SkinnedGeometry stock, Vec3[] positions, int side, out Vec3 front, out float bust )
+	/// <param name="bust">How far the front stands out over the fold under it.</param>
+	static bool ChestFront( SkinnedGeometry stock, Vec3[] positions, TriMesh mesh, int side, out Vec3 front, out float bust )
 	{
 		front = Vec3.Zero;
 		bust = 0;
@@ -373,15 +378,23 @@ public sealed class Repose
 		}
 		front /= count;
 
-		// The chest under the front: the foremost skin a bust-depth lower, on the same side.
-		float under = float.MinValue, below = front.Z - 0.08f * Units.Metre;
-		foreach ( var p in positions )
+		// How far the front hangs over the skin straight under it: the deepest the chest goes in
+		// below it, a bust-depth down at most. A belly further down doesn't count. The skin is
+		// found with rays from the front, a sparse mesh has no vertex on most of that line.
+		const float step = 0.005f * Units.Metre;
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		float deepest = float.MaxValue;
+		for ( float down = step; down <= BustDepth; down += step )
 		{
-			float across = (p.Y - centre) * side;
-			if ( MathF.Abs( p.Z - below ) > 0.01f * Units.Metre || across < 0.15f * reach || across > reach ) continue;
-			under = MathF.Max( under, p.X );
+			var start = new Vec3( front.X + Units.Metre, front.Y, front.Z - down );
+			mesh.Crossings( start, new Vec3( -1, 0, 0 ), 2 * Units.Metre, hits );
+			if ( hits.Count > 0 ) deepest = MathF.Min( deepest, start.X - hits[0].T );
 		}
-		bust = under == float.MinValue ? 0 : front.X - under;
+		bust = deepest == float.MaxValue ? 0 : front.X - deepest;
+
+		// A bust stands out to the side of the breastbone. A foremost point next to the middle
+		// is the breastbone itself, on a barrel chest or a man's pecs.
+		if ( (front.Y - centre) * side < MinTipAcross * reach ) bust = 0;
 		return true;
 	}
 
