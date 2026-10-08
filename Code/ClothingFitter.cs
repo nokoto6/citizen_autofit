@@ -48,6 +48,7 @@ public static class ClothingFitter
 		public SkinnedGeometry Geo;
 		public TriMesh Mesh;
 		public SkinByBone Skin;
+		public bool[] Stiff;   // per bone, whether what it drives changes as a whole from body to body (a foot)
 	}
 
 	// A body brought into one reference's pose, and where that reference's skin went on it.
@@ -653,7 +654,10 @@ public static class ClothingFitter
 				{
 					var geo = CompiledModel.Read( file );
 					var mesh = new TriMesh( geo.Positions, geo.Indices );
-					return new Reference { Geo = geo, Mesh = mesh, Skin = new SkinByBone( mesh, geo ) };
+					var stiff = new bool[geo.BoneNames.Length];
+					for ( int b = 0; b < stiff.Length; b++ )
+						stiff[b] = geo.BoneNames[b].StartsWith( "ankle_" ) || geo.BoneNames[b].StartsWith( "ball_" );
+					return new Reference { Geo = geo, Mesh = mesh, Skin = new SkinByBone( mesh, geo ), Stiff = stiff };
 				} );
 			}
 			catch ( TaskCanceledException )
@@ -881,7 +885,7 @@ public static class ClothingFitter
 		}
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
 		var solid = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray() );
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to

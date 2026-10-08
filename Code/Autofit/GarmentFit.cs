@@ -93,6 +93,9 @@ public sealed class SkinByBone
 		return sum;
 	}
 
+	/// <summary>How much of a body triangle this bone drives itself. 0..1.</summary>
+	public float Weight( int tri, int bone ) => triWeights[tri].TryGetValue( bone, out float w ) ? w : 0;
+
 	/// <summary>How much of a body triangle belongs to this bone, its parent or its children. 0..1.</summary>
 	public float Owns( int tri, int bone )
 	{
@@ -157,6 +160,7 @@ public sealed class SkinByBone
 public static class GarmentFit
 {
 	const int PushRounds = 6;                     // rounds of spreading the collision pushes and pushing again
+	const float AffineRidge = 0.05f;              // how hard the fit on a stiff bone holds on to its shape, as a share of how its skin spreads
 	const float GapCap = 0.05f * Units.Metre;    // gaps up to this size are restored, so a jacket stays above the shirt under it
 	const float MaxPush = 0.05f * Units.Metre;   // the collision pass is a touch-up; anything further is a misread
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
@@ -258,7 +262,8 @@ public static class GarmentFit
 	/// <param name="under">A garment this one is worn under (hair under a hat), in the same stock pose. Whatever comes through it is put back under.</param>
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
 	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null )
+	/// <param name="stiff">Per stock bone, whether what it drives changes as a whole from body to body (a foot). Garment on such a bone follows one smooth change instead of every point of the skin.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, bool[] stiff = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -319,6 +324,8 @@ public static class GarmentFit
 				away[i] = (x - from) / distance * (gap0[i] >= 0 ? 1f : -1f);
 			if ( givenMove != null ) move[i] = givenMove[src];
 		}
+
+		if ( stiff != null && givenMove == null ) Stiffen( pts, firstOf, boneIndex, boneWeight, move, old, skinMove, byBone, stiff );
 
 		// Loose cloth hanging between two limbs flips between them from vertex to vertex.
 		// A little smoothing evens that out without washing away real detail.
@@ -558,6 +565,107 @@ public static class GarmentFit
 		if ( solidOut != null )
 			for ( int i = 0; i < verts.Length; i++ ) solidOut[i] = isSolid[weld[i]];
 		return result;
+	}
+
+	/// <summary>
+	/// A foot changes as a whole from one body to another: longer, wider, flatter. Followed point
+	/// by point, a shoe picks up every difference between two sets of toes and comes out
+	/// crumpled. On the bones marked stiff the move is the one affine change that best carries
+	/// that bone's stock skin onto the new skin, smooth across the whole garment.
+	/// </summary>
+	static void Stiffen( Vec3[] pts, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] move, TriMesh old, Vec3[] skinMove, SkinByBone byBone, bool[] stiff )
+	{
+		var fits = new Dictionary<int, Affine>();
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			int src = firstOf[i];
+			float total = 0, onStiff = 0;
+			var sum = Vec3.Zero;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = boneIndex[src * 4 + j];
+				float w = boneWeight[src * 4 + j];
+				if ( bone < 0 || w <= 0 ) continue;
+				total += w;
+				if ( bone >= stiff.Length || !stiff[bone] ) continue;
+				if ( !fits.TryGetValue( bone, out var fit ) ) fits[bone] = fit = Affine.Fit( old, skinMove, byBone, bone );
+				if ( !fit.Valid ) continue;
+				sum += (fit.Apply( pts[i] ) - pts[i]) * w;
+				onStiff += w;
+			}
+			if ( onStiff <= 0 || total <= 0 ) continue;
+			float share = onStiff / total;
+			move[i] = move[i] * (1 - share) + sum / onStiff * share;
+		}
+	}
+
+	// x -> Linear * (x - From) + To
+	struct Affine
+	{
+		public bool Valid;
+		public Vec3 From, To;
+		public float[] Linear;   // 3x3, row by row
+
+		public Vec3 Apply( Vec3 p )
+		{
+			var d = p - From;
+			return To + new Vec3( Linear[0] * d.X + Linear[1] * d.Y + Linear[2] * d.Z, Linear[3] * d.X + Linear[4] * d.Y + Linear[5] * d.Z, Linear[6] * d.X + Linear[7] * d.Y + Linear[8] * d.Z );
+		}
+
+		// Least squares over the skin the bone drives most, held a little to its shape so a thin
+		// patch of skin can't fold the garment flat.
+		public static Affine Fit( TriMesh skin, Vec3[] skinMove, SkinByBone byBone, int bone )
+		{
+			var used = new HashSet<int>();
+			for ( int t = 0; t < skin.TriCount; t++ )
+				if ( byBone.Weight( t, bone ) >= 0.5f )
+					for ( int k = 0; k < 3; k++ ) used.Add( skin.Tris[t * 3 + k] );
+			var fit = new Affine();
+			if ( used.Count < 8 ) return fit;
+
+			Vec3 from = Vec3.Zero, to = Vec3.Zero;
+			foreach ( int v in used ) { from += skin.Verts[v]; to += skin.Verts[v] + skinMove[v]; }
+			from /= used.Count;
+			to /= used.Count;
+
+			var spread = new double[9];   // sum of d d^T over the stock skin
+			var carried = new double[9];  // sum of e d^T, e where d went
+			foreach ( int v in used )
+			{
+				var d = skin.Verts[v] - from;
+				var e = skin.Verts[v] + skinMove[v] - to;
+				for ( int r = 0; r < 3; r++ )
+					for ( int c = 0; c < 3; c++ )
+					{
+						spread[r * 3 + c] += Component( d, r ) * Component( d, c );
+						carried[r * 3 + c] += Component( e, r ) * Component( d, c );
+					}
+			}
+			double ridge = (spread[0] + spread[4] + spread[8]) * AffineRidge;
+			for ( int k = 0; k < 3; k++ ) { spread[k * 4] += ridge; carried[k * 4] += ridge; }
+
+			var inverse = Invert( spread );
+			if ( inverse == null ) return fit;
+			fit.Linear = new float[9];
+			for ( int r = 0; r < 3; r++ )
+				for ( int c = 0; c < 3; c++ )
+					fit.Linear[r * 3 + c] = (float)(carried[r * 3] * inverse[c] + carried[r * 3 + 1] * inverse[3 + c] + carried[r * 3 + 2] * inverse[6 + c]);
+			fit.From = from;
+			fit.To = to;
+			fit.Valid = true;
+			return fit;
+		}
+
+		static float Component( Vec3 v, int axis ) => axis == 0 ? v.X : axis == 1 ? v.Y : v.Z;
+
+		static double[] Invert( double[] m )
+		{
+			double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], i = m[8];
+			double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+			if ( Math.Abs( det ) < 1e-12 ) return null;
+			double s = 1 / det;
+			return new[] { (e * i - f * h) * s, (c * h - b * i) * s, (b * f - c * e) * s, (f * g - d * i) * s, (a * i - c * g) * s, (c * d - a * f) * s, (d * h - e * g) * s, (b * g - a * h) * s, (a * e - b * d) * s };
+		}
 	}
 
 	/// <summary>
