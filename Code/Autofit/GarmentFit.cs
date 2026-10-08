@@ -546,6 +546,8 @@ public static class GarmentFit
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
 
+		if ( !hair ) KeepLayers( pts, fitted, piece, members, pieceTris, edges, isSolid, gap0, away, other, hidden );
+
 		foreach ( var (root, idx) in cloth )
 		{
 			// The skin can still come through the middle of a triangle, typically a hard edge
@@ -598,6 +600,114 @@ public static class GarmentFit
 			for ( int i = 0; i < verts.Length; i++ ) solidOut[i] = isSolid[weld[i]];
 		return result;
 	}
+
+	/// <summary>
+	/// The pieces of one garment are fitted each on its own, and each is pushed off the body by
+	/// what is under it, so a bow over a bodice or a ribbon round a stocking can end up inside
+	/// the piece it was made to lie on, or the piece underneath can come through it. Which piece
+	/// is on top is told by the skin: the one further from it. Every vertex remembers whether it was
+	/// made over or under the nearest other piece, and where that order has turned round after
+	/// the fit, the outer piece is moved out until it holds again: a vertex that was over
+	/// another piece is pushed out from the body, a piece that was under another lifts that
+	/// piece off itself. Only ever outward, the body put everything where it is.
+	/// Pieces' own normals are no use for this: a lined waistcoat has them pointing both ways.
+	/// </summary>
+	static void KeepLayers( Vec3[] pts, Vec3[] fitted, int[] piece, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, List<(int A, int B)> edges, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh other, float hidden )
+	{
+		var roots = new List<int>();
+		foreach ( var (root, idx) in members )
+			if ( pieceTris.ContainsKey( root ) && idx.Count >= LayerMinVerts ) roots.Add( root );
+		if ( roots.Count < 2 || roots.Count > LayerMaxPieces ) return;
+
+		int n = pts.Length;
+		var made = new Dictionary<int, TriMesh>();
+		foreach ( int root in roots ) made[root] = new TriMesh( pts, pieceTris[root].ToArray() );
+
+		// Per vertex: the nearest other piece as made, and how much further from the skin this
+		// vertex sat than the spot of that piece nearest to it.
+		var against = new int[n];
+		var apart = new float[n];
+		Array.Fill( against, -1 );
+		for ( int i = 0; i < n; i++ )
+		{
+			if ( gap0[i] < -hidden ) continue;
+			float best = LayerReach;
+			foreach ( int root in roots )
+			{
+				if ( root == piece[i] ) continue;
+				float d = made[root].Nearest( pts[i], out var q, out int tri );
+				if ( tri < 0 || d >= best ) continue;
+				best = d;
+				against[i] = root;
+				apart[i] = gap0[i] - Blend( gap0, pieceTris[root], tri * 3, Bary( q, made[root], tri ) );
+			}
+		}
+
+		var gap = new float[n];
+		var push = new Vec3[n];
+		var known = new bool[n];
+		for ( int round = 0; round < LayerRounds; round++ )
+		{
+			for ( int i = 0; i < n; i++ ) gap[i] = other.SignedGap( fitted[i], out _ );
+			var now = new Dictionary<int, TriMesh>();
+			foreach ( int root in roots ) now[root] = new TriMesh( fitted, pieceTris[root].ToArray() );
+			Array.Clear( push );
+			Array.Clear( known );
+			int moved = 0;
+			for ( int i = 0; i < n; i++ )
+			{
+				if ( against[i] < 0 || MathF.Abs( apart[i] ) < LayerApart ) continue;
+				var mesh = now[against[i]];
+				var tris = pieceTris[against[i]];
+				float d = mesh.Nearest( fitted[i], out var q, out int tri );
+				if ( tri < 0 || d > LayerReach ) continue;
+				float sep = gap[i] - Blend( gap, tris, tri * 3, Bary( q, mesh, tri ) );
+				// Only where the order has turned round. Cloth that merely sits closer to the next
+				// layer than it was made is left alone: restoring every gap in full inflates a
+				// garment, layer over layer.
+				if ( apart[i] > 0 )
+				{
+					// Was over the other piece and is under it now: back out from the body.
+					if ( isSolid[i] || sep >= -LayerSlack ) continue;
+					push[i] += away[i] * MathF.Min( LayerSlack - sep, LayerStep );
+					known[i] = true;
+					moved++;
+				}
+				else
+				{
+					// Was under the other piece and has come through it: lift that piece off.
+					if ( sep <= LayerSlack ) continue;
+					float lift = MathF.Min( sep + LayerSlack, LayerStep );
+					for ( int c = 0; c < 3; c++ )
+					{
+						int v = tris[tri * 3 + c];
+						if ( isSolid[v] ) continue;
+						if ( push[v].LengthSquared() < lift * lift ) push[v] = away[v] * lift;
+						known[v] = true;
+						moved++;
+					}
+				}
+			}
+			if ( moved == 0 ) break;
+			MeshTools.Relax( push, known, edges, 1, 0.5f );
+			for ( int i = 0; i < n; i++ ) if ( !isSolid[i] ) fitted[i] += push[i];
+		}
+	}
+
+	// Barycentric weights of a point on a triangle of a mesh.
+	static float[] Bary( Vec3 q, TriMesh mesh, int tri )
+	{
+		Barycentric( q, mesh.Verts[mesh.Tris[tri * 3]], mesh.Verts[mesh.Tris[tri * 3 + 1]], mesh.Verts[mesh.Tris[tri * 3 + 2]], out float u, out float v, out float w );
+		return new[] { u, v, w };
+	}
+
+	const float LayerReach = 0.03f * Units.Metre;    // another piece this close is a layer this one lies on or under
+	const float LayerSlack = 0.002f * Units.Metre;   // how far apart two layers are kept once put back in order
+	const float LayerApart = 0.004f * Units.Metre;   // pieces made closer than this (a sleeve seam) have no order to keep
+	const float LayerStep = 0.005f * Units.Metre;    // how far a round may move cloth
+	const int LayerRounds = 4;
+	const int LayerMinVerts = 12;                    // smaller pieces (a stray triangle) are not layers
+	const int LayerMaxPieces = 40;                   // more pieces than this is scales or feathers, not layers
 
 	/// <summary>
 	/// A heap of cards (hair) goes over the body as one soft mass. Each card fitted on its own
@@ -1300,6 +1410,9 @@ public static class GarmentFit
 		if ( a > b ) (a, b) = (b, a);
 		return (a, b, c);
 	}
+
+	static float Blend( float[] values, List<int> tris, int t, float[] w ) =>
+		values[tris[t]] * w[0] + values[tris[t + 1]] * w[1] + values[tris[t + 2]] * w[2];
 
 	static Vec3 Blend( Vec3[] values, List<int> tris, int t, float[] w ) =>
 		values[tris[t]] * w[0] + values[tris[t + 1]] * w[1] + values[tris[t + 2]] * w[2];

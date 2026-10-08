@@ -74,6 +74,18 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	public float Age { get; set; } = 0.5f;
 
 	/// <summary>
+	/// Colour the eyes with Eye Color. Goes to the renderer as the eye_tint attribute, which a
+	/// body's iris material has to read (Aurora's does); the stock bodies get their eye colour
+	/// from an eyes material carried by clothing instead, and ignore this.
+	/// </summary>
+	[Property, HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnSkinChanged ) )]
+	public bool TintEyes { get; set; }
+
+	/// <summary>The iris colour, with Tint Eyes on.</summary>
+	[Property, ShowIf( nameof( TintEyes ), true ), Change( nameof( OnSkinChanged ) )]
+	public Color EyeColor { get; set; } = new Color( 0.58f, 0.36f, 0.19f );
+
+	/// <summary>
 	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
 	/// part of the garment. The copy has the stock body's shape and doesn't suit another body.
 	/// With this on, such clothing is worn without its skin and the body part it meant to hide
@@ -394,6 +406,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	{
 		renderer.Attributes.Set( "skin_tint", skinTint );
 		renderer.Attributes.Set( "skin_age", skinAge );
+		if ( TintEyes && !UseLocalAvatar ) renderer.Attributes.Set( "eye_tint", EyeColor );
+		else renderer.Attributes.Set( "eye_tint", Color.White );
 	}
 
 	// Same parameter and range as the stock Dresser. The stock graph makes a body taller or
