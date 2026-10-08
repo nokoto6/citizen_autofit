@@ -134,6 +134,7 @@ public static class ClothingFitter
 	static readonly HashSet<string> failed = new();
 	static readonly Dictionary<string, bool> skinned = new();   // per garment, whether it draws part of itself with the body's skin
 	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under
+	static readonly Dictionary<string, bool> proportioned = new();   // per body, whether it is built with proportions of its own
 	static int generation;
 
 	// Models taken out of use, held on to for a while. A model let go of right away can be
@@ -165,6 +166,7 @@ public static class ClothingFitter
 		bodies.Clear();
 		fitted.Clear();
 		shapes.Clear();
+		proportioned.Clear();
 		atlasCache.Clear();
 		pending.Clear();
 		failed.Clear();
@@ -226,6 +228,47 @@ public static class ClothingFitter
 		}
 
 		return job.Task;
+	}
+
+	/// <summary>
+	/// True if this body is built with other proportions than every stock body: a leg, the
+	/// spine or an arm more than a few percent longer or shorter. Such a body has to ignore the
+	/// bone moves in the stock animations, or they would pull it to the stock proportions, so
+	/// whatever the animations do by moving bones (making the body taller or shorter) it
+	/// doesn't get.
+	/// </summary>
+	public static bool OwnProportions( Model body )
+	{
+		if ( body is null || body.IsError ) return false;
+		string path = body.ResourcePath is null ? null : Normalize( body.ResourcePath );
+		if ( path is not null && proportioned.TryGetValue( path, out bool known ) ) return known;
+
+		bool own = true;
+		foreach ( string reference in ReferencePaths )
+		{
+			var stock = Model.Load( reference );
+			if ( stock is null || stock.IsError ) continue;
+			bool same = true;
+			foreach ( var (from, to) in Limbs )
+			{
+				float ours = Length( stock, from, to ), theirs = Length( body, from, to );
+				if ( ours > 0 && theirs > 0 && MathF.Abs( theirs / ours - 1 ) > SameProportions ) same = false;
+			}
+			if ( same ) { own = false; break; }
+		}
+
+		if ( path is not null ) proportioned[path] = own;
+		return own;
+	}
+
+	static readonly (string From, string To)[] Limbs = { ("leg_upper_L", "ankle_L"), ("pelvis", "neck_0"), ("arm_upper_L", "hand_L") };
+	const float SameProportions = 0.03f;   // limbs this much longer or shorter still make the same body
+
+	// From one bone to another in the bind pose. 0 if the model has either one missing.
+	static float Length( Model model, string from, string to )
+	{
+		if ( model.Bones.GetBone( from ) is null || model.Bones.GetBone( to ) is null ) return 0;
+		return model.GetBoneTransform( from ).Position.Distance( model.GetBoneTransform( to ).Position );
 	}
 
 	/// <summary>

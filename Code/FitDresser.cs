@@ -164,6 +164,11 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		Live.Remove( this );
 	}
 
+	protected override void OnDisabled()
+	{
+		ScaleWhole( 1f );
+	}
+
 	// How far clothing can stick out past the body: hair, a hat, a sword on the back.
 	const float ClothingReach = 16f;
 
@@ -182,6 +187,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		}
 
 		if ( !BodyTarget.IsValid() ) return;
+		KeepScaled();
 
 		// A model built at runtime has no per-bone extents, so the engine works out the bounds
 		// of a bone-merged garment from its bone positions alone. That box is far too small
@@ -268,6 +274,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		bool Overtaken() => mine != outfit || !this.IsValid() || !BodyTarget.IsValid();
 
 		var container = BuildContainer();
+		ownProportions = ClothingFitter.OwnProportions( BodyTarget.Model );
 		ApplyHeight( UseLocalAvatar ? container.Height : Height );
 		skinTint = UseLocalAvatar ? container.Tint : Tint;
 		skinAge = UseLocalAvatar ? container.Age : Age;
@@ -390,12 +397,47 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		renderer.Attributes.Set( "skin_age", skinAge );
 	}
 
-	// Same parameter and range as the stock Dresser.
+	// Same parameter and range as the stock Dresser. The stock graph makes a body taller or
+	// shorter with additive sequences that move its bones and shift its pelvis. A body with
+	// proportions of its own ignores the bone moves, so only the pelvis shift would get through
+	// and it would crouch or float. Such a body is scaled as a whole instead.
 	void ApplyHeight( float height )
 	{
-		if ( BodyTarget.IsValid() )
-			BodyTarget.Set( "scale_height", height.Remap( 0, 1, 0.8f, 1.2f, true ) );
+		if ( !BodyTarget.IsValid() ) return;
+		float scale = height.Remap( 0, 1, 0.8f, 1.2f, true );
+		BodyTarget.Set( "scale_height", ownProportions ? 1f : scale );
+		ScaleWhole( ownProportions ? scale : 1f );
 	}
+
+	// Whether the body is built with proportions of its own (see ClothingFitter.OwnProportions).
+	bool ownProportions;
+
+	// The body is scaled in its scene model only, about its origin (the feet): the GameObject
+	// keeps its scale, so nothing in the scene changes. Bone-merged clothing takes its bones
+	// from the body's scene model and grows with it. The engine puts the GameObject's transform
+	// back on the scene model whenever the object moves; a scale other than the one set here
+	// means that happened.
+	float wholeScale = 1f;
+	Vector3 scaledTo;
+
+	void ScaleWhole( float scale )
+	{
+		var model = BodyTarget.IsValid() ? BodyTarget.SceneModel : null;
+		if ( model.IsValid() && wholeScale != 1f && IsScaledByUs( model ) )
+			model.Transform = model.Transform.WithScale( model.Transform.Scale / wholeScale );
+		wholeScale = scale;
+		KeepScaled();
+	}
+
+	void KeepScaled()
+	{
+		var model = BodyTarget.IsValid() ? BodyTarget.SceneModel : null;
+		if ( wholeScale == 1f || !model.IsValid() || IsScaledByUs( model ) ) return;
+		scaledTo = model.Transform.Scale * wholeScale;
+		model.Transform = model.Transform.WithScale( scaledTo );
+	}
+
+	bool IsScaledByUs( SceneModel model ) => (model.Transform.Scale - scaledTo).Length <= 1e-4f * scaledTo.Length;
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
