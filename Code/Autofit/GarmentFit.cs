@@ -160,6 +160,8 @@ public sealed class SkinByBone
 public static class GarmentFit
 {
 	const int PushRounds = 6;                     // rounds of spreading the collision pushes and pushing again
+	const float FootCover = 0.002f * Units.Metre;  // how far past the body's foot a garment on it reaches at least
+	const float FootSearch = 0.25f;               // how much further than the moved skin a foot is looked for, as a share of its size
 	const float AffineRidge = 0.05f;              // how hard the fit on a stiff bone holds on to its shape, as a share of how its skin spreads
 	const float LayerGap = 0.012f * Units.Metre;  // room a loose garment keeps over the skin, for whatever is worn under it
 	const float RoomStep = 0.001f * Units.Metre;  // a garment surface closer to a vertex than this is the vertex's own
@@ -329,7 +331,7 @@ public static class GarmentFit
 			if ( givenMove != null ) move[i] = givenMove[src];
 		}
 
-		if ( stiff != null && givenMove == null ) Stiffen( pts, firstOf, boneIndex, boneWeight, move, old, skinMove, byBone, stiff );
+		if ( stiff != null && givenMove == null ) Stiffen( pts, firstOf, boneIndex, boneWeight, move, old, other, skinMove, byBone, stiff );
 
 		// Loose cloth hanging between two limbs flips between them from vertex to vertex.
 		// A little smoothing evens that out without washing away real detail.
@@ -676,6 +678,41 @@ public static class GarmentFit
 				shift[i] = Vec3.Zero;
 			}
 		}
+
+		// The other way round: a bigger piece made under a smaller one (a bodice under a belt)
+		// can still come up through it between the smaller piece's vertices, where the bigger
+		// one is curved or denser. There it is pressed back under the smaller piece; it is
+		// hidden by it, so the dent doesn't show.
+		var gap = new float[pts.Length];
+		foreach ( int root in roots )
+			foreach ( int i in members[root] ) gap[i] = body.SignedGap( fitted[i], out _ );
+		var now = new Dictionary<int, TriMesh>();
+		foreach ( int root in roots ) now[root] = new TriMesh( fitted, pieceTris[root].ToArray() );
+		for ( int k = 0; k < roots.Count - 1; k++ )
+		{
+			foreach ( int i in members[roots[k]] )
+			{
+				if ( isSolid[i] || gap0[i] < -hidden ) continue;
+				float best = LayerReach, apart = 0;
+				int over = -1;
+				for ( int j = k + 1; j < roots.Count; j++ )
+				{
+					int other = roots[j];
+					float d = made[other].Nearest( pts[i], out var q, out int tri );
+					if ( tri < 0 || d >= best ) continue;
+					best = d; over = other;
+					apart = gap0[i] - Blend( gap0, pieceTris[other], tri * 3, Bary( q, made[other], tri ) );
+				}
+				if ( over < 0 || apart > -LayerSeam ) continue;
+
+				var mesh = now[over];
+				float dNow = mesh.Nearest( fitted[i], out var at, out int atTri );
+				if ( atTri < 0 || dNow > LayerReach ) continue;
+				float sep = gap[i] - Blend( gap, pieceTris[over], atTri * 3, Bary( at, mesh, atTri ) );
+				float w = Math.Clamp( 2f - 2f * best / LayerReach, 0f, 1f );
+				if ( sep > -LayerSlack ) fitted[i] -= away[i] * ((sep + LayerSlack) * w);
+			}
+		}
 	}
 
 	// Barycentric weights of a point on a triangle of a mesh.
@@ -797,13 +834,15 @@ public static class GarmentFit
 	/// crumpled. On a stiff part the move is the one affine change that best carries that part's
 	/// stock skin onto the new skin, smooth across the whole garment.
 	/// </summary>
-	static void Stiffen( Vec3[] pts, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] move, TriMesh old, Vec3[] skinMove, SkinByBone byBone, int[] stiff )
+	static void Stiffen( Vec3[] pts, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] move, TriMesh old, TriMesh body, Vec3[] skinMove, SkinByBone byBone, int[] stiff )
 	{
 		var fits = new Dictionary<int, Affine>();
+		var on = new Dictionary<int, List<(int Vertex, float Share)>>();
 		for ( int i = 0; i < pts.Length; i++ )
 		{
 			int src = firstOf[i];
-			float total = 0, onStiff = 0;
+			float total = 0, onStiff = 0, most = 0;
+			int main = -1;
 			var sum = Vec3.Zero;
 			for ( int j = 0; j < 4; j++ )
 			{
@@ -813,21 +852,55 @@ public static class GarmentFit
 				total += w;
 				int group = bone < stiff.Length ? stiff[bone] : -1;
 				if ( group < 0 ) continue;
-				if ( !fits.TryGetValue( group, out var fit ) ) fits[group] = fit = Affine.Fit( old, skinMove, byBone, stiff, group );
+				if ( !fits.TryGetValue( group, out var fit ) ) fits[group] = fit = Affine.Fit( old, body, skinMove, byBone, stiff, group );
 				if ( !fit.Valid ) continue;
 				sum += (fit.Apply( pts[i] ) - pts[i]) * w;
 				onStiff += w;
+				if ( w > most ) { most = w; main = group; }
 			}
 			if ( onStiff <= 0 || total <= 0 ) continue;
 			float share = onStiff / total;
 			move[i] = move[i] * (1 - share) + sum / onStiff * share;
+			if ( !on.TryGetValue( main, out var list ) ) on[main] = list = new List<(int, float)>();
+			list.Add( (i, share) );
+		}
+
+		// A garment on a foot is often its only visible foot (stockings, shoes hide the body's
+		// feet), and a stocking made a little smaller than the stock foot comes out too short or
+		// too narrow for a foot of another shape: the toes look cut off. Along the ground the
+		// garment is stretched until it covers the body's foot from heel to toe tip and side to
+		// side. A shoe already bigger than the foot is left as it is.
+		foreach ( var (group, list) in on )
+		{
+			if ( !fits.TryGetValue( group, out var fit ) || !fit.HasFoot ) continue;
+			float x0 = float.MaxValue, x1 = float.MinValue, y0 = float.MaxValue, y1 = float.MinValue;
+			foreach ( var (i, share) in list )
+			{
+				if ( share < 0.5f ) continue;
+				var p = pts[i] + move[i];
+				x0 = MathF.Min( x0, p.X ); x1 = MathF.Max( x1, p.X ); y0 = MathF.Min( y0, p.Y ); y1 = MathF.Max( y1, p.Y );
+			}
+			if ( x1 <= x0 || y1 <= y0 ) continue;
+			float tx0 = MathF.Min( x0, fit.FootLo.X - FootCover ), tx1 = MathF.Max( x1, fit.FootHi.X + FootCover );
+			float ty0 = MathF.Min( y0, fit.FootLo.Y - FootCover ), ty1 = MathF.Max( y1, fit.FootHi.Y + FootCover );
+			if ( tx0 == x0 && tx1 == x1 && ty0 == y0 && ty1 == y1 ) continue;
+			float sx = (tx1 - tx0) / (x1 - x0), sy = (ty1 - ty0) / (y1 - y0);
+			foreach ( var (i, share) in list )
+			{
+				var p = pts[i] + move[i];
+				var to = new Vec3( tx0 + (p.X - x0) * sx, ty0 + (p.Y - y0) * sy, p.Z );
+				move[i] += (to - p) * share;
+			}
 		}
 	}
+
 
 	// x -> Linear * (x - From) + To
 	struct Affine
 	{
 		public bool Valid;
+		public bool HasFoot;     // the body's skin of this part was found, and where it spreads along the ground
+		public Vec3 FootLo, FootHi;
 		public Vec3 From, To;
 		public float[] Linear;   // 3x3, row by row
 
@@ -839,7 +912,7 @@ public static class GarmentFit
 
 		// Least squares over the skin the part's bones drive most, held a little to its shape so
 		// a thin patch of skin can't fold the garment flat.
-		public static Affine Fit( TriMesh skin, Vec3[] skinMove, SkinByBone byBone, int[] stiff, int group )
+		public static Affine Fit( TriMesh skin, TriMesh body, Vec3[] skinMove, SkinByBone byBone, int[] stiff, int group )
 		{
 			var bones = new List<int>();
 			for ( int b = 0; b < stiff.Length; b++ )
@@ -855,8 +928,12 @@ public static class GarmentFit
 			var fit = new Affine();
 			if ( used.Count < 8 ) return fit;
 
+			var moved = new Dictionary<int, Vec3>();
+			foreach ( int v in used ) moved[v] = skin.Verts[v] + skinMove[v];
+			fit.HasFoot = OntoBody( moved, body, out fit.FootLo, out fit.FootHi );
+
 			Vec3 from = Vec3.Zero, to = Vec3.Zero;
-			foreach ( int v in used ) { from += skin.Verts[v]; to += skin.Verts[v] + skinMove[v]; }
+			foreach ( int v in used ) { from += skin.Verts[v]; to += moved[v]; }
 			from /= used.Count;
 			to /= used.Count;
 
@@ -865,7 +942,7 @@ public static class GarmentFit
 			foreach ( int v in used )
 			{
 				var d = skin.Verts[v] - from;
-				var e = skin.Verts[v] + skinMove[v] - to;
+				var e = moved[v] - to;
 				for ( int r = 0; r < 3; r++ )
 					for ( int c = 0; c < 3; c++ )
 					{
@@ -886,6 +963,45 @@ public static class GarmentFit
 			fit.To = to;
 			fit.Valid = true;
 			return fit;
+		}
+
+		// The skin's move can leave part of a foot off the new body: toes carried along with the
+		// toe bone keep the stock length and stand out in front of shorter toes, in the air. The
+		// moved skin is pulled in along the ground (forward and sideways) to the extent of the new
+		// body's skin around it, which is the foot it has to fit.
+		static bool OntoBody( Dictionary<int, Vec3> moved, TriMesh body, out Vec3 blo, out Vec3 bhi )
+		{
+			blo = new( float.MaxValue, float.MaxValue, 0 );
+			bhi = new( float.MinValue, float.MinValue, 0 );
+			Vec3 lo = new( float.MaxValue, float.MaxValue, float.MaxValue ), hi = new( float.MinValue, float.MinValue, float.MinValue );
+			static Vec3 Min( Vec3 a, Vec3 b ) => new( MathF.Min( a.X, b.X ), MathF.Min( a.Y, b.Y ), MathF.Min( a.Z, b.Z ) );
+			static Vec3 Max( Vec3 a, Vec3 b ) => new( MathF.Max( a.X, b.X ), MathF.Max( a.Y, b.Y ), MathF.Max( a.Z, b.Z ) );
+			foreach ( var p in moved.Values ) { lo = Min( lo, p ); hi = Max( hi, p ); }
+			var size = hi - lo;
+			if ( size.X <= 0 || size.Y <= 0 ) return false;
+
+			int found = 0;
+			foreach ( var p in body.Verts )
+			{
+				if ( p.Z < lo.Z || p.Z > hi.Z ) continue;
+				if ( p.X < lo.X - size.X * FootSearch || p.X > hi.X + size.X * FootSearch ) continue;
+				if ( p.Y < lo.Y - size.Y * FootSearch || p.Y > hi.Y + size.Y * FootSearch ) continue;
+				blo = Min( blo, p ); bhi = Max( bhi, p );
+				found++;
+			}
+			if ( found < 8 ) return false;
+
+			// Only ever pulled in. A foot that comes out shorter than the body's is a foot posed
+			// differently (a heeled shoe's tilted foot over a flat one), not skin left in the air.
+			float sx = (bhi.X - blo.X) / size.X, sy = (bhi.Y - blo.Y) / size.Y;
+			bool inX = sx < 1f, inY = sy < 1f;
+			if ( !inX && !inY ) return true;
+			foreach ( var v in new List<int>( moved.Keys ) )
+			{
+				var p = moved[v];
+				moved[v] = new Vec3( inX ? blo.X + (p.X - lo.X) * sx : p.X, inY ? blo.Y + (p.Y - lo.Y) * sy : p.Y, p.Z );
+			}
+			return true;
 		}
 
 		static float Component( Vec3 v, int axis ) => axis == 0 ? v.X : axis == 1 ? v.Y : v.Z;

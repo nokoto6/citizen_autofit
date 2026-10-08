@@ -452,21 +452,30 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	}
 
 	// How much longer each part of the skeleton gets when the stock graph doubles the height,
-	// measured off its Scale_Twice_delta. Legs and arms by the joint, the torso by its spine.
-	// The neck, collarbones, hips, feet and fingers keep their size, so the head, shoulders
-	// and hands stay as they are and a taller body is longer rather than bigger.
+	// measured off its Scale_Twice_delta (the citizen's and the human's are the same clip).
+	// Legs and arms by the joint, the torso by its spine. The neck, collarbones, hips, feet and
+	// fingers keep their size, so the head, shoulders and hands stay as they are and a taller
+	// body is longer rather than bigger.
 	const float LegsTwice = 1.58f, ArmsTwice = 1.40f, TorsoTwice = 1.95f;
+
+	// Moving the joints apart only stretches the skin where it bends between two bones; a thigh
+	// skinned to its one bone would keep its length and only the knee would get longer. So the
+	// bones of the lengthened parts are scaled too: along the bone (their X axis) by as much as
+	// the part grows, across it by this share of that, or a tall body would come out thin and
+	// a short one stocky.
+	const float ThickShare = 0.5f;
 
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
 	bool stretched;
 
-	// What each bone's offset from its parent grows by at twice the height, for the model the
-	// table was made for. The pelvis is lifted by as much as the legs grow instead.
+	// Per bone of the model the tables were made for: what its offset from its parent grows by
+	// at twice the height, what the bone itself is scaled by along its length then, and whether
+	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
-	float[] stretchTwice;
-	int pelvis = -1;
-	float legLength, pelvisHeight;
+	float[] stretchTwice, lengthTwice;
+	bool[] underPelvis;
+	int[] feet;
 	Transform[] animated, stretchedPose;
 
 	// The animation is taken as it came out of the graph and laid out again with longer bones,
@@ -486,8 +495,6 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		var bones = body.Model.Bones.AllBones;
 		if ( stretchModel != body.Model ) MakeStretch( body.Model );
 
-		float legs = 1f + (stretch - 1f) * (LegsTwice - 1f);
-		float lift = pelvisHeight > 0f ? legLength * (legs - 1f) / pelvisHeight : 0f;
 		var so = body.SceneModel;
 		var model = so.Transform;
 		for ( int i = 0; i < bones.Count; i++ )
@@ -504,9 +511,26 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 			var local = animated[parent.Index].ToLocal( animated[i] );
 			var offset = local.Position * (1f + (stretch - 1f) * (stretchTwice[i] - 1f));
-			if ( i == pelvis ) offset.z *= 1f + lift;
 			stretchedPose[i] = stretchedPose[parent.Index].ToWorld( new Transform( offset, local.Rotation ) );
-			so.SetBoneOverride( i, stretchedPose[i] );
+		}
+
+		// Longer legs put the feet lower; the pelvis goes up until the lower foot is as high as
+		// the animation had it, standing, crouching or in the air.
+		float wasLow = float.MaxValue, nowLow = float.MaxValue;
+		foreach ( int f in feet )
+		{
+			wasLow = MathF.Min( wasLow, animated[f].Position.z );
+			nowLow = MathF.Min( nowLow, stretchedPose[f].Position.z );
+		}
+		float lift = feet.Length > 0 ? wasLow - nowLow : 0f;
+
+		for ( int i = 0; i < bones.Count; i++ )
+		{
+			var pose = stretchedPose[i];
+			if ( underPelvis[i] ) pose.Position += Vector3.Up * lift;
+			float along = 1f + (stretch - 1f) * (lengthTwice[i] - 1f);
+			pose.Scale = new Vector3( along, 1f + (along - 1f) * ThickShare, 1f + (along - 1f) * ThickShare );
+			so.SetBoneOverride( i, pose );
 		}
 		stretched = true;
 	}
@@ -524,11 +548,11 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		var bones = model.Bones.AllBones;
 		stretchModel = model;
 		stretchTwice = new float[bones.Count];
+		lengthTwice = new float[bones.Count];
+		underPelvis = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
-		pelvis = -1;
-		legLength = 0f;
-		pelvisHeight = 0f;
+		var feetList = new List<int>();
 		for ( int i = 0; i < bones.Count; i++ )
 		{
 			var bone = bones[i];
@@ -540,15 +564,19 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			else if ( parent.StartsWith( "arm_upper_" ) || parent.StartsWith( "arm_lower_" ) ) twice = ArmsTwice;
 			stretchTwice[i] = twice;
 
-			if ( name == "pelvis" )
-			{
-				pelvis = i;
-				pelvisHeight = bone.LocalTransform.Position.z - (bone.Parent?.LocalTransform.Position.z ?? 0f);
-			}
-			// Thigh and shin of one leg, the length the pelvis has to rise by.
-			if ( name == "leg_lower_L" || name == "ankle_L" )
-				legLength += bone.LocalTransform.Position.Distance( bone.Parent.LocalTransform.Position );
+			// The bones the lengthened parts are skinned to: the thigh, shin, upper arm and
+			// forearm with their twist bones, and the spine below the chest (the chest bone holds
+			// the neck and shoulders, which keep their size).
+			float length = 1f;
+			if ( name == "spine_0" || name == "spine_1" ) length = TorsoTwice;
+			else if ( name.StartsWith( "leg_upper_" ) || name.StartsWith( "leg_lower_" ) ) length = LegsTwice;
+			else if ( name.StartsWith( "arm_upper_" ) || name.StartsWith( "arm_lower_" ) ) length = ArmsTwice;
+			lengthTwice[i] = length;
+
+			underPelvis[i] = name == "pelvis" || (bone.Parent is not null && underPelvis[bone.Parent.Index]);
+			if ( name.StartsWith( "ankle_" ) ) feetList.Add( i );
 		}
+		feet = feetList.ToArray();
 	}
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
