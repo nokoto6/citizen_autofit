@@ -20,6 +20,9 @@ public sealed class BodyMap
 	/// <summary>Displacement of each stock body vertex.</summary>
 	public Vec3[] SkinMove;
 
+	/// <summary>The part of <see cref="SkinMove"/> that came from landmarks (skin sliding along the face with the eyes), per stock vertex. Hair is fitted without it.</summary>
+	public Vec3[] Landmarked;
+
 	/// <summary>
 	/// True for the vertices whose place on the other body was actually found. The rest got
 	/// their displacement from their neighbours, which is a guess: good enough to carry cloth
@@ -70,6 +73,7 @@ public sealed class BodyMap
 		}
 
 		var move = new Vec3[n];
+		var landmarked = new Vec3[n];
 		var valid = new bool[n];
 		var exact = new bool[n];
 		var hits = new List<(float, bool, int)>();
@@ -114,7 +118,10 @@ public sealed class BodyMap
 					{
 						float d = (s - at).Length() / reach;
 						float w = MathF.Exp( -0.5f * d * d );
-						if ( w > 0.01f ) move[i] += (shift - normal * Vec3.Dot( normal, shift )) * w;
+						if ( w <= 0.01f ) continue;
+						var slide = (shift - normal * Vec3.Dot( normal, shift )) * w;
+						move[i] += slide;
+						landmarked[i] += slide;
 					}
 				}
 			}
@@ -142,10 +149,12 @@ public sealed class BodyMap
 			MeshTools.Relax( move, known, edges, 1, 0f );
 
 		result.SkinMove = new Vec3[old.Verts.Length];
+		result.Landmarked = new Vec3[old.Verts.Length];
 		result.Found = new bool[old.Verts.Length];
 		for ( int i = 0; i < old.Verts.Length; i++ )
 		{
 			result.SkinMove[i] = move[weld[i]];
+			result.Landmarked[i] = landmarked[weld[i]];
 			result.Found[i] = kept[weld[i]];
 		}
 

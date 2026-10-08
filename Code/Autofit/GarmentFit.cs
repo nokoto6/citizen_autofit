@@ -265,7 +265,7 @@ public static class GarmentFit
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
 	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
 	/// <param name="stiff">Per stock bone, the part it belongs to that changes as a whole from body to body (a foot: its ankle bone), -1 for none. Garment on such a part follows one smooth change of it instead of every point of the skin.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null )
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -276,11 +276,13 @@ public static class GarmentFit
 		var pts = new Vec3[n];
 		for ( int i = 0; i < n; i++ ) pts[i] = verts[firstOf[i]];
 
-		Vec3 SkinMoveAt( Vec3 s, int tri )
+		Vec3 SkinMoveAt( Vec3 s, int tri ) => FieldAt( skinMove, s, tri );
+
+		Vec3 FieldAt( Vec3[] field, Vec3 s, int tri )
 		{
 			int ia = old.Tris[tri * 3], ib = old.Tris[tri * 3 + 1], ic = old.Tris[tri * 3 + 2];
 			Barycentric( s, old.Verts[ia], old.Verts[ib], old.Verts[ic], out float u, out float v, out float w );
-			return skinMove[ia] * u + skinMove[ib] * v + skinMove[ic] * w;
+			return field[ia] * u + field[ib] * v + field[ic] * w;
 		}
 
 		// Each vertex follows the closest stock skin, as long as that skin belongs to the bones
@@ -452,6 +454,7 @@ public static class GarmentFit
 
 		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
 		var loose = new List<int>();      // vertices of the cards in a heap: hair
+		bool hair = false;
 		var isSolid = new bool[n];
 		foreach ( var parts in solids.Values )
 		{
@@ -481,7 +484,23 @@ public static class GarmentFit
 			foreach ( int i in whole ) isSolid[i] = true;
 		}
 
-		if ( loose.Count > 0 ) FitLoose( loose, pts, move, wanted, away, fitted, Push );
+		if ( loose.Count > 0 )
+		{
+			// A heap of cards is hair, and all of it goes the hair's way: the long locks that
+			// bend like cloth and whatever cap mesh sits under the cards too.
+			loose.Clear();
+			for ( int i = 0; i < n; i++ ) if ( !isSolid[i] ) loose.Add( i );
+			bends.Clear();
+			hair = true;
+			// Hair isn't painted on the face: where the skin slides along it with the eyes (a
+			// landmark), the hair over it doesn't. A fringe that followed the eyes apart and
+			// down came out as cards stretched sideways over the cheeks. The whole heap, the
+			// long locks that bend like cloth included.
+			if ( landmarked != null && givenMove == null )
+				for ( int i = 0; i < n; i++ )
+					if ( !isSolid[i] && old.Nearest( pts[i], out var s, out int tri ) < SkinReach && tri >= 0 ) move[i] -= FieldAt( landmarked, s, tri );
+			FitLoose( loose, pts, move, wanted, away, fitted, Push );
+		}
 
 		var clothTris = new List<int>();
 		// Each piece of cloth is worked on its own, but pieces share no edges, so the smoothing
@@ -489,7 +508,7 @@ public static class GarmentFit
 		// per piece, and no garment-sized scratch arrays per piece (hair is thousands of pieces).
 		var cloth = new List<(int Root, List<int> Idx)>();
 		foreach ( var (root, idx) in members )
-			if ( bends.Contains( root ) || !IsRigid( idx, firstOf, boneIndex, boneWeight ) ) cloth.Add( (root, idx) );
+			if ( !hair && (bends.Contains( root ) || !IsRigid( idx, firstOf, boneIndex, boneWeight )) ) cloth.Add( (root, idx) );
 
 		foreach ( var (root, idx) in cloth )
 		{
@@ -591,62 +610,24 @@ public static class GarmentFit
 	/// </summary>
 	static void FitLoose( List<int> loose, Vec3[] pts, Vec3[] move, float[] wanted, Vec3[] away, Vec3[] fitted, PushTest push )
 	{
-		// Neighbours within reach, by a grid of cells one reach wide.
-		var cells = new Dictionary<(int, int, int), List<int>>();
-		(int, int, int) CellOf( Vec3 p ) => ((int)MathF.Floor( p.X / LooseReach ), (int)MathF.Floor( p.Y / LooseReach ), (int)MathF.Floor( p.Z / LooseReach ));
-		foreach ( int i in loose )
-		{
-			var key = CellOf( pts[i] );
-			if ( !cells.TryGetValue( key, out var list ) ) cells[key] = list = new List<int>();
-			list.Add( i );
-		}
-		var near = new List<int>[pts.Length];
-		var nearWeight = new List<float>[pts.Length];
-		float sigma2 = 2f * (LooseReach * 0.5f) * (LooseReach * 0.5f);
-		foreach ( int i in loose )
-		{
-			var (cx, cy, cz) = CellOf( pts[i] );
-			near[i] = new List<int>();
-			nearWeight[i] = new List<float>();
-			for ( int dx = -1; dx <= 1; dx++ )
-				for ( int dy = -1; dy <= 1; dy++ )
-					for ( int dz = -1; dz <= 1; dz++ )
-					{
-						if ( !cells.TryGetValue( (cx + dx, cy + dy, cz + dz), out var list ) ) continue;
-						foreach ( int j in list )
-						{
-							float d2 = (pts[j] - pts[i]).LengthSquared();
-							if ( d2 > LooseReach * LooseReach ) continue;
-							near[i].Add( j );
-							nearWeight[i].Add( MathF.Exp( -d2 / sigma2 ) );
-						}
-					}
-		}
-
-		void Blur( Vec3[] field, Vec3[] into )
-		{
-			foreach ( int i in loose )
-			{
-				var sum = Vec3.Zero;
-				float total = 0;
-				for ( int k = 0; k < near[i].Count; k++ ) { sum += field[near[i][k]] * nearWeight[i][k]; total += nearWeight[i][k]; }
-				into[i] = total > 0 ? sum / total : field[i];
-			}
-		}
-
+		// The skin's move is averaged over a lock's length: a card whose root took the
+		// scalp's move and whose tip took the face's turned to point out of the face. Pushes
+		// off the body are averaged over a card's width, enough to keep neighbours together.
 		var smooth = new Vec3[pts.Length];
 		var scratch = new Vec3[pts.Length];
 		foreach ( int i in loose ) smooth[i] = move[i];
+		var wide = new Neighbourhood( loose, pts, LockReach );
 		for ( int pass = 0; pass < LoosePasses; pass++ )
 		{
-			Blur( smooth, scratch );
+			wide.Blur( smooth, scratch );
 			foreach ( int i in loose ) smooth[i] = scratch[i];
 		}
 
+		var near = new Neighbourhood( loose, pts, LooseReach );
 		var pushField = new Vec3[pts.Length];
 		for ( int round = 0; round < PushRounds; round++ )
 		{
-			Blur( pushField, scratch );
+			near.Blur( pushField, scratch );
 			foreach ( int i in loose ) pushField[i] = scratch[i];
 			foreach ( int i in loose )
 				if ( push( pts[i] + smooth[i] + pushField[i], wanted[i], away[i], out var p ) ) pushField[i] += p;
@@ -654,7 +635,68 @@ public static class GarmentFit
 		foreach ( int i in loose ) fitted[i] = pts[i] + smooth[i] + pushField[i];
 	}
 
-	const float LooseReach = 0.03f * Units.Metre;   // cards this close to each other move together
+	// Who is within reach of whom among a set of points, by a grid of cells one reach wide,
+	// and a Gaussian blur of a field over them.
+	sealed class Neighbourhood
+	{
+		readonly List<int> points;
+		readonly int[][] near;
+		readonly float[][] weight;
+
+		public Neighbourhood( List<int> points, Vec3[] pts, float reach )
+		{
+			this.points = points;
+			var cells = new Dictionary<(int, int, int), List<int>>();
+			(int, int, int) CellOf( Vec3 p ) => ((int)MathF.Floor( p.X / reach ), (int)MathF.Floor( p.Y / reach ), (int)MathF.Floor( p.Z / reach ));
+			foreach ( int i in points )
+			{
+				var key = CellOf( pts[i] );
+				if ( !cells.TryGetValue( key, out var list ) ) cells[key] = list = new List<int>();
+				list.Add( i );
+			}
+			near = new int[pts.Length][];
+			weight = new float[pts.Length][];
+			float sigma2 = 2f * (reach * 0.5f) * (reach * 0.5f);
+			var found = new List<int>();
+			var weights = new List<float>();
+			foreach ( int i in points )
+			{
+				found.Clear();
+				weights.Clear();
+				var (cx, cy, cz) = CellOf( pts[i] );
+				for ( int dx = -1; dx <= 1; dx++ )
+					for ( int dy = -1; dy <= 1; dy++ )
+						for ( int dz = -1; dz <= 1; dz++ )
+						{
+							if ( !cells.TryGetValue( (cx + dx, cy + dy, cz + dz), out var list ) ) continue;
+							foreach ( int j in list )
+							{
+								float d2 = (pts[j] - pts[i]).LengthSquared();
+								if ( d2 > reach * reach ) continue;
+								found.Add( j );
+								weights.Add( MathF.Exp( -d2 / sigma2 ) );
+							}
+						}
+				near[i] = found.ToArray();
+				weight[i] = weights.ToArray();
+			}
+		}
+
+		public void Blur( Vec3[] field, Vec3[] into )
+		{
+			foreach ( int i in points )
+			{
+				var sum = Vec3.Zero;
+				float total = 0;
+				for ( int k = 0; k < near[i].Length; k++ ) { sum += field[near[i][k]] * weight[i][k]; total += weight[i][k]; }
+				into[i] = total > 0 ? sum / total : field[i];
+			}
+		}
+	}
+
+	const float LooseReach = 0.03f * Units.Metre;   // cards this close to each other are pushed together
+	const float LockReach = 0.08f * Units.Metre;    // and this close take one move: about a lock's length
+	const float SkinReach = 0.08f * Units.Metre;    // hair this far from the skin still took the skin's move
 	const int LoosePasses = 2;
 
 	/// <summary>

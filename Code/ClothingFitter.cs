@@ -893,7 +893,7 @@ public static class ClothingFitter
 		}
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
 		var solid = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff );
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
@@ -992,7 +992,7 @@ public static class ClothingFitter
 		// or an elbow bends. By its own weights, cloth made for a body with twist and helper
 		// bones is turned by bones this body never animates. Those weights may name stock
 		// bones the garment never had, which join its skeleton here. A vertex on a bone of
-		// the garment's own (a hat's jiggle bone) keeps its own weights, as does a solid piece.
+		// the garment's own (a hat's jiggle bone) keeps its own weights.
 		int OutBone( int s )
 		{
 			if ( outIndex.TryGetValue( stock.BoneNames[s], out int have ) ) return have;
@@ -1007,6 +1007,12 @@ public static class ClothingFitter
 			result.OutRotations.Add( target.Pose.RestRotations[s] );
 			return index;
 		}
+
+		// Every level of a garment must come out with the same skeleton: the model is built on
+		// the first level's, and the others index into it. So the stock bones go in after the
+		// garment's own in one fixed order, all of them, not just the ones a level happens to use.
+		for ( int s = 0; s < stock.BoneNames.Length; s++ )
+			if ( target.Pose.BodyHas[s] ) OutBone( s );
 
 		var wornBones = new int[garment.BoneIndex.Length];
 		var wornWeights = new float[garment.BoneIndex.Length];

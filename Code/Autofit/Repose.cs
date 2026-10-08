@@ -634,7 +634,7 @@ public sealed class Repose
 	/// </summary>
 	/// <param name="body">The body in the stock pose and proportions (<see cref="Positions"/>).</param>
 	/// <param name="bodyBones">The body's four bone slots per vertex, as stock bone indices.</param>
-	/// <param name="ownBones">The garment's own bone slots, kept where <paramref name="solid"/> is set: a solid object goes back whole.</param>
+	/// <param name="ownBones">The garment's own bone slots. A solid piece gets one set of weights for the whole of it, so it stays rigid: the skin's where it sits on the skin (a button on a shirt moves with the cloth round it), its own where it doesn't.</param>
 	/// <param name="skip">Stock bones whose weights don't count (the eyes: what an eye bone drives is the eye, not skin anything rests on).</param>
 	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip )
 	{
@@ -653,11 +653,10 @@ public sealed class Repose
 			int v = first[r];
 			blend.Clear();
 			float skinShare = 0;
-			if ( solid == null || !solid[v] )
 			{
 				float d = body.Nearest( fitted[v], out var q, out int tri );
 				skinShare = Math.Clamp( (SkinFar - d) / (SkinFar - SkinNear), 0f, 1f );
-				fixedRow[r] = d <= SkinNear;   // on the skin: exactly the skin's way back, not evened out
+				fixedRow[r] = d <= SkinNear || (solid != null && solid[v]);   // on the skin: exactly the skin's way back, not evened out
 				if ( tri >= 0 && skinShare > 0 )
 				{
 					int a = body.Tris[tri * 3], b = body.Tris[tri * 3 + 1], c = body.Tris[tri * 3 + 2];
@@ -685,10 +684,6 @@ public sealed class Repose
 					skinShare = 0;
 				}
 			}
-			else
-			{
-				fixedRow[r] = true;
-			}
 
 			float own = 0;
 			for ( int j = 0; j < 4; j++ ) if ( ownBones[v * 4 + j] >= 0 ) own += ownWeights[v * 4 + j];
@@ -711,10 +706,36 @@ public sealed class Repose
 		var grid = new float[n * k2];
 		foreach ( var (r, col, w) in cells ) grid[r * k2 + col] += w;
 
+		// A solid piece is one thing: every vertex of it gets the piece's mean weights.
+		var edges = MeshTools.Edges( tris, weld );
+		if ( solid != null )
+		{
+			var piece = new int[n];
+			for ( int r = 0; r < n; r++ ) piece[r] = r;
+			int Root( int x ) { while ( piece[x] != x ) { piece[x] = piece[piece[x]]; x = piece[x]; } return x; }
+			foreach ( var (a, b) in edges )
+				if ( solid[first[a]] && solid[first[b]] ) { int ra = Root( a ), rb = Root( b ); if ( ra != rb ) piece[ra] = rb; }
+			var sum = new Dictionary<int, float[]>();
+			var members = new Dictionary<int, int>();
+			for ( int r = 0; r < n; r++ )
+			{
+				if ( !solid[first[r]] ) continue;
+				int root = Root( r );
+				if ( !sum.TryGetValue( root, out var total ) ) { sum[root] = total = new float[k2]; members[root] = 0; }
+				for ( int c = 0; c < k2; c++ ) total[c] += grid[r * k2 + c];
+				members[root]++;
+			}
+			for ( int r = 0; r < n; r++ )
+			{
+				if ( !solid[first[r]] ) continue;
+				int root = Root( r );
+				for ( int c = 0; c < k2; c++ ) grid[r * k2 + c] = sum[root][c] / members[root];
+			}
+		}
+
 		// Neighbours off the skin that took their weights from different bits of it (the padding
 		// of a glove over fingers and over the palm) would pull a garment apart. Even them out
 		// over the garment's own edges; cloth on the skin keeps exactly what is under it.
-		var edges = MeshTools.Edges( tris, weld );
 		var next = new float[grid.Length];
 		var count = new int[n];
 		foreach ( var (a, b) in edges ) { count[a]++; count[b]++; }
