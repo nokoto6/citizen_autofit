@@ -264,8 +264,8 @@ public static class GarmentFit
 	/// <param name="under">A garment this one is worn under (hair under a hat), in the same stock pose. Whatever comes through it is put back under.</param>
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
 	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
-	/// <param name="stiff">Per stock bone, whether what it drives changes as a whole from body to body (a foot). Garment on such a bone follows one smooth change instead of every point of the skin.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, bool[] stiff = null )
+	/// <param name="stiff">Per stock bone, the part it belongs to that changes as a whole from body to body (a foot: its ankle bone), -1 for none. Garment on such a part follows one smooth change of it instead of every point of the skin.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -580,10 +580,10 @@ public static class GarmentFit
 	/// <summary>
 	/// A foot changes as a whole from one body to another: longer, wider, flatter. Followed point
 	/// by point, a shoe picks up every difference between two sets of toes and comes out
-	/// crumpled. On the bones marked stiff the move is the one affine change that best carries
-	/// that bone's stock skin onto the new skin, smooth across the whole garment.
+	/// crumpled. On a stiff part the move is the one affine change that best carries that part's
+	/// stock skin onto the new skin, smooth across the whole garment.
 	/// </summary>
-	static void Stiffen( Vec3[] pts, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] move, TriMesh old, Vec3[] skinMove, SkinByBone byBone, bool[] stiff )
+	static void Stiffen( Vec3[] pts, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] move, TriMesh old, Vec3[] skinMove, SkinByBone byBone, int[] stiff )
 	{
 		var fits = new Dictionary<int, Affine>();
 		for ( int i = 0; i < pts.Length; i++ )
@@ -597,8 +597,9 @@ public static class GarmentFit
 				float w = boneWeight[src * 4 + j];
 				if ( bone < 0 || w <= 0 ) continue;
 				total += w;
-				if ( bone >= stiff.Length || !stiff[bone] ) continue;
-				if ( !fits.TryGetValue( bone, out var fit ) ) fits[bone] = fit = Affine.Fit( old, skinMove, byBone, bone );
+				int group = bone < stiff.Length ? stiff[bone] : -1;
+				if ( group < 0 ) continue;
+				if ( !fits.TryGetValue( group, out var fit ) ) fits[group] = fit = Affine.Fit( old, skinMove, byBone, stiff, group );
 				if ( !fit.Valid ) continue;
 				sum += (fit.Apply( pts[i] ) - pts[i]) * w;
 				onStiff += w;
@@ -622,14 +623,21 @@ public static class GarmentFit
 			return To + new Vec3( Linear[0] * d.X + Linear[1] * d.Y + Linear[2] * d.Z, Linear[3] * d.X + Linear[4] * d.Y + Linear[5] * d.Z, Linear[6] * d.X + Linear[7] * d.Y + Linear[8] * d.Z );
 		}
 
-		// Least squares over the skin the bone drives most, held a little to its shape so a thin
-		// patch of skin can't fold the garment flat.
-		public static Affine Fit( TriMesh skin, Vec3[] skinMove, SkinByBone byBone, int bone )
+		// Least squares over the skin the part's bones drive most, held a little to its shape so
+		// a thin patch of skin can't fold the garment flat.
+		public static Affine Fit( TriMesh skin, Vec3[] skinMove, SkinByBone byBone, int[] stiff, int group )
 		{
+			var bones = new List<int>();
+			for ( int b = 0; b < stiff.Length; b++ )
+				if ( stiff[b] == group ) bones.Add( b );
 			var used = new HashSet<int>();
 			for ( int t = 0; t < skin.TriCount; t++ )
-				if ( byBone.Weight( t, bone ) >= 0.5f )
+			{
+				float share = 0;
+				foreach ( int b in bones ) share += byBone.Weight( t, b );
+				if ( share >= 0.5f )
 					for ( int k = 0; k < 3; k++ ) used.Add( skin.Tris[t * 3 + k] );
+			}
 			var fit = new Affine();
 			if ( used.Count < 8 ) return fit;
 

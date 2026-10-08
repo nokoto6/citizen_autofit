@@ -80,6 +80,36 @@ public sealed class Repose
 	/// <summary>Per stock bone, whether the body has a bone of that name.</summary>
 	public bool[] BodyHas;
 
+	// Per stock bone, whose place the skin it drives is moved by, in and out of the stock pose.
+	int[] follow;
+
+	/// <summary>
+	/// A bone at the end of a chain (the toes, the tip of a finger) has nothing to tell which
+	/// way it points: the body puts it wherever its joint is, the stock skeleton somewhere
+	/// else. Moved to its own stock place, its skin is sheared off the bone before it (toes a
+	/// couple of centimetres to the side of the foot), and a shoe fitted there comes back
+	/// creased at the joint. Its skin moves with the bone before it instead. Helpers along a
+	/// limb (twists) and bones that drive no skin keep their own place.
+	/// </summary>
+	static int[] Follow( SkinnedGeometry stock )
+	{
+		int count = stock.BoneNames.Length;
+		var follow = new int[count];
+		var hasChild = new bool[count];
+		for ( int b = 0; b < count; b++ )
+		{
+			follow[b] = b;
+			if ( stock.BoneParents[b] >= 0 ) hasChild[stock.BoneParents[b]] = true;
+		}
+		for ( int b = 0; b < count; b++ )
+		{
+			string name = stock.BoneNames[b];
+			if ( hasChild[b] || stock.BoneParents[b] < 0 || name.StartsWith( "eye_" ) || name.Contains( "twist" ) || name.Contains( "helper" ) || name.Contains( "IK" ) || name.Contains( "ikrule" ) || name.StartsWith( "hold_" ) || name.StartsWith( "aim_" ) ) continue;
+			follow[b] = stock.BoneParents[b];
+		}
+		return follow;
+	}
+
 	// Per stock bone: the stock bind pose, to take things out of, and the rotation that
 	// carries something placed in it over to the body's rest pose.
 	Vec3[] stockPositions;
@@ -230,9 +260,18 @@ public sealed class Repose
 
 		// The skin an eye bone drives goes the way of the head. The eye bone is a pivot,
 		// somewhere else on every face; carried by it, a painted iris lands off the face.
+		// The skin of a bone at the end of a chain (the toes, a fingertip) goes the way of the
+		// bone before it, see Follow.
+		result.follow = Follow( stock );
 		var carrier = new int[bones];
 		for ( int i = 0; i < bones; i++ )
-			carrier[i] = body.BoneNames[i].StartsWith( "eye_" ) && body.BoneParents[i] >= 0 && turn[body.BoneParents[i]] != null ? body.BoneParents[i] : i;
+		{
+			carrier[i] = i;
+			int parent = body.BoneParents[i];
+			if ( parent < 0 || turn[parent] == null ) continue;
+			if ( body.BoneNames[i].StartsWith( "eye_" ) || (to[i] >= 0 && result.follow[to[i]] != to[i] && to[parent] == result.follow[to[i]]) )
+				carrier[i] = parent;
+		}
 
 		result.Positions = new Vec3[body.Positions.Length];
 		double total = 0;
@@ -551,7 +590,8 @@ public sealed class Repose
 				int bone = boneIndex[v * 4 + j];
 				float w = boneWeight[v * 4 + j];
 				if ( bone < 0 || w <= 0 ) continue;
-				sum += (Quat.Rotate( turn[bone], fitted[v] - stockPositions[bone] ) + RestPositions[bone]) * w;
+				int by = follow[bone];
+				sum += (Quat.Rotate( turn[by], fitted[v] - stockPositions[by] ) + RestPositions[by]) * w;
 				weight += w;
 			}
 
@@ -740,8 +780,9 @@ public sealed class Repose
 				int bone = boneIndex[v * 4 + j];
 				float w = boneWeight[v * 4 + j];
 				if ( bone < 0 || w <= 0 ) continue;
-				Vec3 joint = stock.BonePositions[bone];
-				sum += (joint + Scaled( fitted[v] - joint, bone, false )) * w;
+				int by = follow[bone];
+				Vec3 joint = stock.BonePositions[by];
+				sum += (joint + Scaled( fitted[v] - joint, by, false )) * w;
 				weight += w;
 			}
 

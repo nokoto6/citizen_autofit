@@ -48,7 +48,7 @@ public static class ClothingFitter
 		public SkinnedGeometry Geo;
 		public TriMesh Mesh;
 		public SkinByBone Skin;
-		public bool[] Stiff;   // per bone, whether what it drives changes as a whole from body to body (a foot)
+		public int[] Stiff;   // per bone, the foot it is part of (its ankle), -1 if none: a foot changes as a whole from body to body
 	}
 
 	// A body brought into one reference's pose, and where that reference's skin went on it.
@@ -654,9 +654,12 @@ public static class ClothingFitter
 				{
 					var geo = CompiledModel.Read( file );
 					var mesh = new TriMesh( geo.Positions, geo.Indices );
-					var stiff = new bool[geo.BoneNames.Length];
+					var stiff = new int[geo.BoneNames.Length];
 					for ( int b = 0; b < stiff.Length; b++ )
-						stiff[b] = geo.BoneNames[b].StartsWith( "ankle_" ) || geo.BoneNames[b].StartsWith( "ball_" );
+					{
+						string name = geo.BoneNames[b];
+						stiff[b] = name.StartsWith( "ankle_" ) ? b : name.StartsWith( "ball_" ) ? Array.IndexOf( geo.BoneNames, "ankle_" + name.Substring( 5 ) ) : -1;
+					}
 					return new Reference { Geo = geo, Mesh = mesh, Skin = new SkinByBone( mesh, geo ), Stiff = stiff };
 				} );
 			}
