@@ -191,7 +191,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 	/// <summary>
 	/// Switches the debug view of every toon copy (see fit_toon.shader's g_flToonDebug): 0 off,
-	/// 1 albedo, 2 light, 3 highlight and reflection, 4 roughness, 5 metalness. Only the
+	/// 1 albedo, 2 light, 3 highlight and reflection, 4 roughness, 5 metalness, 6 the engine's
+	/// shading, 7 skin relief, 8 occlusion, 9 sun shadow (red map, green screen space). Only the
 	/// copies made at runtime change; nothing in the scene.
 	/// </summary>
 	[ConCmd( "fitdresser_toon_debug" )]

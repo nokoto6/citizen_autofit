@@ -117,8 +117,8 @@ PS
 	// Debug view (fitdresser_toon_debug): 1 albedo, 2 light, 3 highlight and reflection,
 	// 4 roughness, 5 metalness, 6 the same material under the engine's standard shading (the
 	// reference the toon's brightness is matched to), 7 the skin's relief (grey is none),
-	// 8 occlusion.
-	float g_flToonDebug < Default( 0.0 ); Range( 0.0, 8.0 ); UiGroup( "Toon,10/90" ); >;
+	// 8 occlusion, 9 the sun's shadow: red from the shadow map, green from the screen-space one.
+	float g_flToonDebug < Default( 0.0 ); Range( 0.0, 9.0 ); UiGroup( "Toon,10/90" ); >;
 
 	// The original's ambient occlusion map (complex.shader keeps it apart), white where there is
 	// none. Quilting and folds read darker with it, as on the original.
@@ -330,6 +330,7 @@ PS
 			vShadowAt += N * flTexel * 4.0 * sqrt( 1.0 - flSunCos * flSunCos );
 		}
 		float flSunShadow = g_DirectionalLightCascadeCount > 0 ? DirectionalLightShadow::GetVisibility( vShadowAt, m.ScreenPosition ) : 1.0;
+		float flScreenShadow = DirectionalLightShadow::SampleScreenSpaceShadow( m.ScreenPosition );
 		float3 vLit = 0.0, vShaded = 0.0;
 		float flSunBand = 0.0;
 		if ( g_DirectionalLightEnabled )
@@ -398,6 +399,7 @@ PS
 		if ( nDebug == 5 ) return float4( flMetal.xxx, 1 );
 		if ( nDebug == 7 ) return float4( flRelief.xxx * 0.5, 1 );
 		if ( nDebug == 8 ) return float4( flAo.xxx, 1 );
+		if ( nDebug == 9 ) return float4( flSunShadow / max( flScreenShadow, 0.001 ), flScreenShadow, 0, 1 );
 
 		if ( g_bWireframeMode )
 			return g_vWireframeColor;
