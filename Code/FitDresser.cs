@@ -180,7 +180,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			var body = dresser.BodyTarget;
 			if ( !body.IsValid() || body.Model is null ) continue;
 			Log.Info( $"fitdresser_toon_info: '{dresser.GameObject.Name}' toon {dresser.Toon}, {body.Materials.Count} slots" );
-			string Describe( Material m ) => m is null ? "none" : $"{m.Name} on {m.ShaderName}, colour {m.GetTexture( "g_tColor" )?.Width}x{m.GetTexture( "g_tColor" )?.Height}, tint {m.GetVector4( "g_vColorTint" )} x{m.GetVector4( "g_flModelTintAmount" ).x}, metal feature {m.GetFeature( "F_METALNESS_TEXTURE" )} value {m.GetVector4( "g_flMetalness" ).x} tex {m.GetTexture( "g_tMetalness" )?.Width} toon {m.GetVector4( "g_flToonMetal" ).x} tex {m.GetTexture( "g_tToonMetal" )?.Width}, alpha test {m.GetFeature( "F_ALPHA_TEST" )}, morph {m.GetFeature( "F_MORPH_SUPPORTED" )}";
+			string Describe( Material m ) => m is null ? "none" : $"{m.Name} on {m.ShaderName}, colour {m.GetTexture( "g_tColor" )?.Width}x{m.GetTexture( "g_tColor" )?.Height}, tint {m.GetVector4( "g_vColorTint" )} x{m.GetVector4( "g_flModelTintAmount" ).x}, metal feature {m.GetFeature( "F_METALNESS_TEXTURE" )} value {m.GetVector4( "g_flMetalness" ).x} tex {m.GetTexture( "g_tMetalness" )?.Width} toon {m.GetVector4( "g_flToonMetal" ).x} tex {m.GetTexture( "g_tToonMetal" )?.Width}, alpha test {m.GetFeature( "F_ALPHA_TEST" )} at {m.GetVector4( "g_flAlphaTestReference" ).x} edge {m.GetVector4( "g_flAntiAliasedEdgeStrength" ).x}, morph {m.GetFeature( "F_MORPH_SUPPORTED" )}";
 			var renderers = new List<SkinnedModelRenderer> { body };
 			renderers.AddRange( body.GameObject.Children.Where( x => x.Tags.Has( ClothingTag ) ).SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ) );
 			foreach ( var renderer in renderers )
@@ -552,7 +552,11 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		made.Set( "g_tColor", color );
 		made.Set( "g_tNormal", Valid( original.GetTexture( "g_tNormal" ) ) ?? Texture.Load( "materials/default/default_normal.tga" ) );
 		made.Set( "g_tRma", Valid( original.GetTexture( "g_tRma" ) ) ?? Texture.White );
-		if ( cutOut ) made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
+		if ( cutOut )
+		{
+			made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
+			made.Set( "g_flAntiAliasedEdgeStrength", original.GetVector4( "g_flAntiAliasedEdgeStrength" ).x );
+		}
 		// Eyelashes and brows dithered come out thick; they keep a clean cut.
 		string name = original.ResourceName ?? "";
 		if ( name.Contains( "lash" ) || name.Contains( "brow" ) ) made.Set( "g_flToonDither", 0f );
@@ -574,7 +578,20 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		made.Set( "g_flToonMetalInColor", metalMap && metal is null && !cutOut ? 1f : 0f );
 		// A cut-out's colour alpha is its cut, so where its map can't be found it gets none.
 		made.Set( "g_flToonMetal", metalMap ? (metal is not null || !cutOut ? 1f : 0f) : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
-		made.Set( "g_tToonAo", (complex ? Valid( original.GetTexture( "g_tAmbientOcclusion" ) ) : null) ?? Texture.White );
+		// Skin keeps its occlusion in the green of its mask texture (the humans' faces have it).
+		bool skin = shader.Contains( "skin" );
+		var ao = complex ? Valid( original.GetTexture( "g_tAmbientOcclusion" ) ) : skin ? Valid( original.GetTexture( "g_tCombinedMasks" ) ) : null;
+		made.Set( "g_tToonAo", ao ?? Texture.White );
+		made.Set( "g_flToonAoGreen", skin && ao is not null ? 1f : 0f );
+
+		// Skin gets its relief, and its aged maps for skin_age where it has them.
+		made.Set( "g_flToonRelief", skin ? 1f : 0f );
+		bool aged = skin && original.GetFeature( "F_AGE_TEXTURE" ) > 0;
+		var ageColor = aged ? Valid( original.GetTexture( "g_tAgeColor" ) ) : null;
+		var ageNormal = aged ? Valid( original.GetTexture( "g_tAgeNormal" ) ) : null;
+		made.Set( "g_flToonAge", ageColor is not null && ageNormal is not null ? 1f : 0f );
+		made.Set( "g_tToonAgeColor", ageColor ?? color );
+		made.Set( "g_tToonAgeNormal", ageNormal ?? Texture.Load( "materials/default/default_normal.tga" ) );
 
 		if ( eyeball || citizenEye )
 		{

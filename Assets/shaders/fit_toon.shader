@@ -116,13 +116,31 @@ PS
 
 	// Debug view (fitdresser_toon_debug): 1 albedo, 2 light, 3 highlight and reflection,
 	// 4 roughness, 5 metalness, 6 the same material under the engine's standard shading (the
-	// reference the toon's brightness is matched to).
+	// reference the toon's brightness is matched to), 7 the skin's relief (grey is none),
+	// 8 occlusion.
 	float g_flToonDebug < Default( 0.0 ); Range( 0.0, 8.0 ); UiGroup( "Toon,10/90" ); >;
 
 	// The original's ambient occlusion map (complex.shader keeps it apart), white where there is
 	// none. Quilting and folds read darker with it, as on the original.
 	CreateInputTexture2D( TextureToonAo, Linear, 8, "", "_ao", "Toon,10/37", Default( 1.0 ) );
 	Texture2D g_tToonAo < Channel( R, Box( TextureToonAo ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
+
+	// 1 where the occlusion map is a skin.shader mask texture, which keeps it in green.
+	float g_flToonAoGreen < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/38" ); >;
+
+	// Skin relief: the detail normal (pores, and with age the creases) shades the skin a little
+	// lighter or darker where it turns to or from the light, without moving the edge of the bands.
+	// 1 on skin.shader copies, whose normal texture is packed like complex.shader's.
+	float g_flToonRelief < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Skin,30/10" ); >;
+	float g_flToonReliefStrength < Default( 2.0 ); Range( 0.0, 8.0 ); UiGroup( "Toon Skin,30/11" ); >;
+	// 1 where the skin has aged maps (skin.shader's F_AGE_TEXTURE): skin_age blends the colour and
+	// the relief towards them, as the stock shader does.
+	float g_flToonAge < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Skin,30/12" ); >;
+	float g_flSkinAge < Attribute( "skin_age" ); Default( 0.0 ); >;
+	CreateInputTexture2D( TextureToonAgeColor, Srgb, 8, "", "_agecolor", "Toon Skin,30/13", Default3( 1.0, 1.0, 1.0 ) );
+	Texture2D g_tToonAgeColor < Channel( RGB, Box( TextureToonAgeColor ), Srgb ); OutputFormat( BC7 ); SrgbRead( true ); >;
+	CreateInputTexture2D( TextureToonAgeNormal, Linear, 8, "", "_agenormal", "Toon Skin,30/14", Default3( 0.5, 0.5, 1.0 ) );
+	Texture2D g_tToonAgeNormal < Channel( RGB, Box( TextureToonAgeNormal ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
 
 	CreateInputTexture2D( TextureToonMetal, Linear, 8, "", "_metal", "Toon,10/34", Default( 1.0 ) );
 	Texture2D g_tToonMetal < Channel( R, Box( TextureToonMetal ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
@@ -198,10 +216,31 @@ PS
 			// it vanished up close, where the sharp mip has it below the threshold everywhere.
 			// Hair, all but fully opaque or fully clear, keeps a clean edge.
 			float flCut = g_flAlphaTestReference;
-			float flDither = Bayer( m.ScreenPosition.xy );
-			clip( m.Opacity - lerp( flCut, lerp( flCut * 0.15, flCut, flDither ), g_flToonDither ) );
-			// What is left is solid; alpha-to-coverage would cut the half-transparent part again.
-			m.Opacity = 1.0;
+			// The engine's coverage (see AdjustOpacityForAlphaToCoverage), worked out here because
+			// its own cuts at the threshold where there is no MSAA, which the dither must not.
+			float2 vTexel = i.vTextureCoords.xy * float2( TextureDimensions2DS( g_tColor, 0 ) );
+			float flMip = max( 0.0, 0.5 * log2( max( dot( ddx( vTexel ), ddx( vTexel ) ), dot( ddy( vTexel ), ddy( vTexel ) ) ) ) );
+			float flOpacity = m.Opacity * ( 1.0 + flMip * 0.25 );
+			float flCoverage = lerp( saturate( flOpacity ), saturate( 0.5 + ( flOpacity - flCut ) / max( fwidth( flOpacity ), 0.000001 ) ), g_flAntiAliasedEdgeStrength );
+			[branch]
+			if ( g_flToonDither > 0.0 )
+			{
+				float flDither = Bayer( m.ScreenPosition.xy );
+				clip( m.Opacity - lerp( flCut, lerp( flCut * 0.15, flCut, flDither ), g_flToonDither ) );
+				// What is left is solid; alpha-to-coverage would cut the half-transparent part again.
+				m.Opacity = 1.0;
+			}
+			else
+			{
+				// Lashes and brows exactly as the engine draws them. The humans' lashes are cut at
+				// 0.01 and left to the coverage, so the haze round the hairs stays faint; cut solid
+				// at that threshold it was a thick black band.
+				clip( m.Opacity - 1.0 / 255.0 );
+				if ( g_nMSAASampleCount == 1 )
+					clip( flOpacity - flCut );
+				m.Opacity = flCoverage;
+				clip( m.Opacity - 0.000001 );
+			}
 		#endif
 
 		#if ( S_MODE_DEPTH )
@@ -211,6 +250,10 @@ PS
 			return DepthNormals::Output( m.Normal, m.Roughness, m.Opacity );
 
 		float3 vAlbedo = m.Albedo;
+		float flAge = saturate( g_flSkinAge ) * g_flToonAge;
+		[branch]
+		if ( flAge > 0.0 )
+			vAlbedo = lerp( vAlbedo, g_tToonAgeColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb, flAge );
 		[branch]
 		if ( g_flToonSkin > 0.0 )
 		{
@@ -235,6 +278,18 @@ PS
 			flRough = vTexel.b;
 			vDetail = Vec3TsToWsNormalized( DecodeHemiOctahedronNormal( vTexel.rg ), N, i.vTangentUWs, i.vTangentVWs );
 		}
+		// The skin's relief (see g_flToonRelief), against the light that shapes the bands most.
+		float flRelief = 1.0;
+		[branch]
+		if ( g_flToonRelief > 0.0 )
+		{
+			float2 vPacked = g_tNormal.Sample( TextureFiltering, i.vTextureCoords.xy ).rg;
+			if ( flAge > 0.0 )
+				vPacked = lerp( vPacked, g_tToonAgeNormal.Sample( TextureFiltering, i.vTextureCoords.xy ).rg, flAge );
+			float3 vSkin = Vec3TsToWsNormalized( DecodeHemiOctahedronNormal( vPacked ), N, i.vTangentUWs, i.vTangentVWs );
+			float3 vKey = g_DirectionalLightEnabled ? -g_DirectionalLightDirection.xyz : g_vCameraUpDirWs;
+			flRelief = saturate( 1.0 + dot( vSkin - N, vKey ) * g_flToonReliefStrength * g_flToonRelief );
+		}
 		float flMetalMap = g_flToonMetalInColor > 0.0 ? g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).a : g_tToonMetal.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
 		float flMetal = g_flToonMetal * flMetalMap;
 		float flGloss = saturate( 1.0 - flRough );
@@ -247,7 +302,8 @@ PS
 			r.Normal = vDetail;
 			r.Roughness = flRough;
 			r.Metalness = flMetal;
-			r.AmbientOcclusion = 1.0;
+			float4 vAoTexel = g_tToonAo.Sample( TextureFiltering, i.vTextureCoords.xy );
+			r.AmbientOcclusion = g_flToonAoGreen > 0.0 ? vAoTexel.g : vAoTexel.r;
 			return ShadingModelStandard::Shade( r );
 		}
 
@@ -260,8 +316,20 @@ PS
 			flGloss = 0.0;
 		}
 
-		// The sun. Its shadow is asked outside any branch: it reads screen derivatives.
-		float flSunShadow = g_DirectionalLightCascadeCount > 0 ? DirectionalLightShadow::GetVisibility( P, m.ScreenPosition ) : 1.0;
+		// The sun. Its shadow is asked outside any branch: it reads screen derivatives. The point
+		// it is asked at is moved off the surface along the normal, more so the more the surface
+		// turns from the sun, by a few of the shadow map's texels: the band gives such a surface
+		// full light where the engine's shading fades it out, and the shadow's noise at its own
+		// edge speckled it (the maid dress's sleeves).
+		float3 vShadowAt = P;
+		{
+			float3 vCascadeLs;
+			int nCascade = FindCascade( P, vCascadeLs );
+			float flTexel = nCascade >= 0 ? g_DirectionalLightInverseShadowMapSize / length( g_DirectionalLightWorldToShadowViewMatrices[nCascade][0].xyz ) : 0.0;
+			float flSunCos = saturate( abs( dot( N, g_DirectionalLightDirection.xyz ) ) );
+			vShadowAt += N * flTexel * 4.0 * sqrt( 1.0 - flSunCos * flSunCos );
+		}
+		float flSunShadow = g_DirectionalLightCascadeCount > 0 ? DirectionalLightShadow::GetVisibility( vShadowAt, m.ScreenPosition ) : 1.0;
 		float3 vLit = 0.0, vShaded = 0.0;
 		float flSunBand = 0.0;
 		if ( g_DirectionalLightEnabled )
@@ -309,14 +377,15 @@ PS
 		// The edge brightening held back by roughness (Lagarde's fit), or every bump of a quilted
 		// jacket turned away from the camera lays a grey film over black cloth.
 		float3 vFresnel = vSpecColor + ( max( flGloss.xxx, vSpecColor ) - vSpecColor ) * pow( 1.0 - flFacing, 5.0 );
-		float3 vReflect = EnvMap::From( P, m.ScreenPosition, reflect( -V, vDetail ), flRough.xx ) * vFresnel * flGloss * g_flToonReflect;
+		float3 vReflect = EnvMap::From( P, m.ScreenPosition, vDetail, flRough.xx ) * vFresnel * flGloss * g_flToonReflect;
 		vAlbedo *= 1.0 - flMetal;
 
 		float flRim = smoothstep( 1.0 - g_flToonRimWidth, 1.0 - g_flToonRimWidth * 0.5, 1.0 - saturate( dot( N, V ) ) );
 		float3 vRim = vAlbedo * ( vLit + vAmbient ) * flRim * g_flToonRim;
 
-		float flAo = g_tToonAo.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
-		float4 color = float4( vAlbedo * vLight * vShade * flAo + vRim + ( vGlint + vReflect * flAo ) * g_flToonGloss + m.Emission, m.Opacity );
+		float4 vAoSample = g_tToonAo.Sample( TextureFiltering, i.vTextureCoords.xy );
+		float flAo = g_flToonAoGreen > 0.0 ? vAoSample.g : vAoSample.r;
+		float4 color = float4( vAlbedo * vLight * vShade * flAo * flRelief + vRim + ( vGlint + vReflect * flAo ) * g_flToonGloss + m.Emission, m.Opacity );
 		// An anime eye is half lit by its own: it stays clear in the shade.
 		if ( bEye )
 			color.rgb = vAlbedo * lerp( vLight * vShade, 1.0, 0.5 ) + vGlints;
@@ -327,6 +396,8 @@ PS
 		if ( nDebug == 3 ) return float4( ( vGlint + vReflect ) * g_flToonGloss, 1 );
 		if ( nDebug == 4 ) return float4( flRough.xxx, 1 );
 		if ( nDebug == 5 ) return float4( flMetal.xxx, 1 );
+		if ( nDebug == 7 ) return float4( flRelief.xxx * 0.5, 1 );
+		if ( nDebug == 8 ) return float4( flAo.xxx, 1 );
 
 		if ( g_bWireframeMode )
 			return g_vWireframeColor;
