@@ -546,8 +546,6 @@ public static class GarmentFit
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
 
-		if ( !hair ) KeepLayers( pts, fitted, piece, members, pieceTris, edges, isSolid, gap0, away, other, hidden );
-
 		foreach ( var (root, idx) in cloth )
 		{
 			// The skin can still come through the middle of a triangle, typically a hard edge
@@ -592,6 +590,7 @@ public static class GarmentFit
 		}
 
 		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound, clearSkin );
+		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, hidden );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 
 		var result = new Vec3[verts.Length];
@@ -603,94 +602,79 @@ public static class GarmentFit
 
 	/// <summary>
 	/// The pieces of one garment are fitted each on its own, and each is pushed off the body by
-	/// what is under it, so a bow over a bodice or a ribbon round a stocking can end up inside
-	/// the piece it was made to lie on, or the piece underneath can come through it. Which piece
-	/// is on top is told by the skin: the one further from it. Every vertex remembers whether it was
-	/// made over or under the nearest other piece, and where that order has turned round after
-	/// the fit, the outer piece is moved out until it holds again: a vertex that was over
-	/// another piece is pushed out from the body, a piece that was under another lifts that
-	/// piece off itself. Only ever outward, the body put everything where it is.
-	/// Pieces' own normals are no use for this: a lined waistcoat has them pointing both ways.
+	/// what is under it, so a bow over a bodice or a ribbon round a stocking could end up inside
+	/// the piece it was made to lie on, or that piece could come through it. So the smaller of
+	/// two pieces lying on each other is carried by the bigger one: it moves exactly as the
+	/// spot of the bigger piece next to it moves, and stays where it was sewn on, over it or
+	/// under it, at the distance it was made with. Biggest pieces go first, so a bow on an apron
+	/// on a dress rides on both. A piece lying only partly on another is carried where it lies
+	/// on it and keeps its own fit past the reach. Which of two pieces is the outer one is told
+	/// by the skin, not by their normals: a lined waistcoat has them pointing both ways.
 	/// </summary>
-	static void KeepLayers( Vec3[] pts, Vec3[] fitted, int[] piece, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, List<(int A, int B)> edges, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh other, float hidden )
+	static void Carry( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh body, float hidden )
 	{
 		var roots = new List<int>();
 		foreach ( var (root, idx) in members )
 			if ( pieceTris.ContainsKey( root ) && idx.Count >= LayerMinVerts ) roots.Add( root );
 		if ( roots.Count < 2 || roots.Count > LayerMaxPieces ) return;
 
-		int n = pts.Length;
+		// Biggest first. A piece is carried only by pieces before it.
+		roots.Sort( ( a, b ) => members[a].Count != members[b].Count ? members[b].Count.CompareTo( members[a].Count ) : a.CompareTo( b ) );
 		var made = new Dictionary<int, TriMesh>();
 		foreach ( int root in roots ) made[root] = new TriMesh( pts, pieceTris[root].ToArray() );
 
-		// Per vertex: the nearest other piece as made, and how much further from the skin this
-		// vertex sat than the spot of that piece nearest to it.
-		var against = new int[n];
-		var apart = new float[n];
-		Array.Fill( against, -1 );
-		for ( int i = 0; i < n; i++ )
+		var shift = new Vec3[pts.Length];
+		for ( int k = 1; k < roots.Count; k++ )
 		{
-			if ( gap0[i] < -hidden ) continue;
-			float best = LayerReach;
-			foreach ( int root in roots )
+			int root = roots[k];
+			foreach ( int i in members[root] )
 			{
-				if ( root == piece[i] ) continue;
-				float d = made[root].Nearest( pts[i], out var q, out int tri );
-				if ( tri < 0 || d >= best ) continue;
-				best = d;
-				against[i] = root;
-				apart[i] = gap0[i] - Blend( gap0, pieceTris[root], tri * 3, Bary( q, made[root], tri ) );
-			}
-		}
+				if ( gap0[i] < -hidden ) continue;
+				// The nearest bigger piece, as made.
+				float best = LayerReach, apart = 0;
+				int on = -1, onTri = -1;
+				Vec3 at = default;
+				for ( int j = 0; j < k; j++ )
+				{
+					int other = roots[j];
+					float d = made[other].Nearest( pts[i], out var q, out int tri );
+					if ( tri < 0 || d >= best ) continue;
+					best = d; on = other; onTri = tri; at = q;
+					apart = gap0[i] - Blend( gap0, pieceTris[other], tri * 3, Bary( q, made[other], tri ) );
+				}
+				if ( on < 0 ) continue;
 
-		var gap = new float[n];
-		var push = new Vec3[n];
-		var known = new bool[n];
-		for ( int round = 0; round < LayerRounds; round++ )
-		{
-			for ( int i = 0; i < n; i++ ) gap[i] = other.SignedGap( fitted[i], out _ );
-			var now = new Dictionary<int, TriMesh>();
-			foreach ( int root in roots ) now[root] = new TriMesh( fitted, pieceTris[root].ToArray() );
-			Array.Clear( push );
-			Array.Clear( known );
-			int moved = 0;
-			for ( int i = 0; i < n; i++ )
-			{
-				if ( against[i] < 0 || MathF.Abs( apart[i] ) < LayerApart ) continue;
-				var mesh = now[against[i]];
-				var tris = pieceTris[against[i]];
-				float d = mesh.Nearest( fitted[i], out var q, out int tri );
-				if ( tri < 0 || d > LayerReach ) continue;
-				float sep = gap[i] - Blend( gap, tris, tri * 3, Bary( q, mesh, tri ) );
-				// Only where the order has turned round. Cloth that merely sits closer to the next
-				// layer than it was made is left alone: restoring every gap in full inflates a
-				// garment, layer over layer.
-				if ( apart[i] > 0 )
-				{
-					// Was over the other piece and is under it now: back out from the body.
-					if ( isSolid[i] || sep >= -LayerSlack ) continue;
-					push[i] += away[i] * MathF.Min( LayerSlack - sep, LayerStep );
-					known[i] = true;
-					moved++;
-				}
-				else
-				{
-					// Was under the other piece and has come through it: lift that piece off.
-					if ( sep <= LayerSlack ) continue;
-					float lift = MathF.Min( sep + LayerSlack, LayerStep );
-					for ( int c = 0; c < 3; c++ )
-					{
-						int v = tris[tri * 3 + c];
-						if ( isSolid[v] ) continue;
-						if ( push[v].LengthSquared() < lift * lift ) push[v] = away[v] * lift;
-						known[v] = true;
-						moved++;
-					}
-				}
+				// Full where it lies on the other piece, none at the edge of the reach, and eased in
+				// where the two were made at nearly the same height (a seam rather than a layer).
+				float w = Math.Clamp( 2f - 2f * best / LayerReach, 0f, 1f ) * Math.Clamp( MathF.Abs( apart ) / LayerSeam, 0f, 1f );
+				var bw = Bary( at, made[on], onTri );
+				var tris = pieceTris[on];
+				var carried = pts[i] + Blend( fitted, tris, onTri * 3, bw ) - Blend( pts, tris, onTri * 3, bw );
+				// Never closer to the skin than its own fit had it: the bigger piece may be down in
+				// the skin where it is hidden, and the own fit has been lifted over bumps of the body
+				// that come up between vertices. What lies under the bigger piece is lifted no
+				// further than to just under it.
+				float carriedGap = body.SignedGap( carried, out _ );
+				float sunk = body.SignedGap( fitted[i], out _ ) - carriedGap;
+				if ( apart < 0 )
+					sunk = MathF.Min( sunk, body.SignedGap( Blend( fitted, tris, onTri * 3, bw ), out _ ) - LayerSlack - carriedGap );
+				if ( sunk > 0 ) carried += away[i] * sunk;
+				shift[i] = (carried - fitted[i]) * w;
 			}
-			if ( moved == 0 ) break;
-			MeshTools.Relax( push, known, edges, 1, 0.5f );
-			for ( int i = 0; i < n; i++ ) if ( !isSolid[i] ) fitted[i] += push[i];
+
+			// A rigid piece (a button) is moved as a whole, by its average.
+			var rigid = Vec3.Zero;
+			int rigidCount = 0;
+			foreach ( int i in members[root] )
+				if ( isSolid[i] ) { rigid += shift[i]; rigidCount++; }
+			if ( rigidCount > 0 ) rigid /= rigidCount;
+
+			// Each piece is moved before a smaller one looks at it.
+			foreach ( int i in members[root] )
+			{
+				fitted[i] += isSolid[i] ? rigid : shift[i];
+				shift[i] = Vec3.Zero;
+			}
 		}
 	}
 
@@ -701,11 +685,9 @@ public static class GarmentFit
 		return new[] { u, v, w };
 	}
 
-	const float LayerReach = 0.03f * Units.Metre;    // another piece this close is a layer this one lies on or under
-	const float LayerSlack = 0.002f * Units.Metre;   // how far apart two layers are kept once put back in order
-	const float LayerApart = 0.004f * Units.Metre;   // pieces made closer than this (a sleeve seam) have no order to keep
-	const float LayerStep = 0.005f * Units.Metre;    // how far a round may move cloth
-	const int LayerRounds = 4;
+	const float LayerReach = 0.03f * Units.Metre;    // another piece this close is a layer this one may lie on
+	const float LayerSeam = 0.001f * Units.Metre;    // pieces made closer in height than this meet at a seam
+	const float LayerSlack = 0.001f * Units.Metre;   // what a piece under another keeps between them
 	const int LayerMinVerts = 12;                    // smaller pieces (a stray triangle) are not layers
 	const int LayerMaxPieces = 40;                   // more pieces than this is scales or feathers, not layers
 

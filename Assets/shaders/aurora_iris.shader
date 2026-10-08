@@ -1,4 +1,4 @@
-// rebuild-tag: iris-v2
+// rebuild-tag: iris-v3
 // The iris of a VRoid body. VRoid paints the iris as a flat picture, with the colour baked in,
 // so a dresser's eye colour can't reach it. Here the picture is kept as a grey pattern and the
 // colour comes in as the eye_tint attribute (FitDresser.EyeColor), the way skin_tint colours
@@ -53,8 +53,11 @@ PS
 	StaticCombo( S_ALPHA_TEST, F_ALPHA_TEST, Sys( ALL ) );
 	RenderState( CullMode, F_RENDER_BACKFACES ? NONE : DEFAULT );
 
-	// The iris colour, linear. Without a dresser the eye is its natural brown.
+	// The body's own iris colour, linear, and the dresser's one. The dresser's is used while
+	// eye_tinted is 1, so turning Tint Eyes off brings the body's colour back.
+	float3 g_vIrisColor < UiType( Color ); Default3( 0.094, 0.036, 0.012 ); UiGroup( "Eye,10/20" ); >;
 	float3 g_vEyeTint < Attribute( "eye_tint" ); Default3( 0.094, 0.036, 0.012 ); >;
+	float g_flEyeTinted < Attribute( "eye_tinted" ); Default( 0.0 ); >;
 	float g_flGlow < Default( 0.06 ); Range( 0.0, 1.0 ); UiGroup( "Eye,10/10" ); >;
 
 	// The grey pattern is scaled so its mean over the iris is 0.5 in the texture, which is this
@@ -64,7 +67,7 @@ PS
 	float4 MainPs( PixelInput i ) : SV_Target0
 	{
 		Material m = Material::From( i );
-		m.Albedo = saturate( m.Albedo / GreyMean * g_vEyeTint );
+		m.Albedo = saturate( m.Albedo / GreyMean * lerp( g_vIrisColor, g_vEyeTint, g_flEyeTinted ) );
 		m.Emission = m.Albedo * g_flGlow;
 		return ShadingModelStandard::Shade( i, m );
 	}

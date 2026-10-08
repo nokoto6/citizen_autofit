@@ -78,12 +78,12 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	/// body's iris material has to read (Aurora's does); the stock bodies get their eye colour
 	/// from an eyes material carried by clothing instead, and ignore this.
 	/// </summary>
-	[Property, HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnSkinChanged ) )]
+	[Property, HideIf( nameof( UseLocalAvatar ), true ), Change( nameof( OnTintEyesChanged ) )]
 	public bool TintEyes { get; set; }
 
-	/// <summary>The iris colour, with Tint Eyes on.</summary>
-	[Property, ShowIf( nameof( TintEyes ), true ), Change( nameof( OnSkinChanged ) )]
-	public Color EyeColor { get; set; } = new Color( 0.58f, 0.36f, 0.19f );
+	/// <summary>The iris colour, with Tint Eyes on. The default is Aurora's own brown.</summary>
+	[Property, ShowIf( nameof( TintEyes ), true ), Change( nameof( OnEyeColorChanged ) )]
+	public Color EyeColor { get; set; } = new Color( 0.34f, 0.21f, 0.11f );
 
 	/// <summary>
 	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
@@ -169,6 +169,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	protected override void OnUpdate()
 	{
 		Live.Add( this );
+		Stretch();
 	}
 
 	protected override void OnDestroy()
@@ -179,6 +180,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	protected override void OnDisabled()
 	{
 		ScaleWhole( 1f );
+		Unstretch();
 	}
 
 	// How far clothing can stick out past the body: hair, a hat, a sword on the back.
@@ -402,44 +404,151 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			SetSkin( renderer );
 	}
 
+	// A change callback has to take the property's own type, or it is never called.
+	void OnTintEyesChanged( bool before, bool after ) => OnSkinChanged( 0, 0 );
+	void OnEyeColorChanged( Color before, Color after ) => OnSkinChanged( 0, 0 );
+
 	void SetSkin( SkinnedModelRenderer renderer )
 	{
 		renderer.Attributes.Set( "skin_tint", skinTint );
 		renderer.Attributes.Set( "skin_age", skinAge );
-		if ( TintEyes && !UseLocalAvatar ) renderer.Attributes.Set( "eye_tint", EyeColor );
-		else renderer.Attributes.Set( "eye_tint", Color.White );
+		// The picker shows the colour as it looks on screen; the shader works in linear light.
+		bool tinted = TintEyes && !UseLocalAvatar;
+		renderer.Attributes.Set( "eye_tinted", tinted ? 1f : 0f );
+		renderer.Attributes.Set( "eye_tint", new Vector3( ToLinear( EyeColor.r ), ToLinear( EyeColor.g ), ToLinear( EyeColor.b ) ) );
 	}
 
+	static float ToLinear( float c ) => c <= 0.04045f ? c / 12.92f : MathF.Pow( (c + 0.055f) / 1.055f, 2.4f );
+
 	// Same parameter and range as the stock Dresser. The stock graph makes a body taller or
-	// shorter with additive sequences that move its bones and shift its pelvis. A body with
-	// proportions of its own ignores the bone moves, so only the pelvis shift would get through
-	// and it would crouch or float. Such a body is scaled as a whole instead.
+	// shorter with additive sequences that lengthen its bones and raise its pelvis. A body with
+	// proportions of its own ignores the bone moves, so only the pelvis would rise and it would
+	// float. Such a body gets the same lengthening from Stretch instead.
 	void ApplyHeight( float height )
 	{
 		if ( !BodyTarget.IsValid() ) return;
 		float scale = height.Remap( 0, 1, 0.8f, 1.2f, true );
 		BodyTarget.Set( "scale_height", ownProportions ? 1f : scale );
-		ScaleWhole( ownProportions ? scale : 1f );
+		stretch = ownProportions ? scale : 1f;
+		// Height used to scale the whole body; a scene saved with that on gets it taken off.
+		ScaleWhole( 1f );
 	}
 
 	// Whether the body is built with proportions of its own (see ClothingFitter.OwnProportions).
 	bool ownProportions;
 
 	/// <summary>
-	/// The scale Height has put on the body's object, for a body scaled as a whole. Kept so the
-	/// scale isn't applied twice when the scene is saved and loaded with it on.
+	/// The scale an older Height put on the body's object. Kept only so a scene saved with it
+	/// gets its body back to the size it was.
 	/// </summary>
 	[Property, Hide] public float AppliedScale { get; set; } = 1f;
 
-	// The body is scaled by its object, about its origin (the feet). The engine puts the
-	// object's transform on the model every animation update, so the model's own transform
-	// can't hold a scale of its own. Bone-merged clothing takes the body's bones, scale and all.
 	void ScaleWhole( float scale )
 	{
 		if ( !BodyTarget.IsValid() || AppliedScale == scale ) return;
 		var body = BodyTarget.GameObject;
 		body.LocalScale = body.LocalScale * (scale / AppliedScale);
 		AppliedScale = scale;
+	}
+
+	// How much longer each part of the skeleton gets when the stock graph doubles the height,
+	// measured off its Scale_Twice_delta. Legs and arms by the joint, the torso by its spine.
+	// The neck, collarbones, hips, feet and fingers keep their size, so the head, shoulders
+	// and hands stay as they are and a taller body is longer rather than bigger.
+	const float LegsTwice = 1.58f, ArmsTwice = 1.40f, TorsoTwice = 1.95f;
+
+	// Height for a body with proportions of its own: 1 is as built.
+	float stretch = 1f;
+	bool stretched;
+
+	// What each bone's offset from its parent grows by at twice the height, for the model the
+	// table was made for. The pelvis is lifted by as much as the legs grow instead.
+	Model stretchModel;
+	float[] stretchTwice;
+	int pelvis = -1;
+	float legLength, pelvisHeight;
+	Transform[] animated, stretchedPose;
+
+	// The animation is taken as it came out of the graph and laid out again with longer bones,
+	// as bone overrides. Overrides are applied by the next animation update, so the body shows
+	// the pose of the frame before, the same delay ragdoll bones have. Bone-merged clothing
+	// takes the bones as overridden and stretches along.
+	void Stretch()
+	{
+		var body = BodyTarget;
+		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
+		if ( stretch == 1f )
+		{
+			Unstretch();
+			return;
+		}
+
+		var bones = body.Model.Bones.AllBones;
+		if ( stretchModel != body.Model ) MakeStretch( body.Model );
+
+		float legs = 1f + (stretch - 1f) * (LegsTwice - 1f);
+		float lift = pelvisHeight > 0f ? legLength * (legs - 1f) / pelvisHeight : 0f;
+		var so = body.SceneModel;
+		var model = so.Transform;
+		for ( int i = 0; i < bones.Count; i++ )
+		{
+			// Nothing to lay out before the first animation update.
+			if ( !body.TryGetBoneTransformAnimation( bones[i], out var world ) || world.Rotation == default ) return;
+			animated[i] = model.ToLocal( world );
+			var parent = bones[i].Parent;
+			if ( parent is null )
+			{
+				stretchedPose[i] = animated[i];
+				continue;
+			}
+
+			var local = animated[parent.Index].ToLocal( animated[i] );
+			var offset = local.Position * (1f + (stretch - 1f) * (stretchTwice[i] - 1f));
+			if ( i == pelvis ) offset.z *= 1f + lift;
+			stretchedPose[i] = stretchedPose[parent.Index].ToWorld( new Transform( offset, local.Rotation ) );
+			so.SetBoneOverride( i, stretchedPose[i] );
+		}
+		stretched = true;
+	}
+
+	void Unstretch()
+	{
+		if ( !stretched ) return;
+		stretched = false;
+		if ( BodyTarget.IsValid() && BodyTarget.SceneModel.IsValid() )
+			BodyTarget.SceneModel.ClearBoneOverrides();
+	}
+
+	void MakeStretch( Model model )
+	{
+		var bones = model.Bones.AllBones;
+		stretchModel = model;
+		stretchTwice = new float[bones.Count];
+		animated = new Transform[bones.Count];
+		stretchedPose = new Transform[bones.Count];
+		pelvis = -1;
+		legLength = 0f;
+		pelvisHeight = 0f;
+		for ( int i = 0; i < bones.Count; i++ )
+		{
+			var bone = bones[i];
+			string name = bone.Name;
+			string parent = bone.Parent?.Name ?? "";
+			float twice = 1f;
+			if ( name.StartsWith( "spine_" ) ) twice = TorsoTwice;
+			else if ( parent.StartsWith( "leg_upper_" ) || parent.StartsWith( "leg_lower_" ) ) twice = LegsTwice;
+			else if ( parent.StartsWith( "arm_upper_" ) || parent.StartsWith( "arm_lower_" ) ) twice = ArmsTwice;
+			stretchTwice[i] = twice;
+
+			if ( name == "pelvis" )
+			{
+				pelvis = i;
+				pelvisHeight = bone.LocalTransform.Position.z - (bone.Parent?.LocalTransform.Position.z ?? 0f);
+			}
+			// Thigh and shin of one leg, the length the pelvis has to rise by.
+			if ( name == "leg_lower_L" || name == "ankle_L" )
+				legLength += bone.LocalTransform.Position.Distance( bone.Parent.LocalTransform.Position );
+		}
 	}
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
