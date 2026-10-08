@@ -86,6 +86,29 @@ PS
 	float g_flToonGloss < Default( 1.0 ); Range( 0.0, 2.0 ); UiGroup( "Toon,10/31" ); >;
 	float g_flToonHighlightEdge < Default( 0.5 ); Range( 0.05, 0.95 ); UiGroup( "Toon,10/32" ); >;
 	float g_flToonMetal < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/33" ); >;
+	// 1 on an eyeball (the humans' eyeball.shader, the citizen's citizen_eye.shader): the eye is
+	// drawn as an anime eye instead of its texture. A flat iris round the centre given, darker
+	// at the top under the lid and lighter below, with a dark rim and a dark pupil, a white
+	// with the lid's shadow along its top, and two white glints that keep to the camera.
+	float g_flToonEye < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Eye,20/10" ); >;
+	float2 g_vToonIrisCenter < Default2( 0.5, 0.5 ); Range2( 0, 0, 1, 1 ); UiGroup( "Toon Eye,20/11" ); >;
+	float g_flToonIrisRadius < Default( 0.095 ); Range( 0.02, 0.48 ); UiGroup( "Toon Eye,20/12" ); >;
+	float g_flToonIrisAspect < Default( 1.0 ); Range( 0.25, 2.0 ); UiGroup( "Toon Eye,20/13" ); >;
+	float g_flToonPupil < Default( 0.42 ); Range( 0.05, 0.9 ); UiGroup( "Toon Eye,20/14" ); >;
+	// The iris colour (as picked, sRGB), or taken from the eye's own texture round the iris.
+	float3 g_vToonIrisColor < UiType( Color ); Default3( 0.28, 0.18, 0.09 ); UiGroup( "Toon Eye,20/15" ); >;
+	float g_flToonIrisFromTexture < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Eye,20/16" ); >;
+	// Eye colour from the dresser (FitDresser.EyeColor, linear) and from an avatar (sRGB, its
+	// alpha says whether it is set), and the avatar's eye size.
+	float3 g_vEyeTint < Attribute( "eye_tint" ); Default3( 0.094, 0.036, 0.012 ); >;
+	float g_flEyeTinted < Attribute( "eye_tinted" ); Default( 0.0 ); >;
+	float4 g_vAvatarEyeColor < Attribute( "eye_color" ); Default4( 0, 0, 0, 0 ); >;
+	float g_flAvatarEyeSize < Attribute( "eye_size" ); Default( 1.0 ); >;
+
+	// Debug view (fitdresser_toon_debug): 1 albedo, 2 light, 3 highlight and reflection,
+	// 4 roughness, 5 metalness.
+	float g_flToonDebug < Default( 0.0 ); Range( 0.0, 8.0 ); UiGroup( "Toon,10/90" ); >;
+
 	CreateInputTexture2D( TextureToonMetal, Linear, 8, "", "_metal", "Toon,10/34", Default( 1.0 ) );
 	Texture2D g_tToonMetal < Channel( R, Box( TextureToonMetal ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
 
@@ -95,6 +118,46 @@ PS
 		uint2 p = uint2( vPixel ) & 3;
 		const float m[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
 		return ( m[p.y * 4 + p.x] + 0.5 ) / 16.0;
+	}
+
+	// The anime eye's colour at a point, and its glints (see g_flToonEye).
+	float3 AnimeEye( float2 uv, float3 N, float3 V, out float3 vGlints )
+	{
+		float flRadius = g_flToonIrisRadius * g_flAvatarEyeSize;
+		float2 d = ( uv - g_vToonIrisCenter ) / ( flRadius * float2( g_flToonIrisAspect, 1.0 ) );
+		float r = length( d );
+		float flEdge = max( fwidth( r ), 0.02 );
+
+		float3 vIris = SrgbGammaToLinear( g_vToonIrisColor );
+		if ( g_flToonIrisFromTexture > 0.0 )
+		{
+			float2 o = float2( flRadius * 0.6, 0.0 );
+			vIris = ( g_tColor.SampleLevel( TextureFiltering, g_vToonIrisCenter + o, 3 ).rgb + g_tColor.SampleLevel( TextureFiltering, g_vToonIrisCenter - o, 3 ).rgb ) * 0.5;
+		}
+		vIris = lerp( vIris, SrgbGammaToLinear( g_vAvatarEyeColor.rgb ), saturate( g_vAvatarEyeColor.a ) );
+		vIris = lerp( vIris, g_vEyeTint, saturate( g_flEyeTinted ) );
+
+		// Up the eye, by its own surface: the top of the eyeball faces up.
+		float flTop = saturate( 0.5 + dot( N, g_vCameraUpDirWs ) * 1.8 );
+
+		float3 vColor = lerp( vIris * 1.6, vIris * 0.35, flTop );
+		vColor *= lerp( 0.4, 1.0, smoothstep( 1.0, 0.78, r ) );                         // dark rim
+		vColor += vIris * 0.5 * smoothstep( 0.75, 0.45, r ) * ( 1.0 - flTop );           // light band low in the iris
+		float flPupil = 1.0 - smoothstep( g_flToonPupil - flEdge, g_flToonPupil + flEdge, r );
+		vColor = lerp( vColor, vIris * 0.06, flPupil );
+
+		float3 vWhite = float3( 0.92, 0.92, 0.95 ) * lerp( 1.0, 0.72, smoothstep( 0.55, 0.85, flTop ) );
+		float flInIris = 1.0 - smoothstep( 1.0 - flEdge, 1.0 + flEdge, r );
+
+		// Glints: the eye's surface turned towards a point up and to one side of the camera,
+		// a big one and a small one across from it.
+		float3 vRight = normalize( cross( g_vCameraDirWs, g_vCameraUpDirWs ) );
+		float3 H1 = normalize( V + g_vCameraUpDirWs * 0.35 - vRight * 0.25 );
+		float3 H2 = normalize( V - g_vCameraUpDirWs * 0.22 + vRight * 0.2 );
+		float flGlint = smoothstep( 0.9965, 0.998, dot( N, H1 ) ) + 0.8 * smoothstep( 0.9988, 0.9994, dot( N, H2 ) );
+		vGlints = float3( 1.0, 1.0, 1.0 ) * saturate( flGlint ) * flInIris * 1.5;
+
+		return lerp( vWhite, vColor, flInIris );
 	}
 
 	float Band( float cosine )
@@ -157,6 +220,15 @@ PS
 		float flMetal = g_flToonMetal * g_tToonMetal.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
 		float flGloss = saturate( 1.0 - flRough );
 
+		float3 vGlints = 0.0;
+		bool bEye = g_flToonEye > 0.0;
+		[branch]
+		if ( bEye )
+		{
+			vAlbedo = AnimeEye( i.vTextureCoords.xy, N, V, vGlints );
+			flGloss = 0.0;
+		}
+
 		// The sun. Its shadow is asked outside any branch: it reads screen derivatives.
 		float flSunShadow = g_DirectionalLightCascadeCount > 0 ? DirectionalLightShadow::GetVisibility( P, m.ScreenPosition ) : 1.0;
 		float3 vLit = 0.0, vShaded = 0.0;
@@ -213,6 +285,16 @@ PS
 		// No ambient occlusion: a copied material has the occlusion texture only when its original
 		// was on the same inputs, and toon shading reads better without it anyway.
 		float4 color = float4( vAlbedo * vLight * vShade + vRim + ( vGlint + vReflect ) * g_flToonGloss + m.Emission, m.Opacity );
+		// An anime eye is half lit by its own: it stays clear in the shade.
+		if ( bEye )
+			color.rgb = vAlbedo * lerp( vLight * vShade, 1.0, 0.5 ) + vGlints;
+
+		int nDebug = (int)g_flToonDebug;
+		if ( nDebug == 1 ) return float4( vAlbedo, 1 );
+		if ( nDebug == 2 ) return float4( vLight * vShade * 0.25, 1 );
+		if ( nDebug == 3 ) return float4( ( vGlint + vReflect ) * g_flToonGloss, 1 );
+		if ( nDebug == 4 ) return float4( flRough.xxx, 1 );
+		if ( nDebug == 5 ) return float4( flMetal.xxx, 1 );
 
 		if ( g_bWireframeMode )
 			return g_vWireframeColor;

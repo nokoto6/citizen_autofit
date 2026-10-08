@@ -190,6 +190,26 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		}
 	}
 
+	/// <summary>
+	/// Switches the debug view of every toon copy (see fit_toon.shader's g_flToonDebug): 0 off,
+	/// 1 albedo, 2 light, 3 highlight and reflection, 4 roughness, 5 metalness. Only the
+	/// copies made at runtime change; nothing in the scene.
+	/// </summary>
+	[ConCmd( "fitdresser_toon_debug" )]
+	public static void ToonDebug( int mode )
+	{
+		Live.RemoveWhere( x => !x.IsValid() );
+		int count = 0;
+		foreach ( var dresser in Live )
+			foreach ( var copy in dresser.toonOf.Values )
+			{
+				if ( copy is null ) continue;
+				copy.Set( "g_flToonDebug", (float)mode );
+				count++;
+			}
+		Log.Info( $"fitdresser_toon_debug {mode}: {count} materials" );
+	}
+
 	// Every dresser that is currently alive, in the editor scene too. A console command has no
 	// way to reach the scene open in the editor, so they sign in here themselves.
 	static readonly HashSet<FitDresser> Live = new();
@@ -489,6 +509,13 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			renderer.Materials.SetOverride( i, Toon ? ToonCopy( renderer.Materials.GetOriginal( i ) ) : null );
 	}
 
+	// A number parameter of a material, or the shader's default where the material has none.
+	static float Param( Material material, string name, float fallback )
+	{
+		float value = material.GetVector4( name ).x;
+		return value > 0 ? value : fallback;
+	}
+
 	static Texture Valid( Texture texture ) => texture is not null && texture.IsValid() ? texture : null;
 
 	// A copy of a material on the toon shader, with its textures and the features the look
@@ -500,7 +527,12 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		if ( toonOf.TryGetValue( original, out var made ) ) return made;
 
 		string shader = original.ShaderName ?? "";
-		var color = Valid( original.GetTexture( "g_tColor" ) );
+		// Eyeballs become anime eyes (see the shader's g_flToonEye): the humans' eyeball.shader
+		// has its iris painted round the middle of its texture, the citizen's eye is drawn by
+		// citizen_eye.shader from numbers alone.
+		bool eyeball = shader.Contains( "eyeball" );
+		bool citizenEye = shader.Contains( "citizen_eye" );
+		var color = Valid( original.GetTexture( "g_tColor" ) ) ?? (citizenEye ? Texture.White : null);
 		if ( original.GetFeature( "F_TRANSLUCENT" ) > 0 || shader.Contains( "glass" ) || shader.Contains( "aurora_iris" ) || color is null )
 		{
 			toonOf[original] = null;
@@ -533,6 +565,27 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		var metal = complex && original.GetFeature( "F_METALNESS_TEXTURE" ) > 0 ? Valid( original.GetTexture( "g_tMetalness" ) ) : null;
 		made.Set( "g_tToonMetal", metal ?? Texture.White );
 		made.Set( "g_flToonMetal", metal is not null ? 1f : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
+
+		if ( eyeball || citizenEye )
+		{
+			made.Set( "g_flToonEye", 1f );
+			made.Set( "g_flToonComplex", 0f );
+			made.Set( "g_flToonMetal", 0f );
+			if ( eyeball )
+			{
+				made.Set( "g_flToonIrisFromTexture", 1f );
+			}
+			else
+			{
+				made.Set( "g_flToonIrisRadius", Param( original, "g_flIrisRadius", 0.2f ) );
+				made.Set( "g_flToonIrisAspect", Param( original, "g_flIrisAspect", 1f ) );
+				made.Set( "g_flToonPupil", Param( original, "g_flPupilSize", 0.42f ) );
+				var centre = original.GetVector4( "g_vIrisCenter" );
+				made.Set( "g_vToonIrisCenter", centre.x > 0 || centre.y > 0 ? new Vector2( centre.x, centre.y ) : new Vector2( 0.5f, 0.5f ) );
+				var iris = original.GetVector4( "g_vIrisColor" );
+				if ( iris.x + iris.y + iris.z > 0 ) made.Set( "g_vToonIrisColor", new Vector3( iris.x, iris.y, iris.z ) );
+			}
+		}
 
 		toonOf[original] = made;
 		return made;
