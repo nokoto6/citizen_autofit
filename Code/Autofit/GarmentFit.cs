@@ -501,9 +501,23 @@ public static class GarmentFit
 			// landmark), the hair over it doesn't. A fringe that followed the eyes apart and
 			// down came out as cards stretched sideways over the cheeks. The whole heap, the
 			// long locks that bend like cloth included.
+			// Below the eyes it is the other way round. A beard grows on the face and goes where
+			// the face goes: kept from sliding with it, a moustache made for a face with its eyes
+			// 5 cm higher sat between Aurora's eyes.
+			float eyeZ = float.NaN;
+			if ( eyes != null && eyes.Length > 0 )
+			{
+				eyeZ = 0;
+				foreach ( var (stockEye, _) in eyes ) eyeZ += stockEye.Z;
+				eyeZ /= eyes.Length;
+			}
 			if ( landmarked != null && givenMove == null )
 				for ( int i = 0; i < n; i++ )
-					if ( !isSolid[i] && old.Nearest( pts[i], out var s, out int tri ) < SkinReach && tri >= 0 ) move[i] -= FieldAt( landmarked, s, tri );
+				{
+					if ( isSolid[i] || old.Nearest( pts[i], out var s, out int tri ) >= SkinReach || tri < 0 ) continue;
+					float onFace = float.IsNaN( eyeZ ) ? 0 : Math.Clamp( (eyeZ - BeardTop - s.Z) / (BeardFull - BeardTop), 0, 1 );
+					move[i] -= FieldAt( landmarked, s, tri ) * (1 - onFace);
+				}
 			FitLoose( loose, pts, move, wanted, away, fitted, Push );
 		}
 
@@ -931,6 +945,8 @@ public static class GarmentFit
 	const float LockReach = 0.08f * Units.Metre;    // and this close take one move: about a lock's length
 	const float SkinReach = 0.08f * Units.Metre;    // hair this far from the skin still took the skin's move
 	const int LoosePasses = 2;
+	const float BeardTop = 0.01f * Units.Metre;     // hair from this far below the eyes on starts going the face's way
+	const float BeardFull = 0.04f * Units.Metre;    // and from this far below goes all of it
 
 	/// <summary>
 	/// A foot changes as a whole from one body to another: longer, wider, flatter. Followed point
