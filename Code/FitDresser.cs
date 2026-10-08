@@ -493,7 +493,9 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		}
 
 		var bones = body.Model.Bones.AllBones;
-		if ( stretchModel != body.Model ) MakeStretch( body.Model );
+		// After a hotload the tables can be missing ones added since they were made.
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+			MakeStretch( body.Model );
 
 		var so = body.SceneModel;
 		var model = so.Transform;
