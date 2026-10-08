@@ -451,6 +451,7 @@ public static class GarmentFit
 		}
 
 		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
+		var loose = new List<int>();      // vertices of the cards in a heap: hair
 		var isSolid = new bool[n];
 		foreach ( var parts in solids.Values )
 		{
@@ -464,7 +465,7 @@ public static class GarmentFit
 				foreach ( int r in parts )
 				{
 					if ( (hi[r] - lo[r]).Length() > LooseLength ) bends.Add( piece[rigid[r][0]] );
-					else FitRigid( rigid[r], pts, move, gap0, away, fitted, Push, true );
+					else loose.AddRange( rigid[r] );
 				}
 				continue;
 			}
@@ -479,6 +480,8 @@ public static class GarmentFit
 			}
 			foreach ( int i in whole ) isSolid[i] = true;
 		}
+
+		if ( loose.Count > 0 ) FitLoose( loose, pts, move, wanted, away, fitted, Push );
 
 		var clothTris = new List<int>();
 		// Each piece of cloth is worked on its own, but pieces share no edges, so the smoothing
@@ -576,6 +579,83 @@ public static class GarmentFit
 			for ( int i = 0; i < verts.Length; i++ ) solidOut[i] = isSolid[weld[i]];
 		return result;
 	}
+
+	/// <summary>
+	/// A heap of cards (hair) goes over the body as one soft mass. Each card fitted on its own
+	/// took the skin's move at its roots and kept its own tilt, so where the head's shape
+	/// changed (a brow further out, a flatter face) neighbouring cards swung different ways:
+	/// gaps in the fringe, cards through a cheek. Here every card vertex moves with the skin
+	/// nearest to it, and the moves and the pushes off the body are averaged with whatever
+	/// other cards lie within reach, so the heap bends smoothly and no card leaves its
+	/// neighbours.
+	/// </summary>
+	static void FitLoose( List<int> loose, Vec3[] pts, Vec3[] move, float[] wanted, Vec3[] away, Vec3[] fitted, PushTest push )
+	{
+		// Neighbours within reach, by a grid of cells one reach wide.
+		var cells = new Dictionary<(int, int, int), List<int>>();
+		(int, int, int) CellOf( Vec3 p ) => ((int)MathF.Floor( p.X / LooseReach ), (int)MathF.Floor( p.Y / LooseReach ), (int)MathF.Floor( p.Z / LooseReach ));
+		foreach ( int i in loose )
+		{
+			var key = CellOf( pts[i] );
+			if ( !cells.TryGetValue( key, out var list ) ) cells[key] = list = new List<int>();
+			list.Add( i );
+		}
+		var near = new List<int>[pts.Length];
+		var nearWeight = new List<float>[pts.Length];
+		float sigma2 = 2f * (LooseReach * 0.5f) * (LooseReach * 0.5f);
+		foreach ( int i in loose )
+		{
+			var (cx, cy, cz) = CellOf( pts[i] );
+			near[i] = new List<int>();
+			nearWeight[i] = new List<float>();
+			for ( int dx = -1; dx <= 1; dx++ )
+				for ( int dy = -1; dy <= 1; dy++ )
+					for ( int dz = -1; dz <= 1; dz++ )
+					{
+						if ( !cells.TryGetValue( (cx + dx, cy + dy, cz + dz), out var list ) ) continue;
+						foreach ( int j in list )
+						{
+							float d2 = (pts[j] - pts[i]).LengthSquared();
+							if ( d2 > LooseReach * LooseReach ) continue;
+							near[i].Add( j );
+							nearWeight[i].Add( MathF.Exp( -d2 / sigma2 ) );
+						}
+					}
+		}
+
+		void Blur( Vec3[] field, Vec3[] into )
+		{
+			foreach ( int i in loose )
+			{
+				var sum = Vec3.Zero;
+				float total = 0;
+				for ( int k = 0; k < near[i].Count; k++ ) { sum += field[near[i][k]] * nearWeight[i][k]; total += nearWeight[i][k]; }
+				into[i] = total > 0 ? sum / total : field[i];
+			}
+		}
+
+		var smooth = new Vec3[pts.Length];
+		var scratch = new Vec3[pts.Length];
+		foreach ( int i in loose ) smooth[i] = move[i];
+		for ( int pass = 0; pass < LoosePasses; pass++ )
+		{
+			Blur( smooth, scratch );
+			foreach ( int i in loose ) smooth[i] = scratch[i];
+		}
+
+		var pushField = new Vec3[pts.Length];
+		for ( int round = 0; round < PushRounds; round++ )
+		{
+			Blur( pushField, scratch );
+			foreach ( int i in loose ) pushField[i] = scratch[i];
+			foreach ( int i in loose )
+				if ( push( pts[i] + smooth[i] + pushField[i], wanted[i], away[i], out var p ) ) pushField[i] += p;
+		}
+		foreach ( int i in loose ) fitted[i] = pts[i] + smooth[i] + pushField[i];
+	}
+
+	const float LooseReach = 0.03f * Units.Metre;   // cards this close to each other move together
+	const int LoosePasses = 2;
 
 	/// <summary>
 	/// A foot changes as a whole from one body to another: longer, wider, flatter. Followed point

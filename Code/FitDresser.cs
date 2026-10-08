@@ -187,7 +187,6 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		}
 
 		if ( !BodyTarget.IsValid() ) return;
-		KeepScaled();
 
 		// A model built at runtime has no per-bone extents, so the engine works out the bounds
 		// of a bone-merged garment from its bone positions alone. That box is far too small
@@ -412,32 +411,22 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	// Whether the body is built with proportions of its own (see ClothingFitter.OwnProportions).
 	bool ownProportions;
 
-	// The body is scaled in its scene model only, about its origin (the feet): the GameObject
-	// keeps its scale, so nothing in the scene changes. Bone-merged clothing takes its bones
-	// from the body's scene model and grows with it. The engine puts the GameObject's transform
-	// back on the scene model whenever the object moves; a scale other than the one set here
-	// means that happened.
-	float wholeScale = 1f;
-	Vector3 scaledTo;
+	/// <summary>
+	/// The scale Height has put on the body's object, for a body scaled as a whole. Kept so the
+	/// scale isn't applied twice when the scene is saved and loaded with it on.
+	/// </summary>
+	[Property, Hide] public float AppliedScale { get; set; } = 1f;
 
+	// The body is scaled by its object, about its origin (the feet). The engine puts the
+	// object's transform on the model every animation update, so the model's own transform
+	// can't hold a scale of its own. Bone-merged clothing takes the body's bones, scale and all.
 	void ScaleWhole( float scale )
 	{
-		var model = BodyTarget.IsValid() ? BodyTarget.SceneModel : null;
-		if ( model.IsValid() && wholeScale != 1f && IsScaledByUs( model ) )
-			model.Transform = model.Transform.WithScale( model.Transform.Scale / wholeScale );
-		wholeScale = scale;
-		KeepScaled();
+		if ( !BodyTarget.IsValid() || AppliedScale == scale ) return;
+		var body = BodyTarget.GameObject;
+		body.LocalScale = body.LocalScale * (scale / AppliedScale);
+		AppliedScale = scale;
 	}
-
-	void KeepScaled()
-	{
-		var model = BodyTarget.IsValid() ? BodyTarget.SceneModel : null;
-		if ( wholeScale == 1f || !model.IsValid() || IsScaledByUs( model ) ) return;
-		scaledTo = model.Transform.Scale * wholeScale;
-		model.Transform = model.Transform.WithScale( scaledTo );
-	}
-
-	bool IsScaledByUs( SceneModel model ) => (model.Transform.Scale - scaledTo).Length <= 1e-4f * scaledTo.Length;
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.

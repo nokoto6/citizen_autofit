@@ -101,6 +101,11 @@ public static class ClothingFitter
 		public List<FittedVertex> Vertices = new();
 		public List<int> Indices = new();
 		public Dictionary<string, MorphDelta[]> Morphs = new();
+
+		// World units per UV unit. Texture streaming works out from it which mip a mesh at a
+		// given distance needs; a mesh without it gets the smallest and its textures stay
+		// blurred no matter how close it is.
+		public float UvDensity;
 	}
 
 	// The pixels of a morph texture, read on the main thread for a worker to decode.
@@ -982,6 +987,54 @@ public static class ClothingFitter
 			redirect[i] = index;
 		}
 
+		// The cloth is worn with the skin's weights under it (SkinUnder): the body then moves
+		// it exactly as it moves that skin, and neither comes through the other when a knee
+		// or an elbow bends. By its own weights, cloth made for a body with twist and helper
+		// bones is turned by bones this body never animates. Those weights may name stock
+		// bones the garment never had, which join its skeleton here. A vertex on a bone of
+		// the garment's own (a hat's jiggle bone) keeps its own weights, as does a solid piece.
+		int OutBone( int s )
+		{
+			if ( outIndex.TryGetValue( stock.BoneNames[s], out int have ) ) return have;
+			int p = stock.BoneParents[s];
+			while ( p >= 0 && !target.Pose.BodyHas[p] ) p = stock.BoneParents[p];
+			int parent = p >= 0 ? OutBone( p ) : -1;
+			int index = result.BoneNames.Count;
+			outIndex[stock.BoneNames[s]] = index;
+			result.BoneNames.Add( stock.BoneNames[s] );
+			result.BoneParents.Add( parent );
+			result.OutPositions.Add( target.Pose.RestPositions[s] );
+			result.OutRotations.Add( target.Pose.RestRotations[s] );
+			return index;
+		}
+
+		var wornBones = new int[garment.BoneIndex.Length];
+		var wornWeights = new float[garment.BoneIndex.Length];
+		for ( int v = 0; v < positions.Length; v++ )
+		{
+			bool own = solid[v];
+			for ( int j = 0; j < 4 && !own; j++ )
+			{
+				int gb = garment.BoneIndex[v * 4 + j];
+				own = gb >= 0 && garment.BoneWeight[v * 4 + j] > 0 && (boneMap[gb] < 0 || stock.BoneNames[boneMap[gb]] != garment.BoneNames[gb]);
+			}
+			for ( int j = 0; j < 4; j++ )
+			{
+				if ( own )
+				{
+					int gb = garment.BoneIndex[v * 4 + j];
+					wornBones[v * 4 + j] = gb >= 0 ? redirect[gb] : -1;
+					wornWeights[v * 4 + j] = gb >= 0 ? garment.BoneWeight[v * 4 + j] : 0;
+				}
+				else
+				{
+					int sb = backBones[v * 4 + j];
+					wornBones[v * 4 + j] = sb >= 0 && target.Pose.BodyHas[sb] ? OutBone( sb ) : -1;
+					wornWeights[v * 4 + j] = sb >= 0 ? backWeights[v * 4 + j] : 0;
+				}
+			}
+		}
+
 		for ( int d = 0; d < garment.Draws.Count; d++ )
 		{
 			var (first, count, material) = garment.Draws[d];
@@ -996,12 +1049,13 @@ public static class ClothingFitter
 				{
 					local = draw.Vertices.Count;
 					remap[v] = local;
-					draw.Vertices.Add( MakeVertex( garment, v, positions[v], normals[v], tangents[v], signs[v], redirect ) );
+					draw.Vertices.Add( MakeVertex( garment.Uvs[v], v, positions[v], normals[v], tangents[v], signs[v], wornBones, wornWeights ) );
 				}
 				draw.Indices.Add( local );
 			}
 
 			if ( draw.Vertices.Count == 0 ) continue;
+			draw.UvDensity = UvDensity( positions, garment.Uvs, garment.Indices, first, count );
 
 			foreach ( var (name, (move, turn)) in morphs )
 			{
@@ -1029,6 +1083,21 @@ public static class ClothingFitter
 
 	static string Normalize( string path ) => (path ?? "").Replace( '\\', '/' ).ToLowerInvariant();
 
+	// Square root of the surface area over the UV area of a draw call's triangles, which is what
+	// the model compiler stores for a mesh, give or take.
+	static float UvDensity( Vec3[] positions, Vec2[] uvs, int[] indices, int first, int count )
+	{
+		double world = 0, uv = 0;
+		for ( int i = first; i + 2 < first + count; i += 3 )
+		{
+			int a = indices[i], b = indices[i + 1], c = indices[i + 2];
+			world += Vec3.Cross( positions[b] - positions[a], positions[c] - positions[a] ).Length() * 0.5;
+			float ux = uvs[b].X - uvs[a].X, uy = uvs[b].Y - uvs[a].Y, vx = uvs[c].X - uvs[a].X, vy = uvs[c].Y - uvs[a].Y;
+			uv += Math.Abs( ux * vy - uy * vx ) * 0.5;
+		}
+		return uv > 1e-12 && world > 0 ? (float)Math.Sqrt( world / uv ) : 0f;
+	}
+
 	static byte[] ReadCompiled( string modelPath )
 	{
 		string path = Normalize( modelPath );
@@ -1053,6 +1122,7 @@ public static class ClothingFitter
 	{
 		var material = string.IsNullOrEmpty( draw.Material ) ? null : Material.Load( draw.Material );
 		var mesh = new Mesh( name, material );
+		if ( draw.UvDensity > 0 ) mesh.UvDensity = draw.UvDensity;
 		mesh.CreateVertexBuffer( draw.Vertices.Count, draw.Vertices );
 		mesh.CreateIndexBuffer( draw.Indices.Count, draw.Indices );
 		mesh.Bounds = BBox.FromPoints( draw.Vertices.Select( x => x.Position ) );
@@ -1118,17 +1188,20 @@ public static class ClothingFitter
 		return builder.Create();
 	}
 
-	static FittedVertex MakeVertex( SkinnedGeometry g, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] redirect )
+	static FittedVertex MakeVertex( Vec2 uv, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] bones, float[] weights )
 	{
-		// Weights go out as bytes and have to add up to exactly 255.
+		// Weights go out as bytes and have to add up to exactly 255. The four slots needn't add
+		// up to one coming in (a slot the body lacks is dropped), so they are shared out first.
 		Span<int> bone = stackalloc int[4];
 		Span<int> weight = stackalloc int[4];
+		float sum = 0;
+		for ( int j = 0; j < 4; j++ ) if ( bones[v * 4 + j] >= 0 ) sum += weights[v * 4 + j];
 		int total = 0, heaviest = 0;
 		for ( int j = 0; j < 4; j++ )
 		{
-			int index = g.BoneIndex[v * 4 + j];
-			float w = index >= 0 ? g.BoneWeight[v * 4 + j] : 0f;
-			bone[j] = index >= 0 ? redirect[index] : 0;
+			int index = bones[v * 4 + j];
+			float w = index >= 0 && sum > 0 ? weights[v * 4 + j] / sum : 0f;
+			bone[j] = index >= 0 ? index : 0;
 			weight[j] = (int)MathF.Round( w * 255f );
 			total += weight[j];
 			if ( weight[j] > weight[heaviest] ) heaviest = j;
@@ -1140,7 +1213,7 @@ public static class ClothingFitter
 			Position = new Vector3( p.X, p.Y, p.Z ),
 			Normal = new Vector3( n.X, n.Y, n.Z ),
 			Tangent = new Vector4( t.X, t.Y, t.Z, sign ),
-			TexCoord = new Vector2( g.Uvs[v].X, g.Uvs[v].Y ),
+			TexCoord = new Vector2( uv.X, uv.Y ),
 			BlendIndices = new Color32( (byte)bone[0], (byte)bone[1], (byte)bone[2], (byte)bone[3] ),
 			BlendWeights = new Color32( (byte)Math.Clamp( weight[0], 0, 255 ), (byte)Math.Clamp( weight[1], 0, 255 ), (byte)Math.Clamp( weight[2], 0, 255 ), (byte)Math.Clamp( weight[3], 0, 255 ) ),
 		};
