@@ -84,6 +84,7 @@ PS
 	// original; metal colours them with its own colour.
 	float g_flToonComplex < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/30" ); >;
 	float g_flToonGloss < Default( 1.0 ); Range( 0.0, 2.0 ); UiGroup( "Toon,10/31" ); >;
+	float g_flToonReflect < Default( 0.6 ); Range( 0.0, 2.0 ); UiGroup( "Toon,10/35" ); >;
 	float g_flToonHighlightEdge < Default( 0.5 ); Range( 0.05, 0.95 ); UiGroup( "Toon,10/32" ); >;
 	float g_flToonMetal < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/33" ); >;
 	// 1 on an eyeball (the humans' eyeball.shader, the citizen's citizen_eye.shader): the eye is
@@ -95,9 +96,15 @@ PS
 	float g_flToonIrisRadius < Default( 0.095 ); Range( 0.02, 0.48 ); UiGroup( "Toon Eye,20/12" ); >;
 	float g_flToonIrisAspect < Default( 1.0 ); Range( 0.25, 2.0 ); UiGroup( "Toon Eye,20/13" ); >;
 	float g_flToonPupil < Default( 0.42 ); Range( 0.05, 0.9 ); UiGroup( "Toon Eye,20/14" ); >;
-	// The iris colour (as picked, sRGB), or taken from the eye's own texture round the iris.
+	// The iris colour (as picked, sRGB), or taken from the eye's own iris texture (eyeball.shader
+	// keeps the iris apart from the white).
 	float3 g_vToonIrisColor < UiType( Color ); Default3( 0.28, 0.18, 0.09 ); UiGroup( "Toon Eye,20/15" ); >;
 	float g_flToonIrisFromTexture < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Eye,20/16" ); >;
+	CreateInputTexture2D( TextureToonIris, Srgb, 8, "", "_iris", "Toon Eye,20/17", Default3( 1.0, 1.0, 1.0 ) );
+	Texture2D g_tToonIris < Channel( RGB, Box( TextureToonIris ), Srgb ); OutputFormat( BC7 ); SrgbRead( true ); >;
+	// 0 cuts a cut-out at its threshold instead of dithering the half-transparent part:
+	// eyelashes and brows, which dithered come out thick.
+	float g_flToonDither < Default( 1.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/40" ); >;
 	// Eye colour from the dresser (FitDresser.EyeColor, linear) and from an avatar (sRGB, its
 	// alpha says whether it is set), and the avatar's eye size.
 	float3 g_vEyeTint < Attribute( "eye_tint" ); Default3( 0.094, 0.036, 0.012 ); >;
@@ -124,6 +131,8 @@ PS
 	float3 AnimeEye( float2 uv, float3 N, float3 V, out float3 vGlints )
 	{
 		float flRadius = g_flToonIrisRadius * g_flAvatarEyeSize;
+		// The humans have each eyeball in a tile of its own (u 0..1, 1..2, ...).
+		uv = frac( uv );
 		float2 d = ( uv - g_vToonIrisCenter ) / ( flRadius * float2( g_flToonIrisAspect, 1.0 ) );
 		float r = length( d );
 		float flEdge = max( fwidth( r ), 0.02 );
@@ -131,8 +140,9 @@ PS
 		float3 vIris = SrgbGammaToLinear( g_vToonIrisColor );
 		if ( g_flToonIrisFromTexture > 0.0 )
 		{
-			float2 o = float2( flRadius * 0.6, 0.0 );
-			vIris = ( g_tColor.SampleLevel( TextureFiltering, g_vToonIrisCenter + o, 3 ).rgb + g_tColor.SampleLevel( TextureFiltering, g_vToonIrisCenter - o, 3 ).rgb ) * 0.5;
+			// Round the middle of the iris texture, blurred to its overall colour.
+			vIris = ( g_tToonIris.SampleLevel( TextureFiltering, float2( 0.3, 0.5 ), 3 ).rgb + g_tToonIris.SampleLevel( TextureFiltering, float2( 0.7, 0.5 ), 3 ).rgb
+				+ g_tToonIris.SampleLevel( TextureFiltering, float2( 0.5, 0.3 ), 3 ).rgb + g_tToonIris.SampleLevel( TextureFiltering, float2( 0.5, 0.7 ), 3 ).rgb ) * 0.25;
 		}
 		vIris = lerp( vIris, SrgbGammaToLinear( g_vAvatarEyeColor.rgb ), saturate( g_vAvatarEyeColor.a ) );
 		vIris = lerp( vIris, g_vEyeTint, saturate( g_flEyeTinted ) );
@@ -181,7 +191,7 @@ PS
 			// Hair, all but fully opaque or fully clear, keeps a clean edge.
 			float flCut = g_flAlphaTestReference;
 			float flDither = Bayer( m.ScreenPosition.xy );
-			clip( m.Opacity - lerp( flCut * 0.15, flCut, flDither ) );
+			clip( m.Opacity - lerp( flCut, lerp( flCut * 0.15, flCut, flDither ), g_flToonDither ) );
 			// What is left is solid; alpha-to-coverage would cut the half-transparent part again.
 			m.Opacity = 1.0;
 		#endif
@@ -275,8 +285,10 @@ PS
 			vGlint = g_DirectionalLightColor.rgb * lerp( float3( 1, 1, 1 ), vAlbedo, flMetal ) * smoothstep( flEdge - 0.05, flEdge + 0.05, flSpec ) * flSunBand * flGloss;
 		}
 		float flFacing = saturate( dot( vDetail, V ) );
-		float3 vFresnel = vSpecColor + ( 1.0 - vSpecColor ) * pow( 1.0 - flFacing, 5.0 );
-		float3 vReflect = EnvMap::From( P, m.ScreenPosition, reflect( -V, vDetail ), flRough.xx ) * vFresnel * flGloss * flGloss;
+		// The edge brightening held back by roughness (Lagarde's fit), or every bump of a quilted
+		// jacket turned away from the camera lays a grey film over black cloth.
+		float3 vFresnel = vSpecColor + ( max( flGloss.xxx, vSpecColor ) - vSpecColor ) * pow( 1.0 - flFacing, 5.0 );
+		float3 vReflect = EnvMap::From( P, m.ScreenPosition, reflect( -V, vDetail ), flRough.xx ) * vFresnel * flGloss * g_flToonReflect;
 		vAlbedo *= 1.0 - flMetal;
 
 		float flRim = smoothstep( 1.0 - g_flToonRimWidth, 1.0 - g_flToonRimWidth * 0.5, 1.0 - saturate( dot( N, V ) ) );

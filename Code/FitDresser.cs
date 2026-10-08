@@ -554,6 +554,10 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		made.Set( "g_tNormal", Valid( original.GetTexture( "g_tNormal" ) ) ?? Texture.Load( "materials/default/default_normal.tga" ) );
 		made.Set( "g_tRma", Valid( original.GetTexture( "g_tRma" ) ) ?? Texture.White );
 		if ( cutOut ) made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
+		// Eyelashes and brows dithered come out thick; they keep a clean cut.
+		string name = original.ResourceName ?? "";
+		if ( name.Contains( "lash" ) || name.Contains( "brow" ) ) made.Set( "g_flToonDither", 0f );
+		made.Set( "g_tToonIris", Valid( original.GetTexture( "g_tIris" ) ) ?? Texture.White );
 
 		// Skin the stock shader tones by skin_tint (the citizen's tint mask).
 		if ( shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0 ) made.Set( "g_flToonSkin", 1f );
