@@ -87,6 +87,8 @@ PS
 	float g_flToonReflect < Default( 0.6 ); Range( 0.0, 2.0 ); UiGroup( "Toon,10/35" ); >;
 	float g_flToonHighlightEdge < Default( 0.5 ); Range( 0.05, 0.95 ); UiGroup( "Toon,10/32" ); >;
 	float g_flToonMetal < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/33" ); >;
+	// 1 where complex.shader packed its metalness map into the colour texture's alpha.
+	float g_flToonMetalInColor < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon,10/36" ); >;
 	// 1 on an eyeball (the humans' eyeball.shader, the citizen's citizen_eye.shader): the eye is
 	// drawn as an anime eye instead of its texture. A flat iris round the centre given, darker
 	// at the top under the lid and lighter below, with a dark rim and a dark pupil, a white
@@ -113,8 +115,14 @@ PS
 	float g_flAvatarEyeSize < Attribute( "eye_size" ); Default( 1.0 ); >;
 
 	// Debug view (fitdresser_toon_debug): 1 albedo, 2 light, 3 highlight and reflection,
-	// 4 roughness, 5 metalness.
+	// 4 roughness, 5 metalness, 6 the same material under the engine's standard shading (the
+	// reference the toon's brightness is matched to).
 	float g_flToonDebug < Default( 0.0 ); Range( 0.0, 8.0 ); UiGroup( "Toon,10/90" ); >;
+
+	// The original's ambient occlusion map (complex.shader keeps it apart), white where there is
+	// none. Quilting and folds read darker with it, as on the original.
+	CreateInputTexture2D( TextureToonAo, Linear, 8, "", "_ao", "Toon,10/37", Default( 1.0 ) );
+	Texture2D g_tToonAo < Channel( R, Box( TextureToonAo ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
 
 	CreateInputTexture2D( TextureToonMetal, Linear, 8, "", "_metal", "Toon,10/34", Default( 1.0 ) );
 	Texture2D g_tToonMetal < Channel( R, Box( TextureToonMetal ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
@@ -227,8 +235,21 @@ PS
 			flRough = vTexel.b;
 			vDetail = Vec3TsToWsNormalized( DecodeHemiOctahedronNormal( vTexel.rg ), N, i.vTangentUWs, i.vTangentVWs );
 		}
-		float flMetal = g_flToonMetal * g_tToonMetal.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
+		float flMetalMap = g_flToonMetalInColor > 0.0 ? g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).a : g_tToonMetal.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
+		float flMetal = g_flToonMetal * flMetalMap;
 		float flGloss = saturate( 1.0 - flRough );
+
+		[branch]
+		if ( (int)g_flToonDebug == 6 )
+		{
+			Material r = m;
+			r.Albedo = vAlbedo;
+			r.Normal = vDetail;
+			r.Roughness = flRough;
+			r.Metalness = flMetal;
+			r.AmbientOcclusion = 1.0;
+			return ShadingModelStandard::Shade( r );
+		}
 
 		float3 vGlints = 0.0;
 		bool bEye = g_flToonEye > 0.0;
@@ -294,9 +315,8 @@ PS
 		float flRim = smoothstep( 1.0 - g_flToonRimWidth, 1.0 - g_flToonRimWidth * 0.5, 1.0 - saturate( dot( N, V ) ) );
 		float3 vRim = vAlbedo * ( vLit + vAmbient ) * flRim * g_flToonRim;
 
-		// No ambient occlusion: a copied material has the occlusion texture only when its original
-		// was on the same inputs, and toon shading reads better without it anyway.
-		float4 color = float4( vAlbedo * vLight * vShade + vRim + ( vGlint + vReflect ) * g_flToonGloss + m.Emission, m.Opacity );
+		float flAo = g_tToonAo.Sample( TextureFiltering, i.vTextureCoords.xy ).r;
+		float4 color = float4( vAlbedo * vLight * vShade * flAo + vRim + ( vGlint + vReflect * flAo ) * g_flToonGloss + m.Emission, m.Opacity );
 		// An anime eye is half lit by its own: it stays clear in the shade.
 		if ( bEye )
 			color.rgb = vAlbedo * lerp( vLight * vShade, 1.0, 0.5 ) + vGlints;

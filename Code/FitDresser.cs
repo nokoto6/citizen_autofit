@@ -180,13 +180,12 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			var body = dresser.BodyTarget;
 			if ( !body.IsValid() || body.Model is null ) continue;
 			Log.Info( $"fitdresser_toon_info: '{dresser.GameObject.Name}' toon {dresser.Toon}, {body.Materials.Count} slots" );
-			for ( int i = 0; i < body.Materials.Count; i++ )
-			{
-				var original = body.Materials.GetOriginal( i );
-				var copy = body.Materials.GetOverride( i );
-				string Describe( Material m ) => m is null ? "none" : $"{m.Name} on {m.ShaderName}, colour {m.GetTexture( "g_tColor" )?.ResourceName ?? "missing"} {m.GetTexture( "g_tColor" )?.Width}x{m.GetTexture( "g_tColor" )?.Height}, rma {m.GetTexture( "g_tRma" )?.Width}, alpha test {m.GetFeature( "F_ALPHA_TEST" )}, morph {m.GetFeature( "F_MORPH_SUPPORTED" )}";
-				Log.Info( $"  slot {i}: {Describe( original )} -> {Describe( copy )}" );
-			}
+			string Describe( Material m ) => m is null ? "none" : $"{m.Name} on {m.ShaderName}, colour {m.GetTexture( "g_tColor" )?.Width}x{m.GetTexture( "g_tColor" )?.Height}, tint {m.GetVector4( "g_vColorTint" )} x{m.GetVector4( "g_flModelTintAmount" ).x}, metal feature {m.GetFeature( "F_METALNESS_TEXTURE" )} value {m.GetVector4( "g_flMetalness" ).x} tex {m.GetTexture( "g_tMetalness" )?.Width} toon {m.GetVector4( "g_flToonMetal" ).x} tex {m.GetTexture( "g_tToonMetal" )?.Width}, alpha test {m.GetFeature( "F_ALPHA_TEST" )}, morph {m.GetFeature( "F_MORPH_SUPPORTED" )}";
+			var renderers = new List<SkinnedModelRenderer> { body };
+			renderers.AddRange( body.GameObject.Children.Where( x => x.Tags.Has( ClothingTag ) ).SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ) );
+			foreach ( var renderer in renderers )
+				for ( int i = 0; i < renderer.Materials.Count; i++ )
+					Log.Info( $"  {renderer.GameObject.Name} slot {i}: {Describe( renderer.Materials.GetOriginal( i ) )} -> {Describe( renderer.Materials.GetOverride( i ) )}" );
 		}
 	}
 
@@ -566,9 +565,16 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		// and has metalness as a texture or a number.
 		bool complex = shader.Contains( "complex" );
 		made.Set( "g_flToonComplex", complex ? 1f : 0f );
-		var metal = complex && original.GetFeature( "F_METALNESS_TEXTURE" ) > 0 ? Valid( original.GetTexture( "g_tMetalness" ) ) : null;
+		// A metalness map is a texture of its own or, packed by complex.shader, the colour
+		// texture's alpha (a jacket made metallic that way had no diffuse colour, and the copy
+		// without its metal came out grey).
+		bool metalMap = complex && original.GetFeature( "F_METALNESS_TEXTURE" ) > 0;
+		var metal = metalMap ? Valid( original.GetTexture( "g_tMetalness" ) ) : null;
 		made.Set( "g_tToonMetal", metal ?? Texture.White );
-		made.Set( "g_flToonMetal", metal is not null ? 1f : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
+		made.Set( "g_flToonMetalInColor", metalMap && metal is null && !cutOut ? 1f : 0f );
+		// A cut-out's colour alpha is its cut, so where its map can't be found it gets none.
+		made.Set( "g_flToonMetal", metalMap ? (metal is not null || !cutOut ? 1f : 0f) : complex ? original.GetVector4( "g_flMetalness" ).x : 0f );
+		made.Set( "g_tToonAo", (complex ? Valid( original.GetTexture( "g_tAmbientOcclusion" ) ) : null) ?? Texture.White );
 
 		if ( eyeball || citizenEye )
 		{
