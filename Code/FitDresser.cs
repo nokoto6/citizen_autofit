@@ -86,6 +86,19 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	public Color EyeColor { get; set; } = new Color( 0.34f, 0.21f, 0.11f );
 
 	/// <summary>
+	/// Anime look for the body and everything it wears: every material is swapped for a copy on
+	/// shaders/fit_toon.shader with the same textures (flat bands of light, coloured shade, a
+	/// rim of light), skin toned by Tint gets an anime skin tone, and an outline is drawn
+	/// round it all. See-through materials (glass) keep their own look.
+	/// </summary>
+	[Property, Group( "Toon" ), Change( nameof( OnToonChanged ) )]
+	public bool Toon { get; set; }
+
+	/// <summary>The outline's width in pixels, 0 for none.</summary>
+	[Property, Group( "Toon" ), ShowIf( nameof( Toon ), true ), Range( 0, 6 ), Change( nameof( OnOutlineChanged ) )]
+	public float OutlineWidth { get; set; } = 1.5f;
+
+	/// <summary>
 	/// Some clothing hides a part of the body and draws its own copy of that skin instead, as
 	/// part of the garment. The copy has the stock body's shape and doesn't suit another body.
 	/// With this on, such clothing is worn without its skin and the body part it meant to hide
@@ -372,6 +385,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 		foreach ( var (name, value) in container.GetBodyGroups( hiding, BodyTarget.Model ) )
 			BodyTarget.SetBodyGroup( name, value );
+		ApplyToon();
 
 		FittedCount = fittedCount;
 		StockCount = stockCount;
@@ -404,6 +418,9 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			SetSkin( renderer );
 	}
 
+	void OnToonChanged( bool before, bool after ) => ApplyToon();
+	void OnOutlineChanged( float before, float after ) => ApplyToon();
+
 	// A change callback has to take the property's own type, or it is never called.
 	void OnTintEyesChanged( bool before, bool after ) => OnSkinChanged( 0, 0 );
 	void OnEyeColorChanged( Color before, Color after ) => OnSkinChanged( 0, 0 );
@@ -419,6 +436,117 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	}
 
 	static float ToLinear( float c ) => c <= 0.04045f ? c / 12.92f : MathF.Pow( (c + 0.055f) / 1.055f, 2.4f );
+
+	const string ToonShader = "shaders/fit_toon.shader";
+	const string OutlineShader = "shaders/fit_outline.shader";
+	const string OutlineName = "Toon Outline";
+
+	// The toon and outline copies of each original material, made once. Null where a material
+	// keeps its own look.
+	readonly Dictionary<Material, Material> toonOf = new(), outlineOf = new();
+	Material noOutline;
+
+	void ApplyToon()
+	{
+		if ( !BodyTarget.IsValid() ) return;
+		ToonRenderer( BodyTarget );
+		foreach ( var renderer in BodyTarget.GameObject.Children.Where( x => x.Tags.Has( ClothingTag ) ).SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ) )
+			ToonRenderer( renderer );
+	}
+
+	// Per material slot, so each keeps its own textures. A garment gets this again every time a
+	// more detailed model is swapped in: its slots may be in another order.
+	void ToonRenderer( SkinnedModelRenderer renderer )
+	{
+		if ( !renderer.IsValid() || renderer.Model is null ) return;
+		for ( int i = 0; i < renderer.Materials.Count; i++ )
+			renderer.Materials.SetOverride( i, Toon ? Copy( renderer.Materials.GetOriginal( i ), false ) : null );
+		Outline( renderer );
+	}
+
+	// The outline is a second renderer of the same model, bone-merged to the body, drawn blown
+	// up with only its back faces (fit_outline.shader). It casts no shadow.
+	void Outline( SkinnedModelRenderer renderer )
+	{
+		var shell = renderer.GameObject.Children.FirstOrDefault( x => x.Name == OutlineName );
+		if ( !Toon || OutlineWidth <= 0 )
+		{
+			shell?.Destroy();
+			return;
+		}
+
+		var outline = shell?.Components.Get<SkinnedModelRenderer>();
+		if ( !outline.IsValid() )
+		{
+			using var sceneScope = BodyTarget.Scene.Push();
+			var go = new GameObject( false, OutlineName );
+			go.Flags |= GameObjectFlags.NotSaved | GameObjectFlags.Hidden;
+			go.Parent = renderer.GameObject;
+			outline = go.Components.Create<SkinnedModelRenderer>();
+			outline.BoneMergeTarget = BodyTarget;
+			outline.RenderType = ModelRenderer.ShadowRenderType.Off;
+			go.Enabled = true;
+		}
+
+		outline.Model = renderer.Model;
+		outline.BodyGroups = renderer.BodyGroups;
+		for ( int i = 0; i < outline.Materials.Count; i++ )
+		{
+			var line = Copy( outline.Materials.GetOriginal( i ), true );
+			if ( line is null )
+			{
+				noOutline ??= Material.Create( "fitdresser_no_outline", OutlineShader );
+				noOutline.Set( "g_flOutlineSkip", 1f );
+				line = noOutline;
+			}
+			line.Set( "g_flOutlineWidth", OutlineWidth );
+			outline.Materials.SetOverride( i, line );
+		}
+	}
+
+	// A copy of a material on the toon or the outline shader, with its colour and normal
+	// textures and the features the look depends on. Null for a material that keeps its own
+	// look: see-through ones (glass, a lens), the painted iris on its own shader, and any
+	// without a colour texture to copy.
+	Material Copy( Material original, bool outline )
+	{
+		if ( original is null ) return null;
+		var cache = outline ? outlineOf : toonOf;
+		if ( cache.TryGetValue( original, out var made ) ) return made;
+
+		string shader = original.ShaderName ?? "";
+		var color = original.GetTexture( "g_tColor" );
+		if ( original.GetFeature( "F_TRANSLUCENT" ) > 0 || shader.Contains( "glass" ) || shader.Contains( "aurora_iris" ) || color is null || !color.IsValid() )
+		{
+			cache[original] = null;
+			return null;
+		}
+
+		made = Material.Create( $"{original.ResourceName}_{(outline ? "outline" : "toon")}", outline ? OutlineShader : ToonShader );
+		made.Set( "g_tColor", color );
+		var normal = original.GetTexture( "g_tNormal" );
+		if ( normal is not null && normal.IsValid() ) made.Set( "g_tNormal", normal );
+		made.SetFeature( "F_MORPH_SUPPORTED", 1 );
+		bool cutOut = original.GetFeature( "F_ALPHA_TEST" ) > 0;
+		if ( outline )
+		{
+			// A shell of a cut-out card (hair, lace) is a box round it.
+			made.Set( "g_flOutlineSkip", cutOut ? 1f : 0f );
+		}
+		else
+		{
+			if ( original.GetFeature( "F_RENDER_BACKFACES" ) > 0 ) made.SetFeature( "F_RENDER_BACKFACES", 1 );
+			if ( cutOut )
+			{
+				made.SetFeature( "F_ALPHA_TEST", 1 );
+				made.Set( "g_flAlphaTestReference", original.GetVector4( "g_flAlphaTestReference" ).x );
+			}
+			// Skin the stock shader tones by skin_tint (the citizen's tint mask).
+			if ( shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0 ) made.Set( "g_flToonSkin", 1f );
+		}
+		cache[original] = made;
+		return made;
+	}
 
 	// Same parameter and range as the stock Dresser. The stock graph makes a body taller or
 	// shorter with additive sequences that lengthen its bones and raise its pelvis. A body with
@@ -598,6 +726,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 				if ( renderer.Model == model ) return;
 				ClothingFitter.Retire( renderer.Model );
 				renderer.Model = model;
+				ToonRenderer( renderer );
 				return;
 			}
 
@@ -629,6 +758,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			fading[renderer] = Time.Now;
 
 			go.Enabled = true;
+			ToonRenderer( renderer );
 		}
 
 		// Only a garment that carries a copy of the skin has anything to lose. Clearing the
