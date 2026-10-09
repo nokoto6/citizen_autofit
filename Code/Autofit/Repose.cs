@@ -668,8 +668,25 @@ public sealed class Repose
 			if ( found[k] && (nose < 0 || front[k].X > front[nose].X) ) nose = k;
 		if ( nose < 0 ) return false;
 		int chin = nose, gap = 0;
+		TriMesh mesh = null;
+		var hits = new List<(float T, bool Leaving, int Tri)>();
 		for ( int k = nose + 1; k < slices && gap <= 2; k++ )
 		{
+			if ( !found[k] || front[k].X < front[nose].X - ChinBack )
+			{
+				// A slice down the middle of a face can have no vertex on the front at all, only
+				// one on the back of the head: Akira's chin, rebuilt finer, ended at such a slice
+				// 28 mm above its bottom and a beard laid on by it stopped short of her chin. A
+				// ray from the front tells the face from the back of the head.
+				mesh ??= new TriMesh( positions, geo.Indices );
+				var start = new Vec3( eye.X + Units.Metre, eye.Y, eye.Z - (k + 0.5f) * ProfileSlice );
+				mesh.Crossings( start, new Vec3( -1, 0, 0 ), 2 * Units.Metre, hits );
+				if ( hits.Count > 0 && start.X - hits[0].T >= front[nose].X - ChinBack )
+				{
+					front[k] = start - new Vec3( hits[0].T, 0, 0 );
+					found[k] = true;
+				}
+			}
 			if ( !found[k] ) { gap++; continue; }
 			if ( front[k].X < front[nose].X - ChinBack ) break;
 			chin = k;
