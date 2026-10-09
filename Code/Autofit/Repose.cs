@@ -68,6 +68,10 @@ public sealed class Repose
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
 	const float FaceReach = 0.03f * Units.Metre;   // how far around the nose, the mouth and the chin
+	const float NapeReach = 0.05f * Units.Metre;   // how far around the nape: the back of the neck, short of the ears and the jaw
+	const float NapeDepth = 0.003f * Units.Metre;  // the nape: this close to the foremost point of the back of the neck
+	const float NapeTurn = 0.005f * Units.Metre;   // how far back the profile goes above and below a nape
+	const float NapeSpan = 0.05f * Units.Metre;    // within this far up and down
 	const float MouthFrontDepth = 0.004f * Units.Metre;  // how deep the front of the mouth is taken
 	const float ProfileHalfWidth = 0.006f * Units.Metre; // how far either side of the middle the profile is read
 	const float ProfileDepth = 0.17f * Units.Metre;      // how far below the eyes
@@ -329,6 +333,8 @@ public sealed class Repose
 			}
 		}
 
+		TriMesh reposedMesh = null;
+
 		// The lower face: the tip of the nose, the mouth and the chin. Skin found by rays from
 		// the skull lands at the same angle on the other face, and a face with its features
 		// set lower and closer together (an anime face, the eyes big and low, the mouth near the
@@ -350,6 +356,22 @@ public sealed class Repose
 						result.Landmarks.Add( (stockFace[k], shift, FaceReach) );
 				}
 			}
+
+			// The nape, where the back of the neck goes into the skull. Every rig puts its head
+			// bone somewhere else along the neck: the citizens well down it, a VRoid body at the
+			// bottom of the skull. Rays from the bones only move skin towards or away from them,
+			// so the stock nape lands that much higher on such a body, up the back of its head,
+			// and a stand-up collar that reaches the citizen's nape reached Aurora's ears. Only
+			// the height is taken: how far back the nape is, the rays tell.
+			int neck = Array.IndexOf( stock.BoneNames, "neck_0" );
+			stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
+			reposedMesh ??= new TriMesh( result.Positions, body.Indices );
+			if ( neck >= 0 && Nape( stockMesh, eyeOurs, stock.BonePositions[neck].Z, out var napeOurs ) && Nape( reposedMesh, eyeTheirs, stock.BonePositions[neck].Z, out var napeTheirs ) )
+			{
+				var shift = new Vec3( 0, 0, napeTheirs.Z - napeOurs.Z );
+				if ( shift.Length() < 0.15f * Units.Metre )
+					result.Landmarks.Add( (napeOurs, shift, NapeReach) );
+			}
 		}
 
 		// The front of the chest on each side: a bust sits higher or lower on one body than on
@@ -358,7 +380,6 @@ public sealed class Repose
 		// Only a chest with a bust has a front to go by. On a flat one the foremost point is
 		// anywhere across it and jumps between two bodies of the same shape.
 		var fronts = new List<(Vec3 Ours, Vec3 Theirs)>();
-		TriMesh reposedMesh = null;
 		float bust = 0;
 		var tips = new List<Vec3>();
 		for ( int side = -1; side <= 1; side += 2 )
@@ -506,6 +527,61 @@ public sealed class Repose
 		// A chin has to be below the mouth, or the profile ran off somewhere else.
 		if ( front[chin].Z >= mouthFront.Z ) return false;
 		marks = new[] { front[nose], mouthFront, front[chin] };
+		return true;
+	}
+
+	/// <summary>
+	/// The nape, on a body in the stock pose: the foremost point of the back's profile down the
+	/// middle, between the bottom of the neck and the eyes. Below it the neck slopes back to the
+	/// shoulders, above it the skull bulges out. Averaged over the stretch of the profile within
+	/// a few millimetres of it: the back of a neck can be straight for a while. The profile is
+	/// found with rays from behind, a sparse mesh has no vertex on most of that line.
+	/// </summary>
+	static bool Nape( TriMesh mesh, Vec3 eye, float bottom, out Vec3 nape )
+	{
+		nape = Vec3.Zero;
+		int slices = (int)((eye.Z - bottom) / ProfileSlice);
+		if ( slices < 3 ) return false;
+		var back = new Vec3[slices];
+		var found = new bool[slices];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int k = 0; k < slices; k++ )
+		{
+			var start = new Vec3( eye.X - Units.Metre, eye.Y, eye.Z - (k + 0.5f) * ProfileSlice );
+			mesh.Crossings( start, new Vec3( 1, 0, 0 ), 2 * Units.Metre, hits );
+			if ( hits.Count == 0 ) continue;
+			back[k] = start + new Vec3( hits[0].T, 0, 0 );
+			found[k] = true;
+		}
+		int most = -1;
+		for ( int k = 0; k < slices; k++ )
+			if ( found[k] && (most < 0 || back[k].X > back[most].X) ) most = k;
+		if ( most < 0 ) return false;
+
+		// The profile has to turn there: go back into the skull above and down the neck below.
+		// A back of the head and neck in one gentle curve (the citizen's) has no nape to go by,
+		// its foremost point is anywhere along it.
+		int span = (int)(NapeSpan / ProfileSlice);
+		bool turnsAbove = false, turnsBelow = false;
+		for ( int k = Math.Max( 0, most - span ); k < most; k++ )
+			turnsAbove |= found[k] && back[k].X <= back[most].X - NapeTurn;
+		for ( int k = most + 1; k < Math.Min( slices, most + span + 1 ); k++ )
+			turnsBelow |= found[k] && back[k].X <= back[most].X - NapeTurn;
+		if ( !turnsAbove || !turnsBelow ) return false;
+
+		var sum = Vec3.Zero;
+		int count = 0;
+		for ( int step = -1; step <= 1; step += 2 )
+		{
+			for ( int k = step < 0 ? most : most + 1; k >= 0 && k < slices; k += step )
+			{
+				if ( !found[k] ) continue;
+				if ( back[k].X < back[most].X - NapeDepth ) break;
+				sum += back[k];
+				count++;
+			}
+		}
+		nape = sum / count;
 		return true;
 	}
 
