@@ -62,6 +62,14 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float Height { get; set; } = 0.5f;
 
 	/// <summary>
+	/// How broad the shoulders are: 0.5 is as built, 0 and 1 narrow and broaden them by the
+	/// collarbones' length (see <see cref="ShoulderRange"/>). Laid on top of the animation like
+	/// the height of a body with its own proportions, on any body.
+	/// </summary>
+	[Property, Range( 0, 1 )]
+	public float ShoulderWidth { get; set; } = 0.5f;
+
+	/// <summary>
 	/// Skin tone, same as the stock Dresser's tint: 0 to 1 across the skin shader's range of
 	/// tones, set on the body and on any skin a garment carries. With Use Local Avatar the
 	/// avatar's own tone is used.
@@ -793,9 +801,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// much as the legs, a short body turned dwarf-like.
 	const float ShortTorsoShare = 0.6f;
 
-	// Above the built height the shoulders broaden too, the collarbones by this share of the
-	// height change, as a grown body fills out (+10% at the tallest). Below it they keep their width.
-	const float ShoulderShare = 0.5f;
+	// How much longer or shorter the collarbones get at either end of ShoulderWidth.
+	const float ShoulderRange = 0.15f;
 
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
@@ -819,7 +826,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		var body = BodyTarget;
 		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
-		if ( stretch == 1f )
+		float broad = 1f + (ShoulderWidth.Clamp( 0f, 1f ) - 0.5f) * 2f * ShoulderRange;
+		if ( stretch == 1f && broad == 1f )
 		{
 			Unstretch();
 			return;
@@ -833,7 +841,6 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		float even = 1f + (stretch - 1f) * EvenShare;
 		float limbs = 1f + (stretch - 1f) * (1f - EvenShare);
 		float torso = stretch < 1f ? 1f + (limbs - 1f) * ShortTorsoShare : limbs;
-		float broad = stretch > 1f ? 1f + (stretch - 1f) * ShoulderShare : 1f;
 
 		var so = body.SceneModel;
 		var model = so.Transform;

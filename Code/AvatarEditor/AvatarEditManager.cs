@@ -45,6 +45,8 @@ public sealed partial class AvatarEditManager : Component
 
 	const string SaveCookie = "fitavatar.outfit";
 	const string DyeCookie = "fitavatar.dyes";
+	// The outfit's container has no field for it, so it is kept apart like the dyes.
+	const string ShoulderCookie = "fitavatar.shoulders";
 
 	string lastSaved;
 	public ClothingContainer Container { get; set; } = new();
@@ -114,6 +116,7 @@ public sealed partial class AvatarEditManager : Component
 		lastSaved = Container.Serialize();
 		ReadDyes( Game.Cookies.GetString( DyeCookie, "" ) );
 		lastSavedDyes = WriteDyes();
+		shoulderWidth = lastSavedShoulders = Game.Cookies.Get( ShoulderCookie, 0.5f );
 		AvatarBackgroundRig.RestoreSaved();
 	}
 
@@ -184,6 +187,14 @@ public sealed partial class AvatarEditManager : Component
 		get => Container.Height;
 		set { Container.Height = value; if ( Shown is { } d ) d.Height = value; }
 	}
+
+	/// <summary>How broad the shoulders are, 0.5 as built (see FitDresser.ShoulderWidth).</summary>
+	public float ShoulderWidth
+	{
+		get => shoulderWidth;
+		set { shoulderWidth = value; if ( Shown is { } d ) d.ShoulderWidth = value; }
+	}
+	float shoulderWidth = 0.5f, lastSavedShoulders = 0.5f;
 
 	public float Age
 	{
@@ -370,6 +381,7 @@ public sealed partial class AvatarEditManager : Component
 		if ( Shown is not { } d ) return;
 		d.Clothing = Container.Clothing.Where( x => x.Clothing.IsValid() ).Select( x => new ClothingEntry( x.Clothing ) { Tint = x.Tint } ).ToList();
 		d.Height = Container.Height;
+		d.ShoulderWidth = shoulderWidth;
 		d.Age = Container.Age;
 		d.Tint = Container.Tint;
 		d.TintEyes = tintEyes;
@@ -398,7 +410,7 @@ public sealed partial class AvatarEditManager : Component
 		}
 	}
 
-	public bool HasUnsavedChanges => lastSaved != Container.Serialize() || lastSavedDyes != WriteDyes();
+	public bool HasUnsavedChanges => lastSaved != Container.Serialize() || lastSavedDyes != WriteDyes() || lastSavedShoulders != shoulderWidth;
 
 	public void SaveChanges()
 	{
@@ -406,12 +418,15 @@ public sealed partial class AvatarEditManager : Component
 		lastSavedDyes = WriteDyes();
 		Game.Cookies.SetString( SaveCookie, lastSaved );
 		Game.Cookies.SetString( DyeCookie, lastSavedDyes );
+		lastSavedShoulders = shoulderWidth;
+		Game.Cookies.Set( ShoulderCookie, shoulderWidth );
 	}
 
 	public void RevertChanges()
 	{
 		Container.Deserialize( lastSaved );
 		ReadDyes( lastSavedDyes );
+		shoulderWidth = lastSavedShoulders;
 		ApplyChangesToModel();
 	}
 
