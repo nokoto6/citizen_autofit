@@ -259,7 +259,14 @@ PS
 		{
 			// The texture keeps its light and dark (blush, lips) relative to its brightest skin.
 			float3 vTone = SrgbGammaToLinear( lerp( g_vToonSkinLight, g_vToonSkinDark, g_flSkinTint ) );
-			vAlbedo = lerp( vAlbedo, vTone * saturate( vAlbedo / max( Luma( vAlbedo ), 0.05 ) * 0.9 ), g_flToonSkin );
+			// Small marks painted darker than the skin round them (freckles, moles) keep that
+			// difference: the hue alone would lose them. The skin round a texel is a coarse mip,
+			// about 32 texels across the whole texture.
+			float2 vSize = float2( TextureDimensions2DS( g_tColor, 0 ) );
+			float flCoarse = max( log2( max( vSize.x, vSize.y ) ) - 5.0, 0.0 );
+			float flAround = Luma( g_tColor.SampleLevel( TextureFiltering, i.vTextureCoords.xy, flCoarse ).rgb );
+			float flMark = saturate( Luma( g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb ) / max( flAround, 0.02 ) );
+			vAlbedo = lerp( vAlbedo, vTone * saturate( vAlbedo / max( Luma( vAlbedo ), 0.05 ) * 0.9 ) * flMark, g_flToonSkin );
 		}
 
 		// The bands follow the smooth vertex normal: a normal map's fine detail (pores, weave)
