@@ -69,7 +69,7 @@ public sealed partial class AvatarEditManager : Component
 
 	/// <summary>The VRoid bodies: their eyes are painted on and tinted, their skin has tones of its own.</summary>
 	public bool IsAnime => IsAnimeBody( body );
-	static bool IsAnimeBody( BodyKind kind ) => kind is BodyKind.Aurora or BodyKind.Akira;
+	public static bool IsAnimeBody( BodyKind kind ) => kind is BodyKind.Aurora or BodyKind.Akira;
 
 	/// <summary>The material whose tint lookup holds the body's skin tones. The anime bodies have tables of their own.</summary>
 	public string SkinToneMaterial => body switch
