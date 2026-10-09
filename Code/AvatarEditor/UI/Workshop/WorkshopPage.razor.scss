@@ -137,3 +137,46 @@ WorkshopPage > .body-right > .items
 		font-size: 40px;
 	}
 }
+
+WorkshopPage .search-row
+{
+	flex-direction: row;
+	align-items: center;
+	flex-grow: 1;
+	gap: 6px;
+
+	.search
+	{
+		flex-grow: 1;
+	}
+}
+
+WorkshopPage .search-clear
+{
+	width: 32px;
+	height: 32px;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	color: white;
+	cursor: pointer;
+	opacity: 0.7;
+
+	&:hover
+	{
+		opacity: 1;
+	}
+
+	i
+	{
+		font-size: 20px;
+	}
+}
+
+WorkshopPage .search-status
+{
+	font-size: 14px;
+	opacity: 0.7;
+	margin: 4px 0 16px 0;
+	min-height: 18px;
+}
