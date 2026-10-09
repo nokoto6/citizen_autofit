@@ -1333,9 +1333,10 @@ public static class GarmentFit
 	/// alone. Going by the hat's own sides instead fails on a tall or floppy hat, whose middle
 	/// is far from the head, and on a brim, whose top and underside are both its outside.
 	///
-	/// Only hair the hat covers is moved: hair whose line out from the head meets the hat. Hair
-	/// in sight below and beside it stays where it is, or the smoothing that keeps a card from
-	/// kinking drags it in after the part that went under, and skin shows between hair and hat.
+	/// Only hair the hat covers is moved: hair whose line out from the head meets the hat, and
+	/// hair along its edge. Hair in sight further below and beside it stays where it is, or the
+	/// smoothing that keeps a card from kinking drags it in after the part that went under, and
+	/// skin shows between hair and hat.
 	/// </summary>
 	static void Tuck( Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, TriMesh under, TriMesh body )
 	{
@@ -1347,9 +1348,11 @@ public static class GarmentFit
 		var all = new bool[fitted.Length];
 		Array.Fill( all, true );
 		var hits = new List<(float T, bool Leaving, int Tri)>();
+		// Hair right at the hat moves too: a card lying across the edge has corners just past
+		// it, and held still they keep the card through it or stick it out under the edge.
 		var covered = new bool[fitted.Length];
 		for ( int i = 0; i < fitted.Length; i++ )
-			covered[i] = Covered( fitted[i], under, body, hits );
+			covered[i] = Covered( fitted[i], under, body, hits ) || under.Nearest( fitted[i], out _, out _ ) < HatNear;
 		for ( int pass = 0; pass < 6; pass++ )
 		{
 			Array.Clear( push );
@@ -1372,8 +1375,8 @@ public static class GarmentFit
 			{
 				int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
 				if ( !known[a] || !known[b] || !known[c] ) continue;
-				// A triangle across the hat's edge, part of it in sight: its corners in sight
-				// stay, so a push worked out for all three would throw the others too far.
+				// A triangle reaching out into sight: its corners there stay, so a push worked
+				// out for all three would throw the others too far.
 				if ( !covered[a] || !covered[b] || !covered[c] ) continue;
 				foreach ( var bw in Between )
 				{
@@ -1397,13 +1400,13 @@ public static class GarmentFit
 			}
 
 			if ( moved == 0 ) break;
+			// Smoothed, so a card bends rather than kinks; the last pass goes in full, so
+			// nothing stubborn is left sticking out.
 			// Hair in sight holds still, and holds the cards it is part of: a push it can't take
 			// would otherwise be handed on to its covered neighbours by the smoothing, pass after
 			// pass, and throw them out the far side of the hat.
 			for ( int i = 0; i < fitted.Length; i++ )
 				if ( !covered[i] ) push[i] = Vec3.Zero;
-			// Smoothed, so a card bends rather than kinks; the last pass goes in full, so
-			// nothing stubborn is left sticking out.
 			if ( pass < 5 ) MeshTools.Relax( push, all, edges, 1, 0.5f );
 			for ( int i = 0; i < fitted.Length; i++ )
 				if ( covered[i] ) fitted[i] += push[i];
@@ -1430,6 +1433,7 @@ public static class GarmentFit
 	}
 
 	const float HatReach = 0.3f * Units.Metre;  // how far out past a bit of hair a hat can be and still cover it
+	const float HatNear = 0.03f * Units.Metre;  // hair this close to a hat goes under it with the rest
 
 	// Whether a hat is in the way of a bit of hair, seen from the head: the line from inside the
 	// head out through it meets the hat, before it or past it.
