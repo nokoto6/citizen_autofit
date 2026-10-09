@@ -789,6 +789,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// thicker, and the belly least of all (it came out a pot belly at a tall height).
 	const float ThickShare = 0.3f, TorsoThickShare = 0.1f;
 
+	// Below the built height the torso gives up only this share of what it would: shortened as
+	// much as the legs, a short body turned dwarf-like.
+	const float ShortTorsoShare = 0.6f;
+
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
 	bool stretched;
@@ -798,7 +802,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
 	float[] stretchTwice, lengthTwice;
-	bool[] underPelvis, alongSpine;
+	bool[] underPelvis, alongSpine, spineBone;
 	float[] thickShare;
 	int[] feet;
 	Transform[] animated, stretchedPose;
@@ -819,11 +823,12 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		var bones = body.Model.Bones.AllBones;
 		// After a hotload the tables can be missing ones added since they were made.
-		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || alongSpine?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || alongSpine?.Length != bones.Count || spineBone?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
 			MakeStretch( body.Model );
 
 		float even = 1f + (stretch - 1f) * EvenShare;
 		float limbs = 1f + (stretch - 1f) * (1f - EvenShare);
+		float torso = stretch < 1f ? 1f + (limbs - 1f) * ShortTorsoShare : limbs;
 
 		var so = body.SceneModel;
 		var model = so.Transform;
@@ -840,7 +845,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			}
 
 			var local = animated[parent.Index].ToLocal( animated[i] );
-			float grow = 1f + (limbs - 1f) * (stretchTwice[i] - 1f);
+			float grow = 1f + ((alongSpine[i] ? torso : limbs) - 1f) * (stretchTwice[i] - 1f);
 			var offset = local.Position * even;
 			// Along the spine is its bones' X axis; the shoulders keep their width.
 			if ( alongSpine[i] ) offset.x *= grow;
@@ -862,7 +867,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		{
 			var pose = stretchedPose[i];
 			if ( underPelvis[i] ) pose.Position += Vector3.Up * lift;
-			float along = 1f + (limbs - 1f) * (lengthTwice[i] - 1f);
+			float along = 1f + ((spineBone[i] ? torso : limbs) - 1f) * (lengthTwice[i] - 1f);
 			float across = 1f + (along - 1f) * thickShare[i];
 			pose.Scale = new Vector3( along, across, across ) * even;
 			so.SetBoneOverride( i, pose );
@@ -887,6 +892,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		underPelvis = new bool[bones.Count];
 		thickShare = new float[bones.Count];
 		alongSpine = new bool[bones.Count];
+		spineBone = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
 		var feetList = new List<int>();
@@ -917,7 +923,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			lengthTwice[i] = length;
 
 			underPelvis[i] = name == "pelvis" || (bone.Parent is not null && underPelvis[bone.Parent.Index]);
-			thickShare[i] = name.StartsWith( "spine_" ) ? TorsoThickShare : ThickShare;
+			spineBone[i] = name.StartsWith( "spine_" );
+			thickShare[i] = spineBone[i] ? TorsoThickShare : ThickShare;
 			if ( name.StartsWith( "ankle_" ) ) feetList.Add( i );
 		}
 		feet = feetList.ToArray();
