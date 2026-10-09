@@ -339,6 +339,21 @@ public static class GarmentFit
 			if ( givenMove != null ) move[i] = givenMove[src];
 		}
 
+		// Under the stock skin on purpose: caps that close a sleeve from the inside, a hem turned
+		// in. That is deeper than the hidden depth or, with the skin to be cleared, a quarter of
+		// the way through the body part. A crease may dip deeper than the middle of a finger and
+		// still be lifted: the caps closing a glove's fingers, 8 to 10 mm down, were lifted out
+		// through the fingers and took the hems along as spikes.
+		var buried = new bool[n];
+		var through = new List<(float T, bool Leaving, int Tri)>();
+		for ( int i = 0; i < n; i++ )
+		{
+			buried[i] = gap0[i] < -hidden;
+			if ( buried[i] || !clearSkin || gap0[i] >= -Hidden ) continue;
+			old.Crossings( pts[i], away[i] * -1f, -3f * gap0[i], through );
+			buried[i] = through.Count > 0 && through[0].Leaving;
+		}
+
 		if ( stiff != null && givenMove == null ) Stiffen( pts, firstOf, boneIndex, boneWeight, move, old, other, skinMove, byBone, stiff );
 
 		// Loose cloth hanging between two limbs flips between them from vertex to vertex.
@@ -362,7 +377,14 @@ public static class GarmentFit
 		// A push that goes against it comes from some other body part the point has ended up
 		// inside of (the underside of a sleeve inside a wide torso). Following it would glue
 		// the cloth to the wrong part, so it is ignored.
-		bool Push( Vec3 p, float oldGap, Vec3 outward, out Vec3 push )
+		bool Push( Vec3 p, float oldGap, Vec3 outward, out Vec3 push ) => PushOff( p, oldGap, outward, clearSkin, out push );
+
+		// A solid can't be held off the skin on every side at once. A hem ring made tight round a
+		// glove's thumb, wanting the clearing gap all round it, was pushed by each side in turn and
+		// walked 2 cm off its place. Like any solid, it only keeps from going deeper than it was made.
+		bool PushSolid( Vec3 p, float oldGap, Vec3 outward, out Vec3 push ) => PushOff( p, oldGap, outward, false, out push );
+
+		bool PushOff( Vec3 p, float oldGap, Vec3 outward, bool clear, out Vec3 push )
 		{
 			push = Vec3.Zero;
 
@@ -372,7 +394,7 @@ public static class GarmentFit
 			if ( oldGap < -hidden ) return false;
 			float gap = other.SignedGap( p, out var s );
 			float want = MathF.Min( oldGap, GapCap );
-			if ( clearSkin ) want = MathF.Max( want, ClearGap );
+			if ( clear ) want = MathF.Max( want, ClearGap );
 			float need = want - gap;
 			if ( need <= 1e-4f * Units.Metre || need > MaxPush ) return false;
 			Vec3 v = p - s;
@@ -384,11 +406,16 @@ public static class GarmentFit
 			return true;
 		}
 
-		// Connected pieces.
+		// Connected pieces, of the vertices the triangles use. A garment fitted without its copy
+		// of the skin still has that copy's vertices, each a piece of its own: twenty of them on
+		// a glove's thumb bone made a heap of cards, and the whole glove was fitted as hair.
+		var used = new bool[n];
+		foreach ( int v in tris ) used[weld[v]] = true;
 		var piece = Islands( n, edges );
 		var members = new Dictionary<int, List<int>>();
 		for ( int i = 0; i < n; i++ )
 		{
+			if ( !used[i] ) continue;
 			if ( !members.TryGetValue( piece[i], out var list ) ) members[piece[i]] = list = new List<int>();
 			list.Add( i );
 		}
@@ -485,11 +512,11 @@ public static class GarmentFit
 
 			var whole = new List<int>();
 			foreach ( int r in parts ) whole.AddRange( rigid[r] );
-			bool wraps = FitRigid( whole, pts, move, gap0, away, fitted, Push, false );
+			bool wraps = FitRigid( whole, pts, move, gap0, away, fitted, PushSolid, false );
 			if ( eyes != null && OnTheEyes( whole, pts, eyes ) )
 			{
 				PutOnTheEyes( whole, pts, fitted, eyes );
-				PushOut( whole, fitted, gap0, away, Push, false );
+				PushOut( whole, fitted, gap0, away, PushSolid, false );
 			}
 			else if ( wraps && eyes != null && eyes.Length == 2 )
 			{
@@ -506,7 +533,7 @@ public static class GarmentFit
 			// A heap of cards is hair, and all of it goes the hair's way: the long locks that
 			// bend like cloth and whatever cap mesh sits under the cards too.
 			loose.Clear();
-			for ( int i = 0; i < n; i++ ) if ( !isSolid[i] ) loose.Add( i );
+			for ( int i = 0; i < n; i++ ) if ( !isSolid[i] && used[i] ) loose.Add( i );
 			bends.Clear();
 			hair = true;
 			// Hair isn't painted on the face: where the skin slides along it with the eyes (a
@@ -543,7 +570,7 @@ public static class GarmentFit
 				int moved = 0;
 				foreach ( int i in idx )
 				{
-					if ( !Push( fitted[i], wanted[i], away[i], out var p ) ) continue;
+					if ( buried[i] || !Push( fitted[i], wanted[i], away[i], out var p ) ) continue;
 					fitted[i] += p;
 					moved++;
 				}
@@ -566,7 +593,7 @@ public static class GarmentFit
 			MeshTools.Relax( pushField, mask, edges, 2, 0.5f );
 			foreach ( var (_, idx) in cloth )
 				foreach ( int i in idx )
-					if ( Push( pts[i] + move[i] + pushField[i], wanted[i], away[i], out var p ) ) pushField[i] += p;
+					if ( !buried[i] && Push( pts[i] + move[i] + pushField[i], wanted[i], away[i], out var p ) ) pushField[i] += p;
 		}
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
@@ -595,7 +622,7 @@ public static class GarmentFit
 				for ( int t = 0; t < mine.Count; t += 3 )
 				{
 					// A triangle with a corner deep under the stock skin dives into the body on purpose.
-					if ( gap0[mine[t]] < -hidden || gap0[mine[t + 1]] < -hidden || gap0[mine[t + 2]] < -hidden ) continue;
+					if ( buried[mine[t]] || buried[mine[t + 1]] || buried[mine[t + 2]] ) continue;
 					for ( int k = 0; k < Samples.Length; k++ )
 					{
 						var bw = Samples[k];
@@ -614,8 +641,8 @@ public static class GarmentFit
 			}
 		}
 
-		CoverSkin( pts, fitted, gap0, clothTris, old, skinMove, skinFound, clearSkin );
-		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, hidden );
+		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin );
+		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
 
@@ -637,7 +664,7 @@ public static class GarmentFit
 	/// on it and keeps its own fit past the reach. Which of two pieces is the outer one is told
 	/// by the skin, not by their normals: a lined waistcoat has them pointing both ways.
 	/// </summary>
-	static void Carry( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh body, float hidden )
+	static void Carry( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh body, bool[] buried )
 	{
 		var roots = new List<int>();
 		foreach ( var (root, idx) in members )
@@ -655,7 +682,7 @@ public static class GarmentFit
 			int root = roots[k];
 			foreach ( int i in members[root] )
 			{
-				if ( gap0[i] < -hidden ) continue;
+				if ( buried[i] ) continue;
 				// The nearest bigger piece, as made.
 				float best = LayerReach, apart = 0;
 				int on = -1, onTri = -1;
@@ -716,7 +743,7 @@ public static class GarmentFit
 		{
 			foreach ( int i in members[roots[k]] )
 			{
-				if ( isSolid[i] || gap0[i] < -hidden ) continue;
+				if ( isSolid[i] || buried[i] ) continue;
 				float best = LayerReach, apart = 0;
 				int over = -1;
 				for ( int j = k + 1; j < roots.Count; j++ )
@@ -1492,7 +1519,7 @@ public static class GarmentFit
 	/// vertex that sat under the cloth on the stock body has to be at least as far under it on
 	/// the new one, and the triangle above it is lifted until it is.
 	/// </summary>
-	static void CoverSkin( Vec3[] pts, Vec3[] fitted, float[] gap0, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin )
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin )
 	{
 		if ( clothTris.Count == 0 ) return;
 		var cloth = new TriMesh( pts, clothTris.ToArray() );
@@ -1534,8 +1561,7 @@ public static class GarmentFit
 			if ( clearSkin ) gap = MathF.Max( gap, ClearGap );
 
 			int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];
-			float hidden = clearSkin ? ClearDepth : Hidden;
-			if ( gap0[a] < -hidden || gap0[b] < -hidden || gap0[c] < -hidden ) continue;
+			if ( buried[a] || buried[b] || buried[c] ) continue;
 			Barycentric( above, pts[a], pts[b], pts[c], out float bu, out float bv, out float bw );
 			under.Add( (v, tri, bu, bv, bw, gap) );
 		}
