@@ -54,6 +54,16 @@ public sealed class SkinnedGeometry
 
 	/// <summary>Morph targets of the meshes that have them. Usually only the most detailed LOD does.</summary>
 	public List<MorphSet> Morphs = new();
+
+	/// <summary>
+	/// The turn (x, y, z, w) that took the model out of its own frame into the stock body's
+	/// (<see cref="GarmentFit.ToStockBind"/>). The morph deltas read from the file are still in
+	/// its own and need it too. Null when nothing was turned.
+	/// </summary>
+	public float[] BindTurn;
+
+	/// <summary>A direction given in the model's own frame (a morph's delta), in the stock body's.</summary>
+	public Vec3 InStockBind( Vec3 v ) => BindTurn == null ? v : Quat.Rotate( BindTurn, v );
 }
 
 /// <summary>

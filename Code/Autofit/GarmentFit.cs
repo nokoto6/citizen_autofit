@@ -1689,6 +1689,69 @@ public static class GarmentFit
 		if ( !lift.TryGetValue( vertex, out var have ) || push.LengthSquared() > have.LengthSquared() ) lift[vertex] = push;
 	}
 
+	const float BindTurnSlack = 0.02f;                     // radians (about a degree): bind poses turned less than this apart are the same
+	const float BindMoveSlack = 0.002f * Units.Metre;      // and moved less than this
+
+	/// <summary>
+	/// Puts a garment exported in a frame of its own into the stock body's. Bone merging hangs
+	/// each vertex off the body's bone the way it hung off the garment's own one, so in the game
+	/// a cigar exported with its whole skeleton turned a quarter round about the vertical still
+	/// sits in the mouth. The fit works in model space and took the vertices where they lie in
+	/// the file: to the side of the head. Here the garment goes where bone merging puts it on
+	/// the stock body. Only a garment whose bones are all off by one and the same turn and shift
+	/// is moved: one whose bones disagree with the stock ones each in its own way was made for
+	/// an older skeleton, and is left as it is.
+	/// </summary>
+	/// <returns>False if the garment was left as it is.</returns>
+	public static bool ToStockBind( SkinnedGeometry garment, SkinnedGeometry stock )
+	{
+		var byName = new Dictionary<string, int>();
+		for ( int i = 0; i < stock.BoneNames.Length; i++ ) byName[stock.BoneNames[i]] = i;
+		int bones = garment.BoneNames.Length;
+		var used = new bool[bones];
+		for ( int k = 0; k < garment.BoneIndex.Length; k++ )
+			if ( garment.BoneIndex[k] >= 0 && garment.BoneIndex[k] < bones && garment.BoneWeight[k] > 0 ) used[garment.BoneIndex[k]] = true;
+
+		// What takes each bone the vertices hang off onto the stock bone of its name.
+		float[] turn = null;
+		var shift = Vec3.Zero;
+		for ( int i = 0; i < bones; i++ )
+		{
+			if ( !used[i] || !byName.TryGetValue( garment.BoneNames[i], out int s ) ) continue;
+			var mine = Quat.Multiply( stock.BoneRotations[s], Quat.Inverse( garment.BoneRotations[i] ) );
+			var at = stock.BonePositions[s] - Quat.Rotate( mine, garment.BonePositions[i] );
+			if ( turn == null ) { turn = mine; shift = at; continue; }
+			float apart = MathF.Abs( turn[0] * mine[0] + turn[1] * mine[1] + turn[2] * mine[2] + turn[3] * mine[3] );
+			if ( 2f * MathF.Acos( Math.Clamp( apart, 0f, 1f ) ) > BindTurnSlack ) return false;
+			if ( (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - stock.BonePositions[s]).Length() > BindMoveSlack ) return false;
+		}
+		if ( turn == null ) return false;
+		float angle = 2f * MathF.Acos( Math.Clamp( MathF.Abs( turn[3] ), 0f, 1f ) );
+		bool moved = false;
+		for ( int i = 0; i < bones && !moved; i++ )
+			moved = used[i] && (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - garment.BonePositions[i]).Length() > BindMoveSlack;
+		if ( angle <= BindTurnSlack && !moved ) return false;
+
+		for ( int v = 0; v < garment.Positions.Length; v++ )
+		{
+			garment.Positions[v] = Quat.Rotate( turn, garment.Positions[v] ) + shift;
+			if ( garment.Normals != null && v < garment.Normals.Length ) garment.Normals[v] = Quat.Rotate( turn, garment.Normals[v] );
+		}
+		for ( int i = 0; i < bones; i++ )
+		{
+			garment.BonePositions[i] = Quat.Rotate( turn, garment.BonePositions[i] ) + shift;
+			garment.BoneRotations[i] = Quat.Multiply( turn, garment.BoneRotations[i] );
+			// Relative to the parent nothing changed, only the roots moved.
+			if ( garment.BoneLocalPositions != null && garment.BoneParents[i] < 0 )
+			{
+				garment.BoneLocalPositions[i] = garment.BonePositions[i];
+				garment.BoneLocalRotations[i] = garment.BoneRotations[i];
+			}
+		}
+		garment.BindTurn = turn;
+		return true;
+	}
+
 	/// <summary>
 	/// A garment's vertices index the garment's own skeleton. Returns the same four slots per
 	/// vertex as indices into the body's bones. A bone the body doesn't have (older garments

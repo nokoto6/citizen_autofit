@@ -311,7 +311,13 @@ public static class ClothingFitter
 		if ( bodyPath == ReferencePaths[(int)madeFor] )
 		{
 			var file = ReadCompiled( garmentPath );
-			return await OnWorker( () => { var geo = CompiledModel.Read( file ); return new TriMesh( geo.Positions, geo.Indices ); } );
+			var reference = await ReferenceAsync( madeFor );
+			return await OnWorker( () =>
+			{
+				var geo = CompiledModel.Read( file );
+				if ( reference != null ) GarmentFit.ToStockBind( geo, reference.Geo );
+				return new TriMesh( geo.Positions, geo.Indices );
+			} );
 		}
 
 		await FitAsync( bodyPath, garmentPath, madeFor, null, false, null );
@@ -347,7 +353,12 @@ public static class ClothingFitter
 			}
 
 			var file = ReadCompiled( garmentPath );
-			var levels = await OnWorker( () => CompiledModel.ReadLods( file ) );
+			var levels = await OnWorker( () =>
+			{
+				var read = CompiledModel.ReadLods( file );
+				foreach ( var level in read ) GarmentFit.ToStockBind( level, reference.Geo );
+				return read;
+			} );
 			if ( started != generation ) return null;
 			var reading = System.Diagnostics.Stopwatch.StartNew();
 			var atlases = ReadAtlases( levels );
@@ -975,8 +986,8 @@ public static class ClothingFitter
 					morphs[name] = morph = (new Vec3[positions.Length], new Vec3[positions.Length]);
 				foreach ( var (vertex, move, turn) in deltas )
 				{
-					morph.Position[vertex] = move * target.Pose.ScaleAt( vertex, backBones, backWeights );
-					morph.Normal[vertex] = turn;
+					morph.Position[vertex] = garment.InStockBind( move ) * target.Pose.ScaleAt( vertex, backBones, backWeights );
+					morph.Normal[vertex] = garment.InStockBind( turn );
 				}
 			}
 		}
