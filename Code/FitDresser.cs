@@ -62,12 +62,12 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float Height { get; set; } = 0.5f;
 
 	/// <summary>
-	/// How broad the shoulders are: 0.5 is as built, 0 and 1 narrow and broaden them by the
-	/// collarbones' length (see <see cref="ShoulderRange"/>). Laid on top of the animation like
-	/// the height of a body with its own proportions, on any body.
+	/// How much broader the shoulders are than built: 0 as built, 1 the collarbones longer by
+	/// <see cref="ShoulderRange"/>. Laid on top of the animation like the height of a body with its
+	/// own proportions, on any body.
 	/// </summary>
 	[Property, Range( 0, 1 )]
-	public float ShoulderWidth { get; set; } = 0.5f;
+	public float ShoulderWidth { get; set; } = 0f;
 
 	/// <summary>
 	/// How strong, wide and square the jaw is, 0 as built: the body's own <see cref="JawMorph"/>
@@ -849,8 +849,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// much as the legs, a short body turned dwarf-like.
 	const float ShortTorsoShare = 0.6f;
 
-	// How much longer or shorter the collarbones get at either end of ShoulderWidth.
-	const float ShoulderRange = 0.15f;
+	// How much longer the collarbones get at the top of ShoulderWidth. Narrower than built looked
+	// wrong, so the slider only broadens.
+	const float ShoulderRange = 0.25f;
 
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
@@ -874,7 +875,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		var body = BodyTarget;
 		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
-		float broad = 1f + (ShoulderWidth.Clamp( 0f, 1f ) - 0.5f) * 2f * ShoulderRange;
+		float broad = 1f + ShoulderWidth.Clamp( 0f, 1f ) * ShoulderRange;
 		if ( stretch == 1f && broad == 1f )
 		{
 			Unstretch();

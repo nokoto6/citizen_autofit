@@ -117,7 +117,7 @@ public sealed partial class AvatarEditManager : Component
 		lastSaved = Container.Serialize();
 		ReadDyes( Game.Cookies.GetString( DyeCookie, "" ) );
 		lastSavedDyes = WriteDyes();
-		shoulderWidth = lastSavedShoulders = Game.Cookies.Get( ShoulderCookie, 0.5f );
+		shoulderWidth = lastSavedShoulders = Game.Cookies.Get( ShoulderCookie, 0f );
 		jawStrength = lastSavedJaw = Game.Cookies.Get( JawCookie, 0f );
 		AvatarBackgroundRig.RestoreSaved();
 	}
@@ -190,13 +190,13 @@ public sealed partial class AvatarEditManager : Component
 		set { Container.Height = value; if ( Shown is { } d ) d.Height = value; }
 	}
 
-	/// <summary>How broad the shoulders are, 0.5 as built (see FitDresser.ShoulderWidth).</summary>
+	/// <summary>How much broader the shoulders are, 0 as built (see FitDresser.ShoulderWidth).</summary>
 	public float ShoulderWidth
 	{
 		get => shoulderWidth;
 		set { shoulderWidth = value; if ( Shown is { } d ) d.ShoulderWidth = value; }
 	}
-	float shoulderWidth = 0.5f, lastSavedShoulders = 0.5f;
+	float shoulderWidth, lastSavedShoulders;
 
 	/// <summary>How strong the anime bodies' jaw is, 0 as built (see FitDresser.JawStrength).</summary>
 	public float JawStrength
