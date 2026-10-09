@@ -63,11 +63,15 @@ public sealed class Repose
 	/// <summary>The neck on the stock body and on this one, to keep cloth over it at the share of the neck it covers. Null when the chin or the nape wasn't found.</summary>
 	public Neck Neck;
 
+	/// <summary>The trunk from the crotch up on this body, in the stock pose and in its rest pose, to keep cloth on its lower part at the share of the trunk it covers. Null when there is no crotch to find.</summary>
+	public Trunk Trunk;
+
 	// The body in its rest pose and its triangles, and its skin in the stock pose: what
 	// OntoSkin takes paint back by.
 	Vec3[] bodyRest;
 	int[] bodyIndices;
 	TriMesh posedSkin;
+	TriMesh restBody;   // the body in its rest pose, what cloth hung from the hips stays out of
 
 	// The body in the stock pose and proportions, with its skin weights as stock bones and
 	// without the eyes: how cloth lying on its skin goes back to its rest pose (RestOf).
@@ -117,6 +121,11 @@ public sealed class Repose
 	// Per stock bone, whose place the skin it drives is moved by, in and out of the stock pose.
 	int[] follow;
 
+	// Per stock bone, the top bone of the leg it is part of (its hip joint), -1 for none. And per
+	// side the hip, the knee and the ankle, for cloth hanging round both legs (Hanging).
+	int[] hipOf;
+	int[] hips, knees, ankles;
+
 	/// <summary>
 	/// A bone at the end of a chain (the toes, the tip of a finger) has nothing to tell which
 	/// way it points: the body puts it wherever its joint is, the stock skeleton somewhere
@@ -148,6 +157,7 @@ public sealed class Repose
 	// carries something placed in it over to the body's rest pose.
 	Vec3[] stockPositions;
 	float[][] stockRotations;
+	int[] stockParents;
 	float[][] carry;
 
 	public static Repose ToStockPose( SkinnedGeometry body, SkinnedGeometry stock )
@@ -265,6 +275,7 @@ public sealed class Repose
 		result.RestRotations = new float[stockCount][];
 		result.stockPositions = stock.BonePositions;
 		result.stockRotations = stock.BoneRotations;
+		result.stockParents = stock.BoneParents;
 		result.BodyHas = new bool[stockCount];
 		for ( int s = 0; s < stockCount; s++ )   // parents come first here too
 		{
@@ -297,6 +308,15 @@ public sealed class Repose
 		// The skin of a bone at the end of a chain (the toes, a fingertip) goes the way of the
 		// bone before it, see Follow.
 		result.follow = Follow( stock );
+		result.hipOf = new int[stockCount];
+		for ( int s = 0; s < stockCount; s++ )   // parents come first
+		{
+			int parent = stock.BoneParents[s];
+			result.hipOf[s] = stock.BoneNames[s] is "leg_upper_L" or "leg_upper_R" ? s : parent >= 0 ? result.hipOf[parent] : -1;
+		}
+		result.hips = new[] { Array.IndexOf( stock.BoneNames, "leg_upper_L" ), Array.IndexOf( stock.BoneNames, "leg_upper_R" ) };
+		result.knees = new[] { Array.IndexOf( stock.BoneNames, "leg_lower_L" ), Array.IndexOf( stock.BoneNames, "leg_lower_R" ) };
+		result.ankles = new[] { Array.IndexOf( stock.BoneNames, "ankle_L" ), Array.IndexOf( stock.BoneNames, "ankle_R" ) };
 		var carrier = new int[bones];
 		for ( int i = 0; i < bones; i++ )
 		{
@@ -464,23 +484,22 @@ public sealed class Repose
 		result.bodyRest = body.Positions;
 		result.bodyIndices = body.Indices;
 
-		// The neck goes by the skin as draped too: the skin the clothes are fitted to, and the
-		// skin under them that they go back to the rest pose by.
-		if ( !float.IsNaN( napeHeight ) && result.Face.Count == 4 )
+		// The neck and the trunk go by the skin as draped too: the skin the clothes are fitted
+		// to, and the skin under them that they go back to the rest pose by.
+		result.skinMesh = new TriMesh( result.Positions, body.Indices );
+		result.skinBones = new int[body.BoneIndex.Length];
+		result.skinWeights = new float[body.BoneWeight.Length];
+		for ( int k = 0; k < body.BoneIndex.Length; k++ )
 		{
-			result.skinMesh = new TriMesh( result.Positions, body.Indices );
-			result.skinBones = new int[body.BoneIndex.Length];
-			result.skinWeights = new float[body.BoneWeight.Length];
-			for ( int k = 0; k < body.BoneIndex.Length; k++ )
-			{
-				int bone = body.BoneIndex[k];
-				int s = bone >= 0 && bone < bones ? to[bone] : -1;
-				bool eye = s >= 0 && stock.BoneNames[s].StartsWith( "eye_" );
-				result.skinBones[k] = eye ? -1 : s;
-				result.skinWeights[k] = eye || s < 0 ? 0 : body.BoneWeight[k];
-			}
-			result.Neck = Neck.Find( result, stock, result.Face[3], napeHeight );
+			int bone = body.BoneIndex[k];
+			int s = bone >= 0 && bone < bones ? to[bone] : -1;
+			bool eye = s >= 0 && stock.BoneNames[s].StartsWith( "eye_" );
+			result.skinBones[k] = eye ? -1 : s;
+			result.skinWeights[k] = eye || s < 0 ? 0 : body.BoneWeight[k];
 		}
+		if ( !float.IsNaN( napeHeight ) && result.Face.Count == 4 )
+			result.Neck = Neck.Find( result, stock, result.Face[3], napeHeight );
+		result.Trunk = Trunk.Find( result, stock, result.skinMesh );
 
 		return result;
 	}
@@ -814,28 +833,187 @@ public sealed class Repose
 	/// as its bones, the body's animation moves it exactly as it moves the body.
 	/// </summary>
 	/// <param name="boneIndex">Four bone slots per garment vertex, as stock bone indices.</param>
-	public Vec3[] ToBodyRest( Vec3[] fitted, int[] boneIndex, float[] boneWeight )
+	/// <param name="tris">The garment's triangles, with <paramref name="cloth"/> the vertices fitted as cloth: cloth hanging round both legs hangs from the hips the way it hung in the stock pose (<see cref="Hang"/>). Null for none.</param>
+	public Vec3[] ToBodyRest( Vec3[] fitted, int[] boneIndex, float[] boneWeight, int[] tris = null, bool[] cloth = null )
 	{
-		var turn = carry;
 		var result = new Vec3[fitted.Length];
+		for ( int v = 0; v < fitted.Length; v++ ) result[v] = RestByBones( fitted[v], boneIndex, boneWeight, v, false );
+		if ( tris != null && cloth != null ) Hang( fitted, tris, boneIndex, boneWeight, cloth, result );
+		return result;
+	}
+
+	// One vertex taken back to the rest pose by its bones. Hung, a bone of a leg turns the way the
+	// hips do about its hip joint instead of the way it turns itself.
+	Vec3 RestByBones( Vec3 p, int[] boneIndex, float[] boneWeight, int v, bool hung )
+	{
+		var sum = Vec3.Zero;
+		float weight = 0;
+		for ( int j = 0; j < 4; j++ )
+		{
+			int bone = boneIndex[v * 4 + j];
+			float w = boneWeight[v * 4 + j];
+			if ( bone < 0 || w <= 0 ) continue;
+			int by = follow[bone];
+			if ( hung && hipOf[by] >= 0 )
+			{
+				int hip = hipOf[by];
+				sum += (Quat.Rotate( carry[stockParents[hip]], p - stockPositions[hip] ) + RestPositions[hip]) * w;
+			}
+			else
+				sum += (Quat.Rotate( carry[by], p - stockPositions[by] ) + RestPositions[by]) * w;
+			weight += w;
+		}
+		return weight > 1e-6f ? sum / weight : p;
+	}
+
+	const float HangBand = 0.02f * Units.Metre;    // how high a band of the legs is looked at in one go
+	const float HangClear = 0.002f * Units.Metre;  // hung cloth keeps this far off the legs, else it goes their way as far as it has to
+	const int HangSteps = 6;                       // halvings in finding how far that is
+	const int HangSlant = 4;                       // bands of a leg's hem below where it last goes between the legs that are still that leg
+
+	/// <summary>
+	/// Cloth that hangs round both legs below the crotch rather than round each leg on its own (a
+	/// skirt, a dress, the tails of a coat, an apron) hangs from the hips. A body whose legs are set
+	/// wider apart in its rest pose than the stock body's (the humans stand with their feet 8 cm
+	/// further apart) has them turned out at the hip by a few degrees, and cloth that goes back with
+	/// the thigh under it turned out with it: a straight skirt flared out into an A, its hem 3 cm out
+	/// on each side, and a coat's tails stood off the legs. A trouser leg does go with its leg. The
+	/// two are told apart by whether the cloth goes between the legs: looking from each leg towards
+	/// the other, a trouser leg's inside is in the way, a skirt's isn't. Where the leg turned out
+	/// would come through the hanging cloth (a long dress, down at the ankles), the cloth goes the
+	/// leg's way as far as it has to, the whole band of it at that height. Only cloth that comes
+	/// down from above the crotch hangs: a shoe hung from the hips was thrown 10 cm off the foot.
+	/// </summary>
+	/// <param name="fitted">The garment in the stock pose.</param>
+	/// <param name="rest">The garment taken back to the rest pose by its bones. Changed in place.</param>
+	void Hang( Vec3[] fitted, int[] tris, int[] boneIndex, float[] boneWeight, bool[] cloth, Vec3[] rest )
+	{
+		if ( Trunk == null || bodyRest == null || hips[0] < 0 || hips[1] < 0 || knees[0] < 0 || knees[1] < 0 || ankles[0] < 0 || ankles[1] < 0 ) return;
+		float crotch = Trunk.Crotch;
+		var clothTris = new List<int>();
+		for ( int t = 0; t + 2 < tris.Length; t += 3 )
+			if ( cloth[tris[t]] && cloth[tris[t + 1]] && cloth[tris[t + 2]] && (fitted[tris[t]].Z < crotch || fitted[tris[t + 1]].Z < crotch || fitted[tris[t + 2]].Z < crotch) )
+			{
+				clothTris.Add( tris[t] ); clothTris.Add( tris[t + 1] ); clothTris.Add( tris[t + 2] );
+			}
+		if ( clothTris.Count == 0 ) return;
+		var mesh = new TriMesh( fitted, clothTris.ToArray() );
+
+		// The middle of each leg at a height: down the thigh, then down the shin.
+		Vec3 Axis( int side, float z )
+		{
+			Vec3 hip = stockPositions[hips[side]], knee = stockPositions[knees[side]], ankle = stockPositions[ankles[side]];
+			if ( z >= knee.Z ) return hip + (knee - hip) * Math.Clamp( (hip.Z - z) / MathF.Max( hip.Z - knee.Z, 1e-4f ), 0f, 1f );
+			return knee + (ankle - knee) * Math.Clamp( (knee.Z - z) / MathF.Max( knee.Z - ankle.Z, 1e-4f ), 0f, 1f );
+		}
+
+		// Per side and band down from the crotch, whether cloth goes between the legs there.
+		float bottom = MathF.Min( stockPositions[ankles[0]].Z, stockPositions[ankles[1]].Z );
+		int bands = Math.Max( 1, (int)MathF.Ceiling( (crotch - bottom) / HangBand ) );
+		var between = new bool[2, bands];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int side = 0; side < 2; side++ )
+			for ( int k = 0; k < bands; k++ )
+			{
+				float z = crotch - (k + 0.5f) * HangBand;
+				Vec3 from = Axis( side, z ), to = Axis( 1 - side, z );
+				var way = to - from;
+				float length = way.Length();
+				if ( length < 1e-4f * Units.Metre ) continue;
+				mesh.Crossings( from, way / length, 0.5f * length, hits );
+				between[side, k] = hits.Count > 0;
+			}
+
+		// The crotch of baggy trousers hangs lower than the body's, and there is nothing between
+		// the legs above it. Cloth that goes between them anywhere lower down wraps the leg all
+		// the way up. And the hem of a leg can be cut on a slant, longer outside than inside.
+		for ( int side = 0; side < 2; side++ )
+		{
+			for ( int k = bands - 2; k >= 0; k-- ) between[side, k] |= between[side, k + 1];
+			int last = -1;
+			for ( int k = 0; k < bands; k++ ) if ( between[side, k] ) last = k;
+			for ( int k = last + 1; k < bands && k <= last + HangSlant; k++ ) if ( last >= 0 ) between[side, k] = true;
+		}
+
+		// A leg wrapped anywhere is a trouser leg all the way: right under the crotch a baggy
+		// seat hangs too low between the legs for the rays to meet it, and the hem of a pair of
+		// shorts below the last ray that met their inside is still the shorts.
+		for ( int side = 0; side < 2; side++ )
+		{
+			bool wrapped = false;
+			for ( int k = 0; k < bands; k++ ) wrapped |= between[side, k];
+			for ( int k = 0; k < bands; k++ ) between[side, k] = wrapped;
+		}
+
+		// Only cloth that comes down from above the crotch hangs from the hips: not a shoe, a sock
+		// or anything else that is all on the legs.
+		var weld = MeshTools.Weld( fitted, out int welded );
+		var piece = GarmentFit.Islands( welded, MeshTools.Edges( tris, weld ) );
+		var fromAbove = new bool[welded];
+		for ( int v = 0; v < fitted.Length; v++ )
+			if ( cloth[v] && fitted[v].Z >= crotch ) fromAbove[piece[weld[v]]] = true;
+
+		// The hanging vertices, each with the leg it is mostly on and its band.
+		var hanging = new List<(int Vertex, int Side, int Band)>();
 		for ( int v = 0; v < fitted.Length; v++ )
 		{
-			var sum = Vec3.Zero;
-			float weight = 0;
+			if ( !cloth[v] || fitted[v].Z >= crotch || !fromAbove[piece[weld[v]]] ) continue;
+			int k = Math.Clamp( (int)((crotch - fitted[v].Z) / HangBand), 0, bands - 1 );
+			bool wrapped = false;
+			int side = -1;
+			float most = 0;
 			for ( int j = 0; j < 4; j++ )
 			{
 				int bone = boneIndex[v * 4 + j];
 				float w = boneWeight[v * 4 + j];
-				if ( bone < 0 || w <= 0 ) continue;
-				int by = follow[bone];
-				sum += (Quat.Rotate( turn[by], fitted[v] - stockPositions[by] ) + RestPositions[by]) * w;
-				weight += w;
+				if ( bone < 0 || w <= 0 || hipOf[follow[bone]] < 0 ) continue;
+				int s = hipOf[follow[bone]] == hips[0] ? 0 : 1;
+				wrapped |= between[s, k];
+				if ( w > most ) { most = w; side = s; }
 			}
+			if ( side >= 0 && !wrapped ) hanging.Add( (v, side, k) );
+		}
+		if ( hanging.Count == 0 ) return;
 
-			result[v] = weight > 1e-6f ? sum / weight : fitted[v];
+		// How far each band can hang before the leg comes through it.
+		TriMesh body;
+		lock ( this ) body = restBody ??= new TriMesh( bodyRest, bodyIndices );
+		var hung = new Vec3[hanging.Count];
+		var share = new float[2, bands];
+		for ( int side = 0; side < 2; side++ )
+			for ( int k = 0; k < bands; k++ ) share[side, k] = 1;
+		for ( int h = 0; h < hanging.Count; h++ )
+		{
+			var (v, side, k) = hanging[h];
+			hung[h] = RestByBones( fitted[v], boneIndex, boneWeight, v, true );
+			if ( body.SignedGap( hung[h], out _ ) >= HangClear ) continue;
+			float lo = 0, hi = 1;
+			for ( int step = 0; step < HangSteps; step++ )
+			{
+				float mid = 0.5f * (lo + hi);
+				if ( body.SignedGap( rest[v] + (hung[h] - rest[v]) * mid, out _ ) >= HangClear ) lo = mid;
+				else hi = mid;
+			}
+			share[side, k] = MathF.Min( share[side, k], lo );
 		}
 
-		return result;
+		// A band hangs no further than the bands next to it, so the cloth turns out smoothly.
+		for ( int side = 0; side < 2; side++ )
+		{
+			var smooth = new float[bands];
+			for ( int k = 0; k < bands; k++ )
+			{
+				float a = share[side, Math.Max( k - 1, 0 )], b = share[side, Math.Min( k + 1, bands - 1 )];
+				smooth[k] = MathF.Min( share[side, k], 0.25f * a + 0.5f * share[side, k] + 0.25f * b );
+			}
+			for ( int k = 0; k < bands; k++ ) share[side, k] = smooth[k];
+		}
+
+		for ( int h = 0; h < hanging.Count; h++ )
+		{
+			var (v, side, k) = hanging[h];
+			rest[v] += (hung[h] - rest[v]) * share[side, k];
+		}
 	}
 
 	/// <summary>
@@ -1259,6 +1437,133 @@ public sealed class Neck
 			drop += (target - height) / slope;
 		}
 		return Math.Clamp( drop, -MaxDrop, 0f );
+	}
+}
+
+/// <summary>
+/// The trunk of a body from the crotch to the shoulders, in the stock pose and in its rest pose,
+/// as a share of its height: 0 at the crotch, 1 at the shoulder joints. Cloth on the lower trunk
+/// (a hem, a waistband) is put as far up it in the rest pose as it was in the stock pose.
+///
+/// Every rig puts its pelvis and spine joints somewhere else up the trunk: the citizen's pelvis
+/// joint is 9 cm over its crotch, the humans' 15 cm. Taken into the stock pose by its joints, a
+/// human's skin between the crotch and the pelvis joint is squeezed into two thirds of its
+/// height, and cloth that goes back with that skin is stretched up the trunk by as much: shirts
+/// fitted from the citizen ended at the waist, 5 to 7 cm higher than the humans' own versions
+/// of them, and trousers came up to the navel. The crotch and the shoulders are where they are
+/// on any body, whatever the joints in between. A body with the stock body's skeleton (a woman
+/// for clothes made for a man) comes back as it went, and its clothes with it. Higher up, under
+/// the arms, the arms' and collarbones' joints put the skin where it belongs, and nothing is
+/// changed there.
+/// </summary>
+public sealed class Trunk
+{
+	const float Full = 0.55f;       // cloth is kept at its share of the trunk up to this share
+	const float Fade = 0.65f;       // and left as it is from this share up, under the arms
+	const float Core = 2.2f;        // skin within this many times the hip joints' offset from the middle is the trunk
+	const float Reach = 2.7f;       // and none of it from this far: the arms hanging beside it
+	const float MaxShift = 0.08f * Units.Metre;   // cloth is moved no further than this along it
+	const float Probe = 0.1f;       // the crotch is the lowest of the trunk found this far either side of the hip joints, as a share of how far apart they are
+
+	readonly Repose pose;
+	readonly float axisX, axisY, core, reach;
+	readonly float crotch, shoulders;             // heights on the body in the stock pose
+	readonly float restCrotch, restShoulders;     // and in its rest pose, along its up
+	readonly Vec3 up;
+
+	Trunk( Repose pose, float axisX, float axisY, float core, float reach, float crotch, float shoulders, float restCrotch, float restShoulders, Vec3 up )
+	{
+		this.pose = pose;
+		this.axisX = axisX;
+		this.axisY = axisY;
+		this.core = core;
+		this.reach = reach;
+		this.crotch = crotch;
+		this.shoulders = shoulders;
+		this.restCrotch = restCrotch;
+		this.restShoulders = restShoulders;
+		this.up = up;
+	}
+
+	/// <param name="posedMesh">This body in the stock pose and proportions.</param>
+	public static Trunk Find( Repose pose, SkinnedGeometry stock, TriMesh posedMesh )
+	{
+		int hipL = Array.IndexOf( stock.BoneNames, "leg_upper_L" ), hipR = Array.IndexOf( stock.BoneNames, "leg_upper_R" );
+		int kneeL = Array.IndexOf( stock.BoneNames, "leg_lower_L" ), kneeR = Array.IndexOf( stock.BoneNames, "leg_lower_R" );
+		int armL = Array.IndexOf( stock.BoneNames, "arm_upper_L" ), armR = Array.IndexOf( stock.BoneNames, "arm_upper_R" );
+		int root = Array.IndexOf( stock.BoneParents, -1 );
+		if ( hipL < 0 || hipR < 0 || kneeL < 0 || kneeR < 0 || armL < 0 || armR < 0 || root < 0 ) return null;
+		if ( !pose.BodyHas[hipL] || !pose.BodyHas[hipR] || !pose.BodyHas[armL] || !pose.BodyHas[armR] ) return null;
+
+		Vec3 hips = 0.5f * (stock.BonePositions[hipL] + stock.BonePositions[hipR]);
+		float apart = (stock.BonePositions[hipL] - stock.BonePositions[hipR]).Length();
+		float knees = 0.5f * (stock.BonePositions[kneeL].Z + stock.BonePositions[kneeR].Z);
+		if ( apart < 0.02f * Units.Metre || knees >= hips.Z ) return null;
+		if ( !FindCrotch( posedMesh, hips, apart, knees, out var crotch ) ) return null;
+
+		var up = Quat.Rotate( pose.Carry( root ), new Vec3( 0, 0, 1 ) );
+		float shoulders = 0.5f * (stock.BonePositions[armL].Z + stock.BonePositions[armR].Z);
+		float restShoulders = Vec3.Dot( 0.5f * (pose.RestPositions[armL] + pose.RestPositions[armR]), up );
+		float restCrotch = Vec3.Dot( pose.RestOf( crotch, up, out _ ), up );
+		if ( shoulders - crotch.Z < 0.1f * Units.Metre || restShoulders - restCrotch < 0.1f * Units.Metre ) return null;
+		float side = 0.5f * apart;
+		return new Trunk( pose, hips.X, hips.Y, Core * side, Reach * side, crotch.Z, shoulders, restCrotch, restShoulders, up );
+	}
+
+	// The crotch: the lowest point of the trunk between the legs, straight up from the knees'
+	// height, about the hip joints. Nothing there below the hip joints, there is no crotch.
+	static bool FindCrotch( TriMesh mesh, Vec3 hips, float apart, float knees, out Vec3 crotch )
+	{
+		crotch = default;
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		bool found = false;
+		for ( int k = -2; k <= 2; k++ )
+		{
+			var from = new Vec3( hips.X + k * Probe * apart, hips.Y, knees );
+			mesh.Crossings( from, new Vec3( 0, 0, 1 ), hips.Z - knees, hits );
+			if ( hits.Count == 0 ) continue;
+			var at = from + new Vec3( 0, 0, hits[0].T );
+			if ( !found || at.Z < crotch.Z ) crotch = at;
+			found = true;
+		}
+		return found;
+	}
+
+	/// <summary>How much cloth whose closest stock skin is <paramref name="skin"/> is on the lower trunk. 0..1.</summary>
+	public float Zone( Vec3 skin )
+	{
+		float dx = skin.X - axisX, dy = skin.Y - axisY;
+		float across = Math.Clamp( (reach - MathF.Sqrt( dx * dx + dy * dy )) / (reach - core), 0f, 1f );
+		float share = Share( skin );
+		if ( share < 0 ) return 0;
+		return across * Math.Clamp( (Fade - share) / (Fade - Full), 0f, 1f );
+	}
+
+	/// <summary>How high the crotch is in the stock pose.</summary>
+	public float Crotch => crotch;
+
+	/// <summary>The share of the trunk a point of the stock pose is at.</summary>
+	public float Share( Vec3 stockPoint ) => (stockPoint.Z - crotch) / (shoulders - crotch);
+
+	/// <summary>
+	/// How far to move a point in the stock pose and proportions up (or down, below 0) for it to
+	/// be at <paramref name="share"/> of this body's trunk once it is back in the body's rest pose.
+	/// </summary>
+	public float Shift( Vec3 fitted, float share )
+	{
+		float target = restCrotch + share * (restShoulders - restCrotch);
+		var rise = new Vec3( 0, 0, 1 );
+		float shift = 0;
+		for ( int pass = 0; pass < 3; pass++ )
+		{
+			// The way back is linear for the skin under the point; that skin changes as the
+			// point moves, so a couple of rounds.
+			var rest = pose.RestOf( fitted + rise * shift, rise, out var rate );
+			float slope = Vec3.Dot( rate, up );
+			if ( slope < 0.1f ) break;
+			shift += (target - Vec3.Dot( rest, up )) / slope;
+		}
+		return Math.Clamp( shift, -MaxShift, MaxShift );
 	}
 }
 

@@ -939,14 +939,14 @@ public static class ClothingFitter
 		var solid = new bool[garment.Positions.Length];
 		var fittedAsCloth = new bool[garment.Positions.Length];
 		var painted = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck, target.Map.OnSkin, painted );
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck, target.Map.OnSkin, painted, target.Pose.Trunk );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
 		// the body's, each bit of cloth the way the skin under it came in.
 		var (backBones, backWeights) = Repose.SkinUnder( positions, garment.Indices, target.Mesh, target.BodyBones, target.BodyWeights, bones, garment.BoneWeight, solid, target.Pivots, fittedAsCloth );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
-		positions = target.Pose.ToBodyRest( positions, backBones, backWeights );
+		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
