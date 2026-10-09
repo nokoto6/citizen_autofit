@@ -280,7 +280,9 @@ public static class GarmentFit
 	/// <param name="thickness"><see cref="BodyMap.Thickness"/>: per stock vertex, how many times as thick the body is there. Cloth over a slimmer body is taken in by it, see <see cref="TakeUpRoom"/>.</param>
 	/// <param name="clothOut">If given, set for the vertices fitted as cloth: not hair and not part of a solid object.</param>
 	/// <param name="neck">The neck on the stock body and on this one (<see cref="Repose.Neck"/>). Cloth over it goes no further up this body's neck than it went up the stock body's.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null )
+	/// <param name="onSkin"><see cref="BodyMap.OnSkin"/>: where each stock vertex lies on this body's skin for paint on it, the face lined up by its features. Without it paint goes by <paramref name="skinMove"/>.</param>
+	/// <param name="paintOut">If given, set for the vertices of paint on the skin (a tattoo, makeup, brows). They go back to the body's rest pose with the skin under them, see <see cref="Repose.OntoSkin"/>.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -355,6 +357,13 @@ public static class GarmentFit
 				away[i] = (x - from) / distance * (gap0[i] >= 0 ? 1f : -1f);
 			if ( givenMove != null ) move[i] = givenMove[src];
 		}
+
+		// Paint on the skin (a tattoo, makeup, brows) goes onto this body's skin and nowhere else,
+		// see PaintOn. Fitted as cloth it was held off the skin by every pass made for cloth.
+		var usedPaint = new bool[n];
+		foreach ( int v in tris ) usedPaint[weld[v]] = true;
+		if ( Painted( usedPaint, gap0 ) || Brows( usedPaint, pts, gap0, old, eyes ) )
+			return PaintOn( verts, weld, pts, usedPaint, gap0, move, old, other, skinMove, onSkin, solidOut, clothOut, paintOut );
 
 		// Under the stock skin on purpose: caps that close a sleeve from the inside, a hem turned
 		// in. That is deeper than the hidden depth or, with the skin to be cleared, a quarter of
@@ -717,6 +726,119 @@ public static class GarmentFit
 				foreach ( int i in idx ) isCloth[i] = true;
 			for ( int i = 0; i < verts.Length; i++ ) clothOut[i] = isCloth[weld[i]];
 		}
+		return result;
+	}
+
+	const float PaintGap = 0.003f * Units.Metre;     // a garment this close to the stock skin all over is painted on it
+	const float PaintRelief = 0.012f * Units.Metre;  // or one that close for the most part and nowhere further than this, shaped on the skin (plump lips)
+	const float BrowShare = 0.9f;                    // a garment this much of which grows from the skin over the eyes is brows
+	const float BrowLow = 0.01f * Units.Metre;       // the skin over the eyes: from this far below their front
+	const float BrowHigh = 0.12f * Units.Metre;      // to this far above it
+	const float BrowBack = 0.06f * Units.Metre;      // no further back than this behind it
+	const float BrowSide = 0.06f * Units.Metre;      // nor further out to the side than this past it
+	const float BrowOff = 0.03f * Units.Metre;       // and standing no further off the skin than this
+
+	/// <summary>
+	/// Whether a garment is painted on the skin: a tattoo, makeup, freckles, a pair of brows drawn
+	/// on. It is a shell a fraction of a millimetre over the skin, the texture on it drawing what
+	/// shows, so where its vertices land is where the drawing is. Also a shell shaped on the skin a
+	/// little further off in places (plump lips).
+	/// </summary>
+	static bool Painted( bool[] used, float[] gap0 )
+	{
+		var gaps = new List<float>();
+		for ( int i = 0; i < used.Length; i++ ) if ( used[i] ) gaps.Add( MathF.Abs( gap0[i] ) );
+		gaps.Sort();
+		return LikePaint( gaps );
+	}
+
+	// From how far a garment's vertices are off the skin, smallest first: whether it lies on it
+	// like paint (see Painted).
+	static bool LikePaint( List<float> gaps ) =>
+		gaps.Count > 0 && (gaps[^1] <= PaintGap || (gaps[gaps.Count / 2] <= PaintGap && gaps[^1] <= PaintRelief));
+
+	/// <summary>
+	/// Whether a garment is a pair of brows: cards that grow from the skin right over the eyes,
+	/// and the patch of skin they are drawn on. Hair isn't painted on the face and doesn't slide
+	/// with the eyes (see the hair in <see cref="Fit"/>), but brows are and do: kept to the stock
+	/// face's height, they sat on Aurora's forehead, her eyes being 5 cm lower.
+	/// </summary>
+	static bool Brows( bool[] used, Vec3[] pts, float[] gap0, TriMesh old, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		if ( eyes == null || eyes.Length != 2 ) return false;
+		Vec3 a = eyes[0].Stock, b = eyes[1].Stock;
+		float middle = 0.5f * (a.Y + b.Y), side = 0.5f * MathF.Abs( a.Y - b.Y ) + BrowSide;
+		float front = MathF.Min( a.X, b.X ) - BrowBack, low = MathF.Min( a.Z, b.Z ) - BrowLow, high = MathF.Max( a.Z, b.Z ) + BrowHigh;
+		int count = 0, over = 0;
+		for ( int i = 0; i < used.Length; i++ )
+		{
+			if ( !used[i] ) continue;
+			count++;
+			if ( MathF.Abs( gap0[i] ) > BrowOff ) continue;
+			old.Nearest( pts[i], out var s, out _ );
+			if ( s.X >= front && s.Z >= low && s.Z <= high && MathF.Abs( s.Y - middle ) <= side ) over++;
+		}
+		return count > 0 && over >= BrowShare * count;
+	}
+
+	/// <summary>
+	/// Puts paint (<see cref="Painted"/>, <see cref="Brows"/>) on this body's skin: every vertex
+	/// goes to where the stock skin under it lies on this body (<see cref="BodyMap.OnSkin"/>, the
+	/// face lined up by its features, so a line round the stock eye goes round this one), onto
+	/// the skin itself, and as far off it, along it, as it was off the stock skin. None of what
+	/// holds cloth off the skin applies: the shell was cut to the skin and is drawn on it. Lifted
+	/// a few millimetres, a tattoo floats; sunk, it is gone.
+	/// </summary>
+	static Vec3[] PaintOn( Vec3[] verts, int[] weld, Vec3[] pts, bool[] used, float[] gap0, Vec3[] move, TriMesh old, TriMesh other, Vec3[] skinMove, Vec3[] onSkin, bool[] solidOut, bool[] clothOut, bool[] paintOut )
+	{
+		var skin = other.Skin();
+		var normal = new Vec3[skin.Verts.Length];
+		for ( int t = 0; t < skin.TriCount; t++ )
+			for ( int k = 0; k < 3; k++ ) normal[skin.Tris[t * 3 + k]] += skin.TriNormals[t];
+
+		// Per stock vertex, whether the map puts it under the skin (paint the stock body hides, see
+		// BodyMap.OnSkin): 0 not worked out yet, 1 no, 2 yes. Told by the vertex itself, not by a
+		// point between vertices: between a brow ridge and the eye socket under it, that is deep
+		// in the head.
+		var under = new byte[old.Verts.Length];
+		bool Under( int k )
+		{
+			if ( under[k] == 0 )
+			{
+				skin.Nearest( onSkin[k], out var on, out int t );
+				var n = skin.TriNormals[t];
+				under[k] = (byte)(t >= 0 && Vec3.Dot( onSkin[k] - on, n ) < -0.5f * BodyMap.Buried * n.Length() ? 2 : 1);
+			}
+			return under[k] == 2;
+		}
+
+		var fitted = new Vec3[pts.Length];
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			if ( !used[i] ) { fitted[i] = pts[i] + move[i]; continue; }
+			old.Nearest( pts[i], out var s, out int tri );
+
+			int a = old.Tris[tri * 3], b = old.Tris[tri * 3 + 1], c = old.Tris[tri * 3 + 2];
+			Barycentric( s, old.Verts[a], old.Verts[b], old.Verts[c], out float u, out float v, out float w );
+			var target = onSkin != null ? onSkin[a] * u + onSkin[b] * v + onSkin[c] * w : s + skinMove[a] * u + skinMove[b] * v + skinMove[c] * w;
+			bool hidden = onSkin != null && (Under( a ) ? u : 0) + (Under( b ) ? v : 0) + (Under( c ) ? w : 0) >= 0.5f;
+			skin.Nearest( target, out var q, out int on );
+			int sa = skin.Tris[on * 3], sb = skin.Tris[on * 3 + 1], sc = skin.Tris[on * 3 + 2];
+			Barycentric( q, skin.Verts[sa], skin.Verts[sb], skin.Verts[sc], out u, out v, out w );
+			var up = normal[sa] * u + normal[sb] * v + normal[sc] * w;
+			float length = up.Length();
+			if ( length < 1e-12f ) up = skin.TriNormals[on] / MathF.Max( skin.TriNormals[on].Length(), 1e-12f );
+			else up /= length;
+			fitted[i] = q + up * (hidden ? -BodyMap.Buried : gap0[i]);
+		}
+
+		var result = new Vec3[verts.Length];
+		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
+		if ( solidOut != null ) Array.Clear( solidOut );
+		if ( clothOut != null )
+			for ( int i = 0; i < verts.Length; i++ ) clothOut[i] = used[weld[i]];
+		if ( paintOut != null )
+			for ( int i = 0; i < verts.Length; i++ ) paintOut[i] = used[weld[i]];
 		return result;
 	}
 
@@ -1839,15 +1961,15 @@ public static class GarmentFit
 			var at = stock.BonePositions[s] - Quat.Rotate( mine, garment.BonePositions[i] );
 			if ( turn == null ) { turn = mine; shift = at; continue; }
 			float apart = MathF.Abs( turn[0] * mine[0] + turn[1] * mine[1] + turn[2] * mine[2] + turn[3] * mine[3] );
-			if ( 2f * MathF.Acos( Math.Clamp( apart, 0f, 1f ) ) > BindTurnSlack ) return false;
-			if ( (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - stock.BonePositions[s]).Length() > BindMoveSlack ) return false;
+			if ( 2f * MathF.Acos( Math.Clamp( apart, 0f, 1f ) ) > BindTurnSlack ) return ByBones( garment, stock, byName, used );
+			if ( (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - stock.BonePositions[s]).Length() > BindMoveSlack ) return ByBones( garment, stock, byName, used );
 		}
 		if ( turn == null ) return false;
 		float angle = 2f * MathF.Acos( Math.Clamp( MathF.Abs( turn[3] ), 0f, 1f ) );
 		bool moved = false;
 		for ( int i = 0; i < bones && !moved; i++ )
 			moved = used[i] && (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - garment.BonePositions[i]).Length() > OwnFrameMove;
-		if ( angle < OwnFrameTurn && !moved ) return false;
+		if ( angle < OwnFrameTurn && !moved ) return ByBones( garment, stock, byName, used );
 
 		for ( int v = 0; v < garment.Positions.Length; v++ )
 		{
@@ -1867,6 +1989,93 @@ public static class GarmentFit
 		}
 		garment.BindTurn = turn;
 		return true;
+	}
+
+	/// <summary>
+	/// A layer painted on the skin made for an older citizen (a lipstick, face tattoos) has bones
+	/// a couple of centimetres off the stock ones, each by a little more or less, and bone merging
+	/// puts each vertex where its own bones say. Taken where it lies in the file, it was fitted
+	/// two centimetres up the face from where it is drawn on the stock body: the lipstick on the
+	/// skin under the nose. So it is moved bone by bone the way bone merging moves it, but only
+	/// when that is what puts it on the stock skin (<see cref="LikePaint"/>) and it isn't there
+	/// already. Anything else made for an older citizen keeps the fit it always had.
+	/// </summary>
+	static bool ByBones( SkinnedGeometry garment, SkinnedGeometry stock, Dictionary<string, int> byName, bool[] used )
+	{
+		int bones = garment.BoneNames.Length;
+		var turns = new float[bones][];
+		var shifts = new Vec3[bones];
+		bool off = false, oneTurn = true;
+		float[] first = null;
+		for ( int i = 0; i < bones; i++ )
+		{
+			int b = i;
+			while ( b >= 0 && !byName.ContainsKey( garment.BoneNames[b] ) ) b = garment.BoneParents[b];
+			if ( b < 0 ) continue;
+			int s = byName[garment.BoneNames[b]];
+			turns[i] = Quat.Multiply( stock.BoneRotations[s], Quat.Inverse( garment.BoneRotations[b] ) );
+			shifts[i] = stock.BonePositions[s] - Quat.Rotate( turns[i], garment.BonePositions[b] );
+			if ( !used[i] ) continue;
+			off |= 2f * MathF.Acos( Math.Clamp( MathF.Abs( turns[i][3] ), 0f, 1f ) ) > BindTurnSlack || (Quat.Rotate( turns[i], garment.BonePositions[i] ) + shifts[i] - garment.BonePositions[i]).Length() > BindMoveSlack;
+			first ??= turns[i];
+			float apart = MathF.Abs( first[0] * turns[i][0] + first[1] * turns[i][1] + first[2] * turns[i][2] + first[3] * turns[i][3] );
+			oneTurn &= 2f * MathF.Acos( Math.Clamp( apart, 0f, 1f ) ) <= BindTurnSlack;
+		}
+		// Morphs are turned with the whole garment (BindTurn), so the bones have to agree on that.
+		if ( !off || !oneTurn ) return false;
+
+		var merged = new Vec3[garment.Positions.Length];
+		for ( int v = 0; v < merged.Length; v++ )
+		{
+			var sum = Vec3.Zero;
+			float total = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int b = garment.BoneIndex[v * 4 + j];
+				float w = garment.BoneWeight[v * 4 + j];
+				if ( b < 0 || b >= bones || w <= 0 || turns[b] == null ) continue;
+				sum += (Quat.Rotate( turns[b], garment.Positions[v] ) + shifts[b]) * w;
+				total += w;
+			}
+			merged[v] = total > 0 ? sum / total : garment.Positions[v];
+		}
+		var skin = new TriMesh( stock.Positions, stock.Indices );
+		if ( !LikePaint( Gaps( skin, garment.Indices, merged ) ) || LikePaint( Gaps( skin, garment.Indices, garment.Positions ) ) ) return false;
+
+		for ( int v = 0; v < merged.Length; v++ )
+		{
+			garment.Positions[v] = merged[v];
+			if ( garment.Normals != null && v < garment.Normals.Length ) garment.Normals[v] = Quat.Rotate( first, garment.Normals[v] );
+		}
+		for ( int i = 0; i < bones; i++ )
+		{
+			if ( turns[i] == null ) continue;
+			garment.BonePositions[i] = Quat.Rotate( turns[i], garment.BonePositions[i] ) + shifts[i];
+			garment.BoneRotations[i] = Quat.Multiply( turns[i], garment.BoneRotations[i] );
+		}
+		// Each bone moved by a little more or less than its parent: the local frames changed too.
+		if ( garment.BoneLocalPositions != null )
+			for ( int i = 0; i < bones; i++ )
+			{
+				int p = garment.BoneParents[i];
+				if ( p < 0 ) { garment.BoneLocalPositions[i] = garment.BonePositions[i]; garment.BoneLocalRotations[i] = garment.BoneRotations[i]; continue; }
+				var back = Quat.Inverse( garment.BoneRotations[p] );
+				garment.BoneLocalPositions[i] = Quat.Rotate( back, garment.BonePositions[i] - garment.BonePositions[p] );
+				garment.BoneLocalRotations[i] = Quat.Multiply( back, garment.BoneRotations[i] );
+			}
+		garment.BindTurn = first;
+		return true;
+	}
+
+	// How far each vertex the triangles use is from a surface, smallest first.
+	static List<float> Gaps( TriMesh surface, int[] tris, Vec3[] positions )
+	{
+		var seen = new HashSet<int>();
+		var gaps = new List<float>();
+		foreach ( int v in tris )
+			if ( seen.Add( v ) ) gaps.Add( surface.Nearest( positions[v], out _, out _ ) );
+		gaps.Sort();
+		return gaps;
 	}
 
 	/// <summary>
