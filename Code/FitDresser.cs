@@ -459,38 +459,51 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			if ( !string.IsNullOrEmpty( item.SkinMaterial ) )
 				continue;
 
+			// The female version, else the male one, else the citizen one: no human version of
+			// this one, so the citizen version will have to do.
 			var madeFor = bodyKind;
-			string stockPath = null;
-			if ( madeFor == ClothingFitter.BodyKind.HumanFemale )
-				stockPath = item.HumanAltFemaleModel;
-			if ( string.IsNullOrEmpty( stockPath ) && madeFor != ClothingFitter.BodyKind.Citizen )
+			string stockPath = madeFor == ClothingFitter.BodyKind.HumanFemale ? VersionFor( item, madeFor, worn ) : null;
+			if ( stockPath is null && madeFor != ClothingFitter.BodyKind.Citizen )
 			{
-				stockPath = item.HumanAltModel;
 				madeFor = ClothingFitter.BodyKind.HumanMale;
+				stockPath = VersionFor( item, madeFor, worn );
 			}
-			if ( string.IsNullOrEmpty( stockPath ) )
+			if ( stockPath is null )
 			{
-				// No human version of this one. The citizen version will have to do.
-				stockPath = item.GetModel( worn.Select( x => x.Clothing ).Where( x => x != item ) );
 				madeFor = ClothingFitter.BodyKind.Citizen;
+				stockPath = VersionFor( item, madeFor, worn );
 			}
-			if ( string.IsNullOrEmpty( stockPath ) )
+			if ( stockPath is null )
 				continue;
 
 			models.Add( (entry, stockPath, madeFor) );
 		}
 
 		// Hair goes under the hat, if there is one: fitted so that it doesn't come through it.
-		string hat = models.FirstOrDefault( x => HairGoesUnder( x.Entry.Clothing ) ).StockPath;
+		// The hat's shape is taken in the frame of the stock body it was made for, so the hair
+		// has to be the version made for that body too (under a citizen-only hat on a human, the
+		// citizen version). Hair without such a version isn't tucked.
+		var hat = models.FirstOrDefault( x => HairGoesUnder( x.Entry.Clothing ) );
+		for ( int i = 0; i < models.Count; i++ )
+		{
+			var (entry, _, madeFor) = models[i];
+			if ( hat.StockPath is null || !IsHair( entry.Clothing ) || madeFor == hat.MadeFor ) continue;
+			if ( VersionFor( entry.Clothing, hat.MadeFor, worn ) is { } same )
+				models[i] = (entry, same, hat.MadeFor);
+		}
 
 		// Ask for everything up front so the garments are fitted side by side.
-		var wearing = new List<(Clothing Item, string StockPath, Task<bool> Fitted)>();
+		var wearing = new List<(Clothing Item, bool WithoutSkin, Task<bool> Fitted)>();
 		foreach ( var (entry, stockPath, madeFor) in models )
-			wearing.Add( (entry.Clothing, stockPath, WearAsync( entry, stockPath, madeFor, skin, eyes, Overtaken, IsHair( entry.Clothing ) ? hat : null )) );
+		{
+			bool withoutSkin = LosesSkin( stockPath, madeFor, bodyKind );
+			string under = IsHair( entry.Clothing ) && madeFor == hat.MadeFor ? hat.StockPath : null;
+			wearing.Add( (entry.Clothing, withoutSkin, WearAsync( entry, stockPath, madeFor, withoutSkin, skin, eyes, Overtaken, under )) );
+		}
 
 		int fittedCount = 0, stockCount = 0;
 		var skinless = new HashSet<Clothing>();
-		foreach ( var (item, stockPath, garment) in wearing )
+		foreach ( var (item, withoutSkin, garment) in wearing )
 		{
 			bool wasFitted = await garment;
 			if ( Overtaken() ) return;
@@ -498,7 +511,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			if ( wasFitted ) fittedCount++;
 			else stockCount++;
 
-			if ( wasFitted && RemoveSkinFromClothing && ClothingFitter.HasSkin( stockPath ) )
+			if ( wasFitted && withoutSkin )
 				skinless.Add( item );
 		}
 
@@ -891,7 +904,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
-	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, Material skin, Material eyes, Func<bool> overtaken, string under = null )
+	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, bool withoutSkin, Material skin, Material eyes, Func<bool> overtaken, string under = null )
 	{
 		var item = entry.Clothing;
 		SkinnedModelRenderer renderer = null;
@@ -941,10 +954,6 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			ToonRenderer( renderer );
 		}
 
-		// Only a garment that carries a copy of the skin has anything to lose. Clearing the
-		// skin lifts cloth that sat level with it, which is wrong for a boot's sole under a
-		// foot that stays hidden anyway.
-		bool withoutSkin = RemoveSkinFromClothing && ClothingFitter.HasSkin( stockPath );
 		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under ) : null;
 		if ( overtaken() )
 			return false;
@@ -962,6 +971,26 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		return true;
 	}
+
+	// A garment's model made for one kind of stock body, or null if it has none for that body.
+	static string VersionFor( Clothing item, ClothingFitter.BodyKind kind, List<ClothingContainer.ClothingEntry> worn )
+	{
+		string path = kind switch
+		{
+			ClothingFitter.BodyKind.HumanFemale => item.HumanAltFemaleModel,
+			ClothingFitter.BodyKind.HumanMale => item.HumanAltModel,
+			_ => item.GetModel( worn.Select( x => x.Clothing ).Where( x => x != item ) ),
+		};
+		return string.IsNullOrEmpty( path ) ? null : path;
+	}
+
+	// Whether a garment is worn without its copy of the skin: when asked to, and when it is the
+	// version made for another kind of body than this one (a citizen-only garment on a human),
+	// whose copy is that other body's skin, in its shape and its material. Only a garment that
+	// carries one has anything to lose: clearing the skin lifts cloth that sat level with it,
+	// which is wrong for a boot's sole under a foot that stays hidden anyway.
+	bool LosesSkin( string stockPath, ClothingFitter.BodyKind madeFor, ClothingFitter.BodyKind bodyKind ) =>
+		(RemoveSkinFromClothing || madeFor != bodyKind) && ClothingFitter.HasSkin( stockPath );
 
 	ClothingContainer BuildContainer()
 	{
