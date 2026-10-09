@@ -165,6 +165,7 @@ public static class GarmentFit
 	const float FootSole = 0.35f;                 // how high up a foot its footprint is read from, as a share of its height
 	const float FootTurn = 0.35f;                 // the most a foot is turned to point the body's way, radians (20 degrees)
 	const float FootLong = 2f;                    // how many times longer than wide (in spread) a footprint must be to point
+	const float FootOn = 0.67f;                   // how much of the body's foot, along it and across, a garment covers already to be stretched over the rest (a heeled boot on a flat foot 0.75, trousers 0.6 at most)
 	const float AffineRidge = 0.05f;              // how hard the fit on a stiff bone holds on to its shape, as a share of how its skin spreads
 	const float LayerGap = 0.012f * Units.Metre;  // room a loose garment keeps over the skin, for whatever is worn under it
 	const float RoomStep = 0.001f * Units.Metre;  // a garment surface closer to a vertex than this is the vertex's own
@@ -1125,6 +1126,11 @@ public static class GarmentFit
 			float tx0 = MathF.Min( x0, fit.FootLo.X - FootCover ), tx1 = MathF.Max( x1, fit.FootHi.X + FootCover );
 			float ty0 = MathF.Min( y0, fit.FootLo.Y - FootCover ), ty1 = MathF.Max( y1, fit.FootHi.Y + FootCover );
 			if ( tx0 == x0 && tx1 == x1 && ty0 == y0 && ty1 == y1 ) continue;
+			// Only a garment that is on the foot. A trouser leg's hem round the ankle covers a bit
+			// of it, and stretched to the toes it stood out over the instep; with three vertices
+			// on the ankle bone, a pair of workshop trousers had its hem stretched 77 times over
+			// and thrown a metre out in front.
+			if ( x1 - x0 < FootOn * (tx1 - tx0) || y1 - y0 < FootOn * (ty1 - ty0) ) continue;
 			float sx = (tx1 - tx0) / (x1 - x0), sy = (ty1 - ty0) / (y1 - y0);
 			foreach ( var (i, share) in list )
 			{
