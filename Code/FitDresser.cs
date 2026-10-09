@@ -62,14 +62,6 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float Height { get; set; } = 0.5f;
 
 	/// <summary>
-	/// How much broader the shoulders are than built: 0 as built, 1 the collarbones longer by
-	/// <see cref="ShoulderRange"/>. Laid on top of the animation like the height of a body with its
-	/// own proportions, on any body.
-	/// </summary>
-	[Property, Range( 0, 1 )]
-	public float ShoulderWidth { get; set; } = 0f;
-
-	/// <summary>
 	/// How strong, wide and square the jaw is, 0 as built: the body's own <see cref="JawMorph"/>
 	/// morph, which Aurora and Akira have. Bodies without it ignore this.
 	/// </summary>
@@ -761,7 +753,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		made.Set( "g_flToonAoGreen", skin && ao is not null ? 1f : 0f );
 
 		// Skin gets its relief, and its aged maps for skin_age where it has them.
-		made.Set( "g_flToonRelief", skin ? 1f : 0f );
+		// A little of it: the toon skin is clean, the pores a realistic skin map has are for the
+		// standard look.
+		made.Set( "g_flToonRelief", skin ? 0.3f : 0f );
 		bool aged = skin && original.GetFeature( "F_AGE_TEXTURE" ) > 0;
 		var ageColor = aged ? Valid( original.GetTexture( "g_tAgeColor" ) ) : null;
 		var ageNormal = aged ? Valid( original.GetTexture( "g_tAgeNormal" ) ) : null;
@@ -849,9 +843,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// much as the legs, a short body turned dwarf-like.
 	const float ShortTorsoShare = 0.6f;
 
-	// How much longer the collarbones get at the top of ShoulderWidth. Narrower than built looked
-	// wrong, so the slider only broadens.
-	const float ShoulderRange = 0.25f;
+	// The shoulders follow the height too, by the collarbones' length: a tall body broadens by half
+	// the height change (+10% at the tallest), a short one narrows by a quarter of it (-5%).
+	const float TallShoulders = 0.5f, ShortShoulders = 0.25f;
 
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
@@ -875,8 +869,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		var body = BodyTarget;
 		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
-		float broad = 1f + ShoulderWidth.Clamp( 0f, 1f ) * ShoulderRange;
-		if ( stretch == 1f && broad == 1f )
+		float broad = 1f + (stretch - 1f) * (stretch > 1f ? TallShoulders : ShortShoulders);
+		if ( stretch == 1f )
 		{
 			Unstretch();
 			return;

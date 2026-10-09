@@ -271,6 +271,9 @@ PS
 			float flCoarse = max( log2( max( vSize.x, vSize.y ) ) - 5.0, 0.0 );
 			float flAround = Luma( g_tColor.SampleLevel( TextureFiltering, i.vTextureCoords.xy, flCoarse ).rgb );
 			float flMark = saturate( Luma( g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb ) / max( flAround, 0.02 ) );
+			// Only marks clearly darker than the skin: the faint blotchiness a realistic skin
+			// texture has stays out of the clean toon skin.
+			flMark = 1.0 - saturate( ( 1.0 - flMark - 0.06 ) / 0.94 );
 			vAlbedo = lerp( vAlbedo, vTone * saturate( vAlbedo / max( Luma( vAlbedo ), 0.05 ) * 0.9 ) * flMark, g_flToonSkin );
 		}
 

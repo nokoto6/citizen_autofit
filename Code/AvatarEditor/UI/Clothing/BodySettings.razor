@@ -44,12 +44,6 @@
         </Content>
     </FormRow>
 
-    <FormRow Label="Shoulders">
-        <Content>
-            <SliderControl class="simple" Value:bind=@Manager.ShoulderWidth Min="@(0.0f)" Max="@(1.0f)" Step="@(0.01f)"></SliderControl>
-        </Content>
-    </FormRow>
-
     @if ( Manager.CitizenActive )
     {
         <FormRow Label="Age">
