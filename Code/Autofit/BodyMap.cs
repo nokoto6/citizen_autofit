@@ -53,6 +53,7 @@ public sealed class BodyMap
 	const float UvMaxMove = 0.15f * Units.Metre;    // a UV match further away than this is a different UV layout
 	const int MinOwnTriangles = 8;                  // a bone needs this many skin triangles of its own to get an axis
 	const float MinWeight = 0.05f;
+	const float NearestShare = 0.05f;   // skin this much nearer its bone than on the stock body is a ray that started on the skin
 	const float ThroughStart = 0.01f * Units.Metre;   // how far off the skin a measure through the body starts
 	const float MinThrough = 0.01f * Units.Metre;     // the stock body thinner than this somewhere says nothing about its size
 	const int ThicknessSmoothing = 3;                 // passes of evening out the measures over the skin
@@ -98,6 +99,7 @@ public sealed class BodyMap
 		var valid = new bool[n];
 		var exact = new bool[n];
 		var hits = new List<(float, bool, int)>();
+		var targets = new Vec3[4];
 
 		for ( int i = 0; i < n; i++ )
 		{
@@ -114,6 +116,7 @@ public sealed class BodyMap
 
 			float total = 0;
 			var sum = Vec3.Zero;
+			int answers = 0;
 			for ( int j = 0; j < 4; j++ )
 			{
 				int bone = stock.BoneIndex[v * 4 + j];
@@ -122,6 +125,7 @@ public sealed class BodyMap
 				if ( !FollowSkin( old, other, otherSkin, bone, axisA[bone], axisB[bone], s, hits, out var target ) ) continue;
 				sum += (target - s) * w;
 				total += w;
+				targets[answers++] = target;
 			}
 
 			if ( total > 1e-6f )
@@ -129,6 +133,11 @@ public sealed class BodyMap
 				move[i] = sum / total;
 				valid[i] = true;
 				result.ByRays++;
+
+				// Each ray lands on the skin, but rays from two bones may land on two parts of the
+				// body (the neck and the top of the shoulder), and the point between them is in the
+				// air over the crease. It goes onto the skin there.
+				if ( answers > 1 ) OntoSkin( other, oldNormals[v], s, targets, answers, ref move[i] );
 
 				// Rays only move skin towards or away from the bone. Near a landmark the skin
 				// also slides along the surface with it (eyes sitting lower on the face, say).
@@ -512,6 +521,30 @@ public sealed class BodyMap
 	}
 
 	/// <summary>
+	/// Puts a point blended from several bones' answers (<paramref name="move"/> from <paramref name="s"/>)
+	/// onto the other body's skin when it ended up outside it: no further than half the distance
+	/// between the answers it was blended from, the most a blend can come off, and only onto skin
+	/// facing the way the stock skin does, not some other part of the body nearby.
+	/// </summary>
+	static void OntoSkin( TriMesh other, Vec3 oldNormal, Vec3 s, Vec3[] targets, int count, ref Vec3 move )
+	{
+		float spread = 0;
+		for ( int a = 0; a < count; a++ )
+			for ( int b = a + 1; b < count; b++ )
+				spread = MathF.Max( spread, (targets[a] - targets[b]).Length() );
+		if ( spread < 1e-4f * Units.Metre ) return;
+
+		Vec3 p = s + move;
+		float distance = other.Nearest( p, out var on, out int tri );
+		if ( tri < 0 || distance > 0.5f * spread || other.Inside( p ) ) return;
+		Vec3 normal = other.TriNormals[tri];
+		if ( Vec3.Dot( normal, oldNormal ) < SameWay * normal.Length() * oldNormal.Length() ) return;
+		move = on - s;
+	}
+
+	const float SameWay = 0.5f;   // skin facing within 60 degrees of the stock skin's way is the same side of the body
+
+	/// <summary>
 	/// Where the skin point s of the old body sits on the other body, seen from one bone.
 	///
 	/// The ray runs from the bone axis through s. Usually s is where the ray finally leaves
@@ -568,7 +601,11 @@ public sealed class BodyMap
 
 		// A ray can slip through a gap in the other body (between two boxes at an elbow, say)
 		// and land on some far away part. Skin doesn't end up several times further from its bone.
-		if ( r1 > 3f * r0 + 0.05f * Units.Metre || r1 < 0.2f * r0 ) return false;
+		// It can end up a lot nearer: an anime shoulder lies a centimetre over the collarbone
+		// where the stock one has 3 to 7 cm of muscle on it. Turned away as a slip (at a fifth
+		// of the way), the top of the shoulder took the neck's ray alone and went onto the side
+		// of the neck, and a strap over it with it.
+		if ( r1 > 3f * r0 + 0.05f * Units.Metre || r1 < NearestShare * r0 ) return false;
 
 		target = q + d * r1;
 		return true;
