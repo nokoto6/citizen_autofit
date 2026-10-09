@@ -1113,7 +1113,7 @@ public static class ClothingFitter
 				{
 					local = draw.Vertices.Count;
 					remap[v] = local;
-					draw.Vertices.Add( MakeVertex( garment.Uvs[v], v, positions[v], normals[v], tangents[v], signs[v], wornBones, wornWeights ) );
+					draw.Vertices.Add( MakeVertex( garment.Uvs[v], v, positions[v], normals[v], tangents[v], signs[v], wornBones, wornWeights, garment.Colors ) );
 				}
 				draw.Indices.Add( local );
 			}
@@ -1177,6 +1177,10 @@ public static class ClothingFitter
 		[VertexLayout.Normal] public Vector3 Normal;
 		[VertexLayout.Tangent] public Vector4 Tangent;
 		[VertexLayout.TexCoord] public Vector2 TexCoord;
+		// Some shaders read these as numbers. The fur on a Santa suit is a stack of shells, and
+		// fur.shader cuts each one thinner by how far out it is, which the red says. Left out,
+		// every shell was cut alike and the fur didn't show on a fitted suit.
+		[VertexLayout.Color] public Color32 Color;
 		[VertexLayout.BlendIndices] public Color32 BlendIndices;
 		[VertexLayout.BlendWeight] public Color32 BlendWeights;
 	}
@@ -1252,7 +1256,7 @@ public static class ClothingFitter
 		return builder.Create();
 	}
 
-	static FittedVertex MakeVertex( Vec2 uv, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] bones, float[] weights )
+	static FittedVertex MakeVertex( Vec2 uv, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] bones, float[] weights, byte[] colors )
 	{
 		// Weights go out as bytes and have to add up to exactly 255. The four slots needn't add
 		// up to one coming in (a slot the body lacks is dropped), so they are shared out first.
@@ -1278,6 +1282,7 @@ public static class ClothingFitter
 			Normal = new Vector3( n.X, n.Y, n.Z ),
 			Tangent = new Vector4( t.X, t.Y, t.Z, sign ),
 			TexCoord = new Vector2( uv.X, uv.Y ),
+			Color = colors is not null && colors.Length >= v * 4 + 4 ? new Color32( colors[v * 4], colors[v * 4 + 1], colors[v * 4 + 2], colors[v * 4 + 3] ) : new Color32( 255, 255, 255, 255 ),
 			BlendIndices = new Color32( (byte)bone[0], (byte)bone[1], (byte)bone[2], (byte)bone[3] ),
 			BlendWeights = new Color32( (byte)Math.Clamp( weight[0], 0, 255 ), (byte)Math.Clamp( weight[1], 0, 255 ), (byte)Math.Clamp( weight[2], 0, 255 ), (byte)Math.Clamp( weight[3], 0, 255 ) ),
 		};

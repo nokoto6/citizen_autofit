@@ -13,6 +13,13 @@ public sealed class SkinnedGeometry
 	public Vec3[] Normals;
 	public Vec2[] Uvs;
 
+	/// <summary>
+	/// Vertex colours, four bytes (red, green, blue, alpha) per vertex, white where a mesh has
+	/// none. Not a colour to some shaders: fur.shader reads in the red how far out each of its
+	/// shells is, and cuts each one thinner by it.
+	/// </summary>
+	public byte[] Colors;
+
 	/// <summary>Four bone slots per vertex, as indices into <see cref="BoneNames"/>. -1 for a bone the model's skeleton doesn't list.</summary>
 	public int[] BoneIndex;
 
@@ -63,9 +70,11 @@ public sealed class SkinnedGeometry
 public static class CompiledModel
 {
 	// DXGI_FORMAT values the vertex layouts of models actually use.
+	const int R32G32B32A32_FLOAT = 2;
 	const int R32G32B32_FLOAT = 6;
 	const int R16G16B16A16_UINT = 12;
 	const int R10G10B10A2_UNORM = 24;
+	const int R8G8B8A8_UNORM = 28;
 	const int R16G16_FLOAT = 34;
 
 	sealed class Buffers
@@ -211,6 +220,7 @@ public static class CompiledModel
 		var positions = new List<Vec3>();
 		var normals = new List<Vec3>();
 		var uvs = new List<Vec2>();
+		var colors = new List<byte>();
 		var boneIndex = new List<int>();
 		var boneWeight = new List<float>();
 		var indices = new List<int>();
@@ -219,7 +229,7 @@ public static class CompiledModel
 		{
 			var mesh = Kv3.Parse( file, model.Mdat[m] );
 			int firstVertex = positions.Count;
-			var buffers = ReadBuffers( file, model.Mbuf[m], positions, normals, uvs, boneWeight, ref result.HasNormals );
+			var buffers = ReadBuffers( file, model.Mbuf[m], positions, normals, uvs, colors, boneWeight, ref result.HasNormals );
 			if ( model.MorphBlock.TryGetValue( m, out int morphs ) )
 				result.Morphs.Add( ReadMorphs( Kv3.Parse( file, morphs ), firstVertex, positions.Count - firstVertex ) );
 
@@ -255,6 +265,7 @@ public static class CompiledModel
 		result.Positions = positions.ToArray();
 		result.Normals = normals.ToArray();
 		result.Uvs = uvs.ToArray();
+		result.Colors = colors.ToArray();
 		result.BoneIndex = boneIndex.ToArray();
 		result.BoneWeight = boneWeight.ToArray();
 		result.Indices = indices.ToArray();
@@ -376,7 +387,7 @@ public static class CompiledModel
 	/// Appends the vertices of every vertex buffer in one MBUF block to the merged arrays and
 	/// returns its index buffers.
 	/// </summary>
-	static Buffers ReadBuffers( byte[] file, int start, List<Vec3> positions, List<Vec3> normals, List<Vec2> uvs, List<float> boneWeight, ref bool normalsKnown )
+	static Buffers ReadBuffers( byte[] file, int start, List<Vec3> positions, List<Vec3> normals, List<Vec2> uvs, List<byte> colors, List<float> boneWeight, ref bool normalsKnown )
 	{
 		int vbOffset = BitConverter.ToInt32( file, start );
 		int vbCount = BitConverter.ToInt32( file, start + 4 );
@@ -398,7 +409,7 @@ public static class CompiledModel
 				? Slice( file, data, dataSize )
 				: MeshOpt.DecodeVertexBuffer( file, data, dataSize, vertexCount, vertexSize );
 
-			int posAt = -1, uvAt = -1, uvFormat = 0, normalAt = -1, normalFormat = 0, indexAt = -1, indexFormat = 0, weightAt = -1;
+			int posAt = -1, uvAt = -1, uvFormat = 0, normalAt = -1, normalFormat = 0, colorAt = -1, colorFormat = 0, indexAt = -1, indexFormat = 0, weightAt = -1;
 			for ( int a = 0; a < attributeCount; a++ )
 			{
 				int at = attributes + a * 56;
@@ -413,6 +424,7 @@ public static class CompiledModel
 				if ( name == "POSITION" ) posAt = offset;
 				else if ( name == "TEXCOORD" ) { uvAt = offset; uvFormat = format; }
 				else if ( name == "NORMAL" ) { normalAt = offset; normalFormat = format; }
+				else if ( name == "COLOR" ) { colorAt = offset; colorFormat = format; }
 				else if ( name == "BLENDINDICES" ) { indexAt = offset; indexFormat = format; }
 				else if ( name == "BLENDWEIGHT" || name == "BLENDWEIGHTS" ) weightAt = offset;
 			}
@@ -440,6 +452,7 @@ public static class CompiledModel
 				else uvs.Add( new Vec2( BitConverter.ToSingle( raw, o + uvAt ), BitConverter.ToSingle( raw, o + uvAt + 4 ) ) );
 
 				normals.Add( normalAt < 0 ? Vec3.UnitZ : ReadNormal( raw, o + normalAt, normalFormat ) );
+				ReadColor( raw, colorAt < 0 ? -1 : o + colorAt, colorFormat, colors );
 
 				// No blend indices: the mesh hangs off its first bone. Indices without weights:
 				// one bone per vertex.
@@ -492,6 +505,18 @@ public static class CompiledModel
 
 		float length = n.Length();
 		return length > 1e-9f ? n / length : Vec3.UnitZ;
+	}
+
+	// White for a mesh without colours, or with them in a packing this reader doesn't know.
+	static void ReadColor( byte[] raw, int at, int format, List<byte> colors )
+	{
+		for ( int c = 0; c < 4; c++ )
+		{
+			byte value = 255;
+			if ( at >= 0 && format == R8G8B8A8_UNORM ) value = raw[at + c];
+			else if ( at >= 0 && format == R32G32B32A32_FLOAT ) value = (byte)Math.Clamp( MathF.Round( BitConverter.ToSingle( raw, at + c * 4 ) * 255f ), 0f, 255f );
+			colors.Add( value );
+		}
 	}
 
 	static byte[] Slice( byte[] source, int start, int length )
