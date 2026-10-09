@@ -772,7 +772,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// Most of a height change scales the whole body evenly, so it grows as a whole in its own
 	// proportions: with the legs alone growing it stayed the same body on longer legs, and with
 	// the spine stretched as the stock graph does, a longer belly looked wrong on a body drawn
-	// with a short one. The rest goes into the legs and arms, below.
+	// with a short one. The rest goes into the legs and arms, below. Not the head: people of
+	// any height have about the same head, and it grew and shrank with the slider.
 	const float EvenShare = 0.6f;
 
 	// How much longer each part of the skeleton gets when the stock graph doubles the height,
@@ -797,7 +798,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
 	float[] stretchTwice, lengthTwice;
-	bool[] underPelvis;
+	bool[] underPelvis, onHead;
 	int[] feet;
 	Transform[] animated, stretchedPose;
 
@@ -817,7 +818,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		var bones = body.Model.Bones.AllBones;
 		// After a hotload the tables can be missing ones added since they were made.
-		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || onHead?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
 			MakeStretch( body.Model );
 
 		float even = 1f + (stretch - 1f) * EvenShare;
@@ -838,7 +839,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			}
 
 			var local = animated[parent.Index].ToLocal( animated[i] );
-			var offset = local.Position * even * (1f + (limbs - 1f) * (stretchTwice[i] - 1f));
+			// The neck lengthens up to the head; what sits on the head keeps its place on it.
+			var offset = local.Position * (onHead[parent.Index] ? 1f : even) * (1f + (limbs - 1f) * (stretchTwice[i] - 1f));
 			stretchedPose[i] = stretchedPose[parent.Index].ToWorld( new Transform( offset, local.Rotation ) );
 		}
 
@@ -858,7 +860,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			if ( underPelvis[i] ) pose.Position += Vector3.Up * lift;
 			float along = 1f + (limbs - 1f) * (lengthTwice[i] - 1f);
 			float across = 1f + (along - 1f) * ThickShare;
-			pose.Scale = new Vector3( along, across, across ) * even;
+			pose.Scale = new Vector3( along, across, across ) * (onHead[i] ? 1f : even);
 			so.SetBoneOverride( i, pose );
 		}
 		stretched = true;
@@ -879,6 +881,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		stretchTwice = new float[bones.Count];
 		lengthTwice = new float[bones.Count];
 		underPelvis = new bool[bones.Count];
+		onHead = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
 		var feetList = new List<int>();
@@ -914,6 +917,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			lengthTwice[i] = length;
 
 			underPelvis[i] = name == "pelvis" || (bone.Parent is not null && underPelvis[bone.Parent.Index]);
+			onHead[i] = name == "head" || (bone.Parent is not null && onHead[bone.Parent.Index]);
 			if ( name.StartsWith( "ankle_" ) ) feetList.Add( i );
 		}
 		feet = feetList.ToArray();
