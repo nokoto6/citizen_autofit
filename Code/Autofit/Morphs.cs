@@ -112,7 +112,6 @@ public static class GarmentMorphs
 {
 	const float Full = 0.015f * Units.Metre;        // a garment this close to the skin moves with it in full
 	const float Reach = 0.04f * Units.Metre;        // and from this far keeps its own morphs
-	const float SkinShare = 0.05f;                  // a piece of the body with less than this share of the biggest one's area is on the skin, not skin
 	const float SpreadMin = 0.003f * Units.Metre;   // the least skin round its closest point a garment vertex takes the move of
 	const float Contact = 0.03f * Units.Metre;      // how close to the skin a solid object is held by it
 
@@ -251,29 +250,18 @@ public static class GarmentMorphs
 	/// </summary>
 	static (int[] Tris, float[] Area) Skin( Vec3[] positions, int[] tris )
 	{
-		var weld = MeshTools.Weld( positions, out int count );
-		var piece = GarmentFit.Islands( count, MeshTools.Edges( tris, weld ) );
-		var pieceArea = new Dictionary<int, float>();
-		var triArea = new float[tris.Length / 3];
-		for ( int t = 0; t < triArea.Length; t++ )
-		{
-			Vec3 a = positions[tris[t * 3]], b = positions[tris[t * 3 + 1]], c = positions[tris[t * 3 + 2]];
-			triArea[t] = 0.5f * Vec3.Cross( b - a, c - a ).Length();
-			int p = piece[weld[tris[t * 3]]];
-			pieceArea[p] = (pieceArea.TryGetValue( p, out float have ) ? have : 0) + triArea[t];
-		}
-		float biggest = 0;
-		foreach ( float a in pieceArea.Values ) biggest = MathF.Max( biggest, a );
-
+		var isSkin = MeshTools.SkinTriangles( positions, tris );
 		var kept = new List<int>();
 		var area = new float[positions.Length];
-		for ( int t = 0; t < triArea.Length; t++ )
+		for ( int t = 0; t < isSkin.Length; t++ )
 		{
-			if ( pieceArea[piece[weld[tris[t * 3]]]] < SkinShare * biggest ) continue;
+			if ( !isSkin[t] ) continue;
+			Vec3 a = positions[tris[t * 3]], b = positions[tris[t * 3 + 1]], c = positions[tris[t * 3 + 2]];
+			float third = 0.5f * Vec3.Cross( b - a, c - a ).Length() / 3f;
 			for ( int k = 0; k < 3; k++ )
 			{
 				kept.Add( tris[t * 3 + k] );
-				area[tris[t * 3 + k]] += triArea[t] / 3f;
+				area[tris[t * 3 + k]] += third;
 			}
 		}
 		return (kept.ToArray(), area);

@@ -121,8 +121,10 @@ public sealed partial class AvatarEditManager : Component
 			dresser.BodyTarget = renderer;
 			dresser.ApplyOnStart = false;
 			dresser.Version = version;
-			// The stock bodies wear their clothing as made; only Aurora needs it refitted.
-			dresser.FitAtRuntime = kind == BodyKind.Aurora;
+			// The stock bodies wear what was made for them as made. They still need the fitter for
+			// hair under a hat and, on the humans, for what only comes in a citizen version (the
+			// tattoos, makeup and brows, made before there were humans).
+			dresser.FitAtRuntime = true;
 			dresser.RemoveSkinFromClothing = kind == BodyKind.Aurora;
 			dressers[kind] = dresser;
 		}
