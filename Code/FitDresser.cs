@@ -756,8 +756,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		// Skin the stock shader tones by skin_tint (the citizen's tint mask).
 		bool toned = shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0;
 		if ( toned ) made.Set( "g_flToonSkin", 1f );
-		// Skin without the tint mask is the humans', painted from a photograph: smoothed in the toon look.
-		if ( shader.Contains( "skin" ) && !toned ) made.Set( "g_flToonSmooth", 1f );
+		// Skin without the tint mask is the humans', painted from a photograph: half smoothed in the
+		// toon look (all the way it went soapy, untouched it stayed photographic).
+		if ( shader.Contains( "skin" ) && !toned ) made.Set( "g_flToonSmooth", 0.5f );
 
 		// The material's own colour tint, over its tint mask where it has one: a dark suit is a
 		// light texture tinted dark there, and without it the trousers came out white.

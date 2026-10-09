@@ -267,7 +267,7 @@ PS
 		if ( g_flToonSmooth > 0.0 )
 		{
 			float2 vSz = float2( TextureDimensions2DS( g_tColor, 0 ) );
-			float flLod = max( log2( max( vSz.x, vSz.y ) ) - 6.0, 0.0 );
+			float flLod = max( log2( max( vSz.x, vSz.y ) ) - 7.5, 0.0 );
 			float3 vFine = g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb;
 			float3 vSoft = g_tColor.SampleLevel( TextureFiltering, i.vTextureCoords.xy, flLod ).rgb;
 			float flDark = saturate( Luma( vFine ) / max( Luma( vSoft ), 0.02 ) );
