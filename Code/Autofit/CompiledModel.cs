@@ -64,6 +64,65 @@ public sealed class SkinnedGeometry
 
 	/// <summary>A direction given in the model's own frame (a morph's delta), in the stock body's.</summary>
 	public Vec3 InStockBind( Vec3 v ) => BindTurn == null ? v : Quat.Rotate( BindTurn, v );
+
+	/// <summary>
+	/// <see cref="Indices"/> without the outer layers of fur. fur.shader draws fur as a stack of
+	/// shells, copies of one surface each further out than the last by what its vertex colour
+	/// says (the red), cut thinner the further out they are until the outermost is mostly holes.
+	/// Only the inner layer is a surface something can be worn under: hair under the fur brim
+	/// of a Santa hat goes under the brim and up to its fur, not under the tips of the fur 2 cm
+	/// further out, which left a band of bare scalp under it.
+	///
+	/// A draw is such a stack when its triangles come in three or more vertex colours, each
+	/// triangle in one of them and the same number in each: a garment painted in vertex colours
+	/// doesn't split up that evenly.
+	/// </summary>
+	public int[] SurfaceIndices()
+	{
+		if ( Colors is null || Colors.Length < Positions.Length * 4 ) return Indices;
+		List<int> keep = null;
+		var layers = new Dictionary<uint, int>();
+		for ( int d = 0; d < Draws.Count; d++ )
+		{
+			var (first, count, _) = Draws[d];
+			layers.Clear();
+			bool stack = count > 0;
+			for ( int k = first; stack && k + 2 < first + count; k += 3 )
+			{
+				uint a = ColorOf( Indices[k] );
+				stack = a == ColorOf( Indices[k + 1] ) && a == ColorOf( Indices[k + 2] );
+				layers.TryGetValue( a, out int n );
+				layers[a] = n + 1;
+			}
+			if ( stack ) stack = layers.Count >= 3;
+			uint inner = 0;
+			int each = -1;
+			foreach ( var (color, n) in layers )
+			{
+				if ( !stack ) break;
+				if ( each >= 0 && n != each ) stack = false;
+				if ( each < 0 || (color & 0xff) < (inner & 0xff) ) inner = color;
+				each = n;
+			}
+			if ( !stack && keep == null ) continue;
+			if ( keep == null )
+			{
+				// The first stack: everything before it is kept as it is.
+				keep = new List<int>( Indices.Length );
+				for ( int e = 0; e < d; e++ )
+					for ( int k = Draws[e].First; k < Draws[e].First + Draws[e].Count; k++ ) keep.Add( Indices[k] );
+			}
+			for ( int k = first; k + 2 < first + count; k += 3 )
+			{
+				if ( stack && ColorOf( Indices[k] ) != inner ) continue;
+				keep.Add( Indices[k] ); keep.Add( Indices[k + 1] ); keep.Add( Indices[k + 2] );
+			}
+		}
+		return keep?.ToArray() ?? Indices;
+	}
+
+	// A vertex's colour as one number, red in the lowest byte.
+	uint ColorOf( int v ) => (uint)(Colors[v * 4] | Colors[v * 4 + 1] << 8 | Colors[v * 4 + 2] << 16 | Colors[v * 4 + 3] << 24);
 }
 
 /// <summary>

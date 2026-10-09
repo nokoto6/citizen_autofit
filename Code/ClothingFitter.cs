@@ -139,7 +139,7 @@ public static class ClothingFitter
 	static readonly Dictionary<string, Job> pending = new();
 	static readonly HashSet<string> failed = new();
 	static readonly Dictionary<string, bool> skinned = new();   // per garment, whether it draws part of itself with the body's skin
-	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under
+	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under, without the outer layers of their fur
 	static readonly Dictionary<string, bool> proportioned = new();   // per body, whether it is built with proportions of its own
 	static int generation;
 
@@ -316,7 +316,7 @@ public static class ClothingFitter
 			{
 				var geo = CompiledModel.Read( file );
 				if ( reference != null ) GarmentFit.ToStockBind( geo, reference.Geo );
-				return new TriMesh( geo.Positions, geo.Indices );
+				return new TriMesh( geo.Positions, geo.SurfaceIndices() );
 			} );
 		}
 
@@ -384,7 +384,7 @@ public static class ClothingFitter
 				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
-				if ( i == 0 ) shapes[key] = (result.StockFit, level.Indices);
+				if ( i == 0 ) shapes[key] = (result.StockFit, level.SurfaceIndices());
 
 				done.Insert( 0, result );
 				worker += result.Milliseconds;
