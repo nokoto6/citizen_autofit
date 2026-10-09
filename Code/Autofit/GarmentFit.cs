@@ -533,7 +533,8 @@ public static class GarmentFit
 			bool wraps = FitRigid( whole, pts, move, gap0, away, fitted, PushSolid, false );
 			if ( eyes != null && OnTheEyes( whole, pts, eyes ) )
 			{
-				PutOnTheEyes( whole, pts, fitted, eyes );
+				var front = PutOnTheEyes( whole, pts, fitted, eyes );
+				if ( wraps ) GoRound( whole, front, eyes, fitted, gap0, away, PushSolid );
 				PushOut( whole, fitted, gap0, away, PushSolid, false );
 			}
 			else if ( wraps && eyes != null && eyes.Length == 2 )
@@ -1871,25 +1872,96 @@ public static class GarmentFit
 		return minY <= eyeLo && maxY >= eyeHi && minZ <= eyeZ && maxZ >= eyeZ && maxZ - minZ <= EyewearHeight;
 	}
 
+	const float EyewearFront = 0.01f * Units.Metre;   // what of a piece of eyewear is no further back than this behind the eyes is its front
+	const float RoundGrowth = 1.5f;                    // a band round the head is let out at most this much at the back to clear it
+	const float RoundStep = 0.02f;
+	const float RoundRamp = 0.04f * Units.Metre;       // and is let out in full from this far behind its front
+
 	/// <summary>
 	/// Moves eyewear up or down and sideways so it sits on this body's eyes the way it sat on
 	/// the stock body's. The skin it rests on (nose bridge, temples) doesn't say where the eyes
 	/// are; on a face with eyes set lower or higher the lenses would end up on the brows.
-	/// How far in front of the face it sits is left to the fit and the push out of the skin.
+	/// What goes on the eyes is the front of it, the part level with them or ahead: of an
+	/// eyepatch on a string round the head most of the piece is string, and put by the middle
+	/// of all of it, the patch rode down to the mouth once the fit had tipped the loop to follow
+	/// a face lower on the head. How far in front of the face it sits is left to the fit and the
+	/// push out of the skin.
 	/// </summary>
-	static void PutOnTheEyes( List<int> idx, Vec3[] pts, Vec3[] fitted, (Vec3 Stock, Vec3 Body)[] eyes )
+	/// <returns>The front, where it is now.</returns>
+	static Vec3 PutOnTheEyes( List<int> idx, Vec3[] pts, Vec3[] fitted, (Vec3 Stock, Vec3 Body)[] eyes )
 	{
 		Vec3 stockMid = 0.5f * (eyes[0].Stock + eyes[1].Stock), bodyMid = 0.5f * (eyes[0].Body + eyes[1].Body);
 		float apart = (eyes[1].Stock - eyes[0].Stock).Length();
 		float ratio = apart > 1e-4f * Units.Metre ? (eyes[1].Body - eyes[0].Body).Length() / apart : 1f;
+		float level = MathF.Min( eyes[0].Stock.X, eyes[1].Stock.X ) - EyewearFront;
 		var made = Vec3.Zero;
 		var now = Vec3.Zero;
-		foreach ( int i in idx ) { made += pts[i]; now += fitted[i]; }
-		made /= idx.Count;
-		now /= idx.Count;
+		int count = 0;
+		foreach ( int i in idx )
+		{
+			if ( pts[i].X < level ) continue;
+			made += pts[i]; now += fitted[i]; count++;
+		}
+		if ( count == 0 )
+		{
+			foreach ( int i in idx ) { made += pts[i]; now += fitted[i]; }
+			count = idx.Count;
+		}
+		made /= count;
+		now /= count;
 		Vec3 want = bodyMid + (made - stockMid) * ratio;
 		var shift = new Vec3( 0, want.Y - now.Y, want.Z - now.Z );
 		foreach ( int i in idx ) fitted[i] += shift;
+		return now + shift;
+	}
+
+	/// <summary>
+	/// A solid band round the head (the string of an eyepatch, the strap of a pair of goggles)
+	/// that the fit left cutting into a head of other proportions: a skull bigger for its face
+	/// takes more room behind the eyes than the stock one. Pushed out as a whole, the loop slides
+	/// down the head to where it is narrower and takes the front off the eyes. So the loop is
+	/// let out instead, the way a string would stretch: the front stays on the eyes, and behind
+	/// it the band is widened and deepened more the further back it goes, as little as clears
+	/// the head.
+	/// </summary>
+	static void GoRound( List<int> idx, Vec3 front, (Vec3 Stock, Vec3 Body)[] eyes, Vec3[] fitted, float[] gap0, Vec3[] away, PushTest push )
+	{
+		var origin = new Vec3( front.X, 0.5f * (eyes[0].Body.Y + eyes[1].Body.Y), front.Z );
+		var placed = new Vec3[idx.Count];
+		float back = 0;
+		for ( int k = 0; k < idx.Count; k++ )
+		{
+			placed[k] = fitted[idx[k]];
+			back = MathF.Max( back, origin.X - placed[k].X );
+		}
+		if ( back <= 1e-4f * Units.Metre ) return;
+
+		float ramp = MathF.Min( back, RoundRamp );
+		Vec3 LetOut( Vec3 p, float scale )
+		{
+			var d = p - origin;
+			float s = 1f + (scale - 1f) * Math.Clamp( -d.X / ramp, 0f, 1f );
+			return origin + new Vec3( d.X * s, d.Y * s, d.Z );
+		}
+
+		// Only what letting out moves: the front can be in the face for other reasons (lashes).
+		int Digging( float scale )
+		{
+			int count = 0;
+			for ( int k = 0; k < idx.Count; k++ )
+				if ( placed[k].X < origin.X && push( LetOut( placed[k], scale ), MathF.Min( gap0[idx[k]], 0 ), away[idx[k]], out _ ) ) count++;
+			return count;
+		}
+
+		int best = Digging( 1f );
+		float bestScale = 1f;
+		for ( float scale = 1f + RoundStep; best > 0 && scale <= RoundGrowth + 1e-4f; scale += RoundStep )
+		{
+			int digging = Digging( scale );
+			if ( digging < best ) { best = digging; bestScale = scale; }
+		}
+
+		for ( int k = 0; k < idx.Count; k++ ) fitted[idx[k]] = LetOut( placed[k], bestScale );
 	}
 
 	/// <summary>
