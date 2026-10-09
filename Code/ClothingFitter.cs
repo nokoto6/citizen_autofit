@@ -296,7 +296,7 @@ public static class ClothingFitter
 	// The citizen's skin materials sit in models/citizen/skin, the humans' in
 	// models/citizen_human/bodies/male and female (body_mode_dark, female_body_mode_dark,
 	// body_male_light). Everything else in those folders is eyes, mouths and underwear.
-	static bool IsSkin( string material )
+	internal static bool IsSkin( string material )
 	{
 		string path = Normalize( material );
 		if ( !path.StartsWith( "models/citizen" ) ) return false;

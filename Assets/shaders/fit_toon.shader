@@ -136,6 +136,10 @@ PS
 	// 1 where the skin has aged maps (skin.shader's F_AGE_TEXTURE): skin_age blends the colour and
 	// the relief towards them, as the stock shader does.
 	float g_flToonAge < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Skin,30/12" ); >;
+	// 1 on skin painted from a photograph (the humans'): its fine detail (pores, lines, blotches)
+	// is smoothed away to the skin's colour over a few millimetres, keeping only what is clearly
+	// darker than the skin round it (brows, lips, the lids), so it reads as clean toon skin.
+	float g_flToonSmooth < Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Toon Skin,30/15" ); >;
 	float g_flSkinAge < Attribute( "skin_age" ); Default( 0.0 ); >;
 	CreateInputTexture2D( TextureToonAgeColor, Srgb, 8, "", "_agecolor", "Toon Skin,30/13", Default3( 1.0, 1.0, 1.0 ) );
 	Texture2D g_tToonAgeColor < Channel( RGB, Box( TextureToonAgeColor ), Srgb ); OutputFormat( BC7 ); SrgbRead( true ); >;
@@ -259,6 +263,18 @@ PS
 		[branch]
 		if ( flAge > 0.0 )
 			vAlbedo = lerp( vAlbedo, g_tToonAgeColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb, flAge );
+		[branch]
+		if ( g_flToonSmooth > 0.0 )
+		{
+			float2 vSz = float2( TextureDimensions2DS( g_tColor, 0 ) );
+			float flLod = max( log2( max( vSz.x, vSz.y ) ) - 6.0, 0.0 );
+			float3 vFine = g_tColor.Sample( TextureFiltering, i.vTextureCoords.xy ).rgb;
+			float3 vSoft = g_tColor.SampleLevel( TextureFiltering, i.vTextureCoords.xy, flLod ).rgb;
+			float flDark = saturate( Luma( vFine ) / max( Luma( vSoft ), 0.02 ) );
+			flDark = 1.0 - saturate( ( 1.0 - flDark - 0.15 ) / 0.85 );
+			float3 vSmooth = vAlbedo * ( vSoft / max( vFine, 0.001 ) ) * flDark;
+			vAlbedo = lerp( vAlbedo, vSmooth, g_flToonSmooth );
+		}
 		[branch]
 		if ( g_flToonSkin > 0.0 )
 		{

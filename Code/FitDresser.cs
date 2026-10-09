@@ -661,7 +661,42 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		if ( !renderer.IsValid() || renderer.Model is null ) return;
 		for ( int i = 0; i < renderer.Materials.Count; i++ )
-			renderer.Materials.SetOverride( i, Toon ? ToonCopy( renderer.Materials.GetOriginal( i ) ) : null );
+		{
+			var drawn = SlotMaterial( renderer, i );
+			// Without the toon look only a garment's skin taken over from the body needs setting;
+			// the rest is what the renderer's material group draws anyway.
+			bool swapped = drawn is not null && !SamePath( drawn.ResourcePath, InGroup( renderer, i )?.ResourcePath );
+			renderer.Materials.SetOverride( i, Toon ? ToonCopy( drawn ) : swapped ? drawn : null );
+		}
+	}
+
+	// The material a renderer draws a slot with: the one its material group puts there (a human's
+	// skin colour is a material group). On a human, a garment's own copy of the skin takes the
+	// body's skin as the body is drawn now: the copy is in the default colour, and the sleeves of
+	// a shirt carrying the arms stayed dark on a light skin.
+	Material SlotMaterial( SkinnedModelRenderer renderer, int i )
+	{
+		var original = InGroup( renderer, i );
+		if ( renderer == BodyTarget || original is null || !IsHumanBody( BodyTarget.Model ) ) return original;
+		if ( !ClothingFitter.IsSkin( original.ResourcePath ?? "" ) ) return original;
+		var body = BodyTarget.Model.Materials;
+		int same = -1;
+		for ( int k = 0; k < body.Length && same < 0; k++ )
+			if ( SamePath( body[k]?.ResourcePath, original.ResourcePath ) ) same = k;
+		for ( int k = 0; k < body.Length && same < 0; k++ )
+			if ( body[k] is not null && ClothingFitter.IsSkin( body[k].ResourcePath ?? "" ) ) same = k;
+		return same >= 0 ? InGroup( BodyTarget, same ) ?? original : original;
+	}
+
+	// A slot's material in the renderer's material group, or the model's default one.
+	static Material InGroup( ModelRenderer renderer, int i )
+	{
+		var model = renderer.Model;
+		if ( model is null || i < 0 || i >= model.Materials.Length ) return null;
+		int group = string.IsNullOrEmpty( renderer.MaterialGroup ) ? -1 : model.GetMaterialGroupIndex( renderer.MaterialGroup );
+		if ( group > 0 && model.GetMaterials( group ).ElementAtOrDefault( i ) is { } grouped )
+			return grouped;
+		return model.Materials[i];
 	}
 
 	// A number parameter of a material, or the shader's default where the material has none.
@@ -721,6 +756,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		// Skin the stock shader tones by skin_tint (the citizen's tint mask).
 		bool toned = shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0;
 		if ( toned ) made.Set( "g_flToonSkin", 1f );
+		// Skin without the tint mask is the humans', painted from a photograph: smoothed in the toon look.
+		if ( shader.Contains( "skin" ) && !toned ) made.Set( "g_flToonSmooth", 1f );
 
 		// The material's own colour tint, over its tint mask where it has one: a dark suit is a
 		// light texture tinted dark there, and without it the trousers came out white.
@@ -771,6 +808,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			if ( eyeball )
 			{
 				made.Set( "g_flToonIrisFromTexture", 1f );
+				// The humans' iris at its real size read as a tiny pupil in a big white in the toon
+				// look; half as large again, it reads as a cartoon eye.
+				made.Set( "g_flToonIrisRadius", 0.14f );
 			}
 			else
 			{
