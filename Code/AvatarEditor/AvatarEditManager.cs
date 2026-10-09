@@ -267,7 +267,17 @@ public sealed partial class AvatarEditManager : Component
 		if ( clothing is null ) return;
 		if ( dye < 0 || dye >= DyePalette.Length ) dyes.Remove( clothing );
 		else dyes[clothing] = dye;
-		Shown?.SetClothingDye( clothing, dye >= 0 && dye < DyePalette.Length ? DyePalette[dye].Color : null );
+		if ( Shown is not { } d ) return;
+		// The body's whole list of dyes, not just this one: a dye left over on it painted natural
+		// brown hair violet until the body was switched away and back, which sets them all anew.
+		SyncDyes( d );
+		d.SetClothingDye( clothing, dye >= 0 && dye < DyePalette.Length ? DyePalette[dye].Color : null );
+	}
+
+	void SyncDyes( FitDresser d )
+	{
+		d.Dyes.Clear();
+		foreach ( var (clothing, dye) in dyes ) d.Dyes[clothing] = DyePalette[dye].Color;
 	}
 
 	/// <summary>The colour a garment is drawn in at a tint, dyed or not: what the colour strip shows.</summary>
@@ -316,7 +326,9 @@ public sealed partial class AvatarEditManager : Component
 
 		e.Tint = f;
 		// Only the colour changes: recoloured in place, not dressed anew.
-		Shown?.SetClothingTint( clothing, f );
+		if ( Shown is not { } d ) return;
+		SyncDyes( d );
+		d.SetClothingTint( clothing, f );
 	}
 
 	public float GetTint( Clothing clothing )
@@ -365,8 +377,7 @@ public sealed partial class AvatarEditManager : Component
 		d.IrisColor = Container.EyeColor;
 		d.IrisAlign = Container.EyeAlign;
 		d.Toon = toon;
-		d.Dyes.Clear();
-		foreach ( var (clothing, dye) in dyes ) d.Dyes[clothing] = DyePalette[dye].Color;
+		SyncDyes( d );
 		d.NeckSize = Container.NeckSize;
 		d.WaistSize = Container.WaistSize;
 		d.ChestSize = Container.ChestSize;
