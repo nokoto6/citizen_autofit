@@ -607,6 +607,86 @@ public static class MeshTools
 		return a + ab * Math.Clamp( Vec3.Dot( p - a, ab ) / den, 0f, 1f );
 	}
 
+	public const float Turned = 0.2f;     // a triangle turned this far over (cosine) is inside out
+	const int EvenPasses = 24;
+	const int EvenRings = 3;              // how far round a fold the evening out reaches, in rings of neighbours
+	const int AlikePasses = 16;
+
+	/// <summary>
+	/// Keeps a displacement of a surface from turning any of its triangles inside out. Where it
+	/// does, the displacement is evened out over the fold and a few rings of neighbours round
+	/// it, and if that isn't enough, the corners of each such triangle are moved alike, which
+	/// no triangle can turn over with. Everywhere else it is left as it is.
+	/// </summary>
+	/// <param name="points">Per welded vertex, where it is before the displacement.</param>
+	/// <param name="weld">Per vertex of <paramref name="tris"/>, its welded vertex.</param>
+	/// <param name="shift">Per welded vertex, the displacement. Changed in place.</param>
+	/// <param name="alongside">Per welded vertex, something that goes with the displacement and is evened out with it (a morph's turn of the normals), or null.</param>
+	/// <param name="skip">Per triangle, whether to leave it out (null for none).</param>
+	/// <returns>Whether anything had to change.</returns>
+	public static bool Untangle( Vec3[] points, int[] tris, int[] weld, List<(int A, int B)> edges, Vec3[] shift, Vec3[] alongside, bool[] skip )
+	{
+		int count = points.Length;
+		var flagged = new bool[count];
+		var region = new bool[count];
+		var reach = new bool[count];
+		bool changed = false;
+		for ( int pass = 0; pass < EvenPasses + AlikePasses; pass++ )
+		{
+			bool alike = pass >= EvenPasses;
+			Array.Clear( flagged, 0, count );
+			bool any = false;
+			for ( int t = 0; t < tris.Length; t += 3 )
+			{
+				if ( skip != null && skip[t / 3] ) continue;
+				int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
+				if ( a == b || b == c || a == c ) continue;
+				var before = Vec3.Cross( points[b] - points[a], points[c] - points[a] );
+				var after = Vec3.Cross( points[b] + shift[b] - points[a] - shift[a], points[c] + shift[c] - points[a] - shift[a] );
+				float lb = before.Length(), la = after.Length();
+				if ( lb < 1e-12f ) continue;
+				if ( la > 1e-12f && Vec3.Dot( before, after ) >= Turned * lb * la ) continue;
+				flagged[a] = flagged[b] = flagged[c] = true;
+				any = true;
+				if ( !alike ) continue;
+				var mean = (shift[a] + shift[b] + shift[c]) / 3f;
+				shift[a] = shift[b] = shift[c] = mean;
+				if ( alongside == null ) continue;
+				var meanAlong = (alongside[a] + alongside[b] + alongside[c]) / 3f;
+				alongside[a] = alongside[b] = alongside[c] = meanAlong;
+			}
+			if ( !any ) break;
+			changed = true;
+			if ( alike ) continue;
+
+			for ( int i = 0; i < count; i++ ) region[i] |= flagged[i];
+			Array.Copy( region, reach, count );
+			for ( int ring = 0; ring < EvenRings; ring++ )
+			{
+				var was = Copy( reach );
+				foreach ( var (a, b) in edges )
+					if ( was[a] || was[b] ) reach[a] = reach[b] = true;
+			}
+			Even( shift, reach, edges );
+			if ( alongside != null ) Even( alongside, reach, edges );
+		}
+		return changed;
+	}
+
+	// Values in the region halfway to their neighbours' average.
+	static void Even( Vec3[] field, bool[] region, List<(int A, int B)> edges )
+	{
+		var sum = new Vec3[field.Length];
+		var count = new int[field.Length];
+		foreach ( var (a, b) in edges )
+		{
+			if ( region[a] ) { sum[a] += field[b]; count[a]++; }
+			if ( region[b] ) { sum[b] += field[a]; count[b]++; }
+		}
+		for ( int i = 0; i < field.Length; i++ )
+			if ( count[i] > 0 ) field[i] += (sum[i] / count[i] - field[i]) * 0.5f;
+	}
+
 	/// <summary>The bone with the most weight over a triangle's three vertices, or -1.</summary>
 	public static int DominantBone( SkinnedGeometry geo, int[] tris, int tri, Dictionary<int, float> scratch )
 	{

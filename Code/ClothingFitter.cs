@@ -879,19 +879,13 @@ public static class ClothingFitter
 		return atlases;
 	}
 
-	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
-	const float MorphFull = 0.015f * Units.Metre;   // a garment this close to the skin moves with it in full
-	const float MorphReach = 0.04f * Units.Metre;   // and from this far keeps its own morphs
-
 	/// <summary>
-	/// A beard's morphs are made for the stock face: its jaw drops so far and its lips spread so
-	/// wide. On a face of other proportions they open the beard where the mouth isn't. Each bit
-	/// of the garment takes, for every morph of the body, the move the skin under it makes, in
-	/// full close to the skin and less further off, where the garment's own morph of that name
-	/// takes over. Positions are the garment's in the body's rest pose, the same space as the
-	/// body's own morphs.
+	/// A garment with morphs (a beard, a mask, a cigar) takes the body's face morphs off the
+	/// skin under it, see <see cref="GarmentMorphs.TakeFromSkin"/>. Positions are the garment's
+	/// in the body's rest pose, the same space as the body's own morphs.
 	/// </summary>
-	static void FaceMorphs( Vec3[] positions, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs )
+	/// <param name="asMade">The garment's own morphs as made, to tell what they turn over on purpose.</param>
+	static void FaceMorphs( Vec3[] positions, SkinnedGeometry garment, bool[] solid, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade )
 	{
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
@@ -910,28 +904,9 @@ public static class ClothingFitter
 		}
 		if ( skin.Count == 0 ) return;
 
-		var mesh = new TriMesh( body.Positions, body.Indices );
-		for ( int v = 0; v < positions.Length; v++ )
-		{
-			float d = mesh.Nearest( positions[v], out var at, out int tri );
-			if ( tri < 0 ) continue;
-			float w = Math.Clamp( (MorphReach - d) / (MorphReach - MorphFull), 0f, 1f );
-			if ( w <= 0 ) continue;
-			int a = body.Indices[tri * 3], b = body.Indices[tri * 3 + 1], c = body.Indices[tri * 3 + 2];
-			GarmentFit.Barycentric( at, body.Positions[a], body.Positions[b], body.Positions[c], out float u, out float bv, out float bw );
-			foreach ( var (name, (move, turn)) in skin )
-			{
-				var dp = move[a] * u + move[b] * bv + move[c] * bw;
-				var dn = turn[a] * u + turn[b] * bv + turn[c] * bw;
-				if ( !morphs.TryGetValue( name, out var own ) )
-				{
-					if ( !Seen( dp * w, dn * w ) ) continue;
-					morphs[name] = own = (new Vec3[positions.Length], new Vec3[positions.Length]);
-				}
-				own.Position[v] = own.Position[v] * (1 - w) + dp * w;
-				own.Normal[v] = own.Normal[v] * (1 - w) + dn * w;
-			}
-		}
+		var meant = new Dictionary<string, bool[]>();
+		foreach ( var (name, move) in asMade ) meant[name] = GarmentMorphs.TurnedOver( garment.Positions, garment.Indices, move );
+		GarmentMorphs.TakeFromSkin( positions, garment.Indices, solid, body.Positions, body.Indices, skin, morphs, Seen, meant );
 	}
 
 	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
@@ -943,6 +918,7 @@ public static class ClothingFitter
 	static bool Seen( Vec3 move, Vec3 turn ) =>
 		move.LengthSquared() >= MorphFloor * MorphFloor || turn.LengthSquared() >= TurnFloor * TurnFloor;
 
+	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
 	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, SkinnedGeometry body = null, Dictionary<string, Atlas> bodyAtlases = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -977,17 +953,23 @@ public static class ClothingFitter
 		// Morph targets are displacements of the stock shape. They turn with the surface they
 		// are on and grow with the body, like everything else about the garment.
 		var morphs = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
+		var asMade = new Dictionary<string, Vec3[]>();
 		foreach ( var set in garment.Morphs )
 		{
 			if ( set.AtlasPath == null || !atlases.TryGetValue( set.AtlasPath, out var atlas ) ) continue;
 			foreach ( var (name, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height ) )
 			{
 				if ( !morphs.TryGetValue( name, out var morph ) )
+				{
 					morphs[name] = morph = (new Vec3[positions.Length], new Vec3[positions.Length]);
+					asMade[name] = new Vec3[positions.Length];
+				}
 				foreach ( var (vertex, move, turn) in deltas )
 				{
-					morph.Position[vertex] = garment.InStockBind( move ) * target.Pose.ScaleAt( vertex, backBones, backWeights );
+					var made = garment.InStockBind( move );
+					morph.Position[vertex] = made * target.Pose.ScaleAt( vertex, backBones, backWeights );
 					morph.Normal[vertex] = garment.InStockBind( turn );
+					asMade[name][vertex] = made;
 				}
 			}
 		}
@@ -1001,7 +983,7 @@ public static class ClothingFitter
 				Shading.TurnInPlace( frames, move );
 				Shading.TurnInPlace( frames, turn );
 			}
-			if ( body != null && bodyAtlases != null ) FaceMorphs( positions, body, bodyAtlases, morphs );
+			if ( body != null && bodyAtlases != null ) FaceMorphs( positions, garment, solid, body, bodyAtlases, morphs, asMade );
 		}
 
 		// The garment's bones in the body's rest pose.

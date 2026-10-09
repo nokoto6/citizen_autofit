@@ -654,6 +654,8 @@ public static class GarmentFit
 		foreach ( var (_, idx) in cloth )
 			foreach ( int i in idx ) fitted[i] = pts[i] + move[i] + pushField[i];
 
+		var heldOff = HeldOffTheHead( pts, gap0, piece, eyes, face );
+		var beforeLifts = MeshTools.Copy( fitted );
 		foreach ( var (root, idx) in cloth )
 		{
 			// The skin can still come through the middle of a triangle, typically a hard edge
@@ -696,8 +698,10 @@ public static class GarmentFit
 				if ( lift.Count == 0 ) break;
 			}
 		}
+		TakeBack( pts, fitted, beforeLifts, clothTris, heldOff );
 
-		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness );
+		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness, heldOff );
+		Untangle( pts, fitted, tris, weld, edges, piece, cloth, heldOff );
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
@@ -1603,7 +1607,7 @@ public static class GarmentFit
 	/// the new one, and the triangle above it is lifted until it is.
 	/// </summary>
 	/// <param name="thickness">Per stock vertex, how many times as thick the body is there (<see cref="BodyMap.Thickness"/>), or null. Cloth over a slimmer body was taken in, and keeps the skin covered from that much closer.</param>
-	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin, float[] thickness )
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin, float[] thickness, bool[] heldOff )
 	{
 		if ( clothTris.Count == 0 ) return;
 		var cloth = new TriMesh( pts, clothTris.ToArray() );
@@ -1657,6 +1661,7 @@ public static class GarmentFit
 			under.Add( (v, tri, bu, bv, bw, gap) );
 		}
 
+		var unlifted = MeshTools.Copy( fitted );
 		var lift = new Dictionary<int, Vec3>();
 		for ( int pass = 0; pass < 4; pass++ )
 		{
@@ -1681,6 +1686,115 @@ public static class GarmentFit
 			if ( lift.Count == 0 ) break;
 			foreach ( var (vertex, push) in lift ) fitted[vertex] += push;
 		}
+
+		TakeBack( pts, fitted, unlifted, clothTris, heldOff );
+	}
+
+	const int UnliftPasses = 8;
+
+	/// <summary>
+	/// Each vertex of the cloth goes by the skin closest to it, and on a garment held off the
+	/// face over its hollows and creases (a crumpled mask over the eyes and the mouth of a face
+	/// whose features are set elsewhere) neighbouring vertices go by bits of skin that moved
+	/// apart: the cloth's own folds crossed and showed their insides. Whatever the fit left
+	/// turned over on the head is evened out with the cloth round it until it isn't.
+	/// </summary>
+	static void Untangle( Vec3[] pts, Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, int[] piece, List<(int Root, List<int> Idx)> cloth, bool[] heldOff )
+	{
+		if ( cloth.Count == 0 || heldOff == null ) return;
+		var inCloth = new HashSet<int>();
+		foreach ( var (root, _) in cloth ) inCloth.Add( root );
+		var skip = new bool[tris.Length / 3];
+		for ( int t = 0; t < skip.Length; t++ )
+		{
+			int a = weld[tris[t * 3]], b = weld[tris[t * 3 + 1]], c = weld[tris[t * 3 + 2]];
+			skip[t] = !inCloth.Contains( piece[a] ) || !AnyOn( heldOff, a, b, c );
+		}
+		var shift = new Vec3[pts.Length];
+		foreach ( var (_, idx) in cloth )
+			foreach ( int i in idx ) shift[i] = fitted[i] - pts[i];
+		if ( !MeshTools.Untangle( pts, tris, weld, edges, shift, null, skip ) ) return;
+		foreach ( var (_, idx) in cloth )
+			foreach ( int i in idx ) fitted[i] = pts[i] + shift[i];
+	}
+
+	const float BelowChin = 0.02f * Units.Metre;    // cloth down to this far below the chin is on the head
+	const float ChinBelowEyes = 0.12f * Units.Metre; // where the chin is taken to be on a face whose mouth wasn't found
+	const float HeldOff = 0.005f * Units.Metre;     // a piece of cloth lying this far off the stock skin, halfway through, is held off it
+
+	/// <summary>
+	/// Per welded vertex, whether it is cloth held off the head, from the chin up. A head is
+	/// where a body's features can be set far from the stock ones (an anime face has its eyes
+	/// 5 cm lower and its mouth by the chin), so skin a few centimetres apart moves by very
+	/// different amounts there, over the face and round its sides, and cloth spanning it can
+	/// fold onto itself. A piece lying on the skin (paint on a face) goes with the skin under
+	/// it and isn't counted, and neither is anything off the head, where the skin moves
+	/// smoothly. Null if the face isn't known.
+	/// </summary>
+	static bool[] HeldOffTheHead( Vec3[] pts, float[] gap0, int[] piece, (Vec3 Stock, Vec3 Body)[] eyes, (Vec3 Stock, Vec3 Body)[] face )
+	{
+		float chin;
+		if ( face != null && face.Length == 4 ) chin = face[3].Stock.Z;
+		else if ( eyes != null && eyes.Length > 0 )
+		{
+			chin = 0;
+			foreach ( var (stock, _) in eyes ) chin += stock.Z / eyes.Length;
+			chin -= ChinBelowEyes;
+		}
+		else return null;
+
+		var gaps = new Dictionary<int, List<float>>();
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			if ( pts[i].Z < chin - BelowChin ) continue;
+			if ( !gaps.TryGetValue( piece[i], out var list ) ) gaps[piece[i]] = list = new List<float>();
+			list.Add( gap0[i] );
+		}
+		var held = new HashSet<int>();
+		foreach ( var (root, list) in gaps )
+		{
+			list.Sort();
+			if ( list[list.Count / 2] >= HeldOff ) held.Add( root );
+		}
+
+		var result = new bool[pts.Length];
+		for ( int i = 0; i < pts.Length; i++ ) result[i] = pts[i].Z >= chin - BelowChin && held.Contains( piece[i] );
+		return result;
+	}
+
+	static bool AnyOn( bool[] on, int a, int b, int c ) => on != null && (on[a] || on[b] || on[c]);
+
+	/// <summary>
+	/// A lift that turns the cloth over on the head does more harm than the skin it covers: on a
+	/// crumpled mask the cloth closest over a bit of skin can be the inner layer of a fold, and
+	/// lifted on its own it comes out through the outer one. Such lifts are taken back.
+	/// </summary>
+	/// <param name="unlifted">Where the cloth was before the lifts.</param>
+	/// <param name="clothTris">The triangles, as welded vertex indices.</param>
+	/// <param name="heldOff">See <see cref="HeldOffTheHead"/>.</param>
+	static void TakeBack( Vec3[] pts, Vec3[] fitted, Vec3[] unlifted, List<int> clothTris, bool[] heldOff )
+	{
+		if ( heldOff == null ) return;
+		for ( int pass = 0; pass < UnliftPasses; pass++ )
+		{
+			bool any = false;
+			for ( int t = 0; t < clothTris.Count; t += 3 )
+			{
+				int a = clothTris[t], b = clothTris[t + 1], c = clothTris[t + 2];
+				if ( !AnyOn( heldOff, a, b, c ) || !TurnedOver( pts, fitted, a, b, c ) || TurnedOver( pts, unlifted, a, b, c ) ) continue;
+				fitted[a] = unlifted[a]; fitted[b] = unlifted[b]; fitted[c] = unlifted[c];
+				any = true;
+			}
+			if ( !any ) break;
+		}
+	}
+
+	static bool TurnedOver( Vec3[] before, Vec3[] after, int a, int b, int c )
+	{
+		var n0 = Vec3.Cross( before[b] - before[a], before[c] - before[a] );
+		var n1 = Vec3.Cross( after[b] - after[a], after[c] - after[a] );
+		float l0 = n0.Length(), l1 = n1.Length();
+		return l0 >= 1e-12f && (l1 <= 1e-12f || Vec3.Dot( n0, n1 ) < MeshTools.Turned * l0 * l1);
 	}
 
 	// A vertex lifted for several bits of skin takes the biggest lift.
@@ -2154,7 +2268,7 @@ public static class GarmentFit
 	/// The rotation closest to a 3x3 matrix (row-major), or null if the matrix is too flat to
 	/// say (points on a line, or a mirror image).
 	/// </summary>
-	static float[] Rotation( float[] m )
+	internal static float[] Rotation( float[] m )
 	{
 		var r = MeshTools.Copy( m );
 		float norm = 0;
@@ -2211,7 +2325,7 @@ public static class GarmentFit
 		return string.Join( ",", parts );
 	}
 
-	static int[] Islands( int n, List<(int A, int B)> edges )
+	internal static int[] Islands( int n, List<(int A, int B)> edges )
 	{
 		var parent = new int[n];
 		for ( int i = 0; i < n; i++ ) parent[i] = i;
