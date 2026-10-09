@@ -86,6 +86,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public Color EyeColor { get; set; } = new Color( 0.34f, 0.21f, 0.11f );
 
 	/// <summary>
+	/// The stock Dresser's eye colour: a place on its palette (<see cref="Dresser.EyeColorGradient"/>),
+	/// 0 the citizen's brown. Goes to the renderers as eye_color, which the citizen's eyes read.
+	/// </summary>
+	[Property, Range( 0, 1 ), Group( "Eyes" ), Change( nameof( OnSkinChanged ) )]
+	public float IrisColor { get; set; } = 0f;
+
+	/// <summary>The stock Dresser's eye alignment: turns the citizen's irises in or out, 0.5 leaves them as made.</summary>
+	[Property, Range( 0, 1 ), Group( "Eyes" ), Change( nameof( OnSkinChanged ) )]
+	public float IrisAlign { get; set; } = 0.5f;
+
+	/// <summary>
 	/// Anime look for the body and everything it wears: every material is swapped for a copy on
 	/// shaders/fit_toon.shader with the same textures (flat bands of light, coloured shade, a
 	/// rim of light, the original's gloss as a hard highlight and a reflection), and skin toned
@@ -319,8 +330,47 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		foreach ( var entry in Clothing )
 			if ( entry.Clothing == item ) entry.Tint = tint;
+		Repaint( item, tint );
+	}
+
+	/// <summary>
+	/// Garments dyed a colour of their own, by item: hair dyed red, green or white instead of a
+	/// natural shade. The garment's tint then says how light the dye is, light to dark the same
+	/// way its own range goes. Not saved with the component.
+	/// </summary>
+	public Dictionary<Sandbox.Clothing, Color> Dyes { get; } = new();
+
+	/// <summary>Dyes a garment that is on (null takes the dye off), in place, as <see cref="SetClothingTint"/> does.</summary>
+	public void SetClothingDye( Sandbox.Clothing item, Color? dye )
+	{
+		if ( item is null ) return;
+		if ( dye is { } d ) Dyes[item] = d;
+		else Dyes.Remove( item );
+		Repaint( item, Clothing.FirstOrDefault( x => x.Clothing == item )?.Tint ?? item.TintDefault );
+	}
+
+	/// <summary>
+	/// A dye at a tint: its hue and saturation kept and only its brightness changed, from the
+	/// dye itself at 0 to a deep shade of it at 1. Multiplying the colour instead would shift
+	/// the hue as soon as one channel runs out (a bright blue going cyan).
+	/// </summary>
+	public static Color Dyed( Color dye, float tint )
+	{
+		var hsv = dye.ToHsv();
+		return new ColorHsv( hsv.Hue, hsv.Saturation, MathX.Lerp( hsv.Value, hsv.Value * 0.22f, tint.Clamp( 0, 1 ) ) ).ToColor();
+	}
+
+	// The colour a garment is drawn in, at a tint.
+	Color ColorOf( Sandbox.Clothing item, float? tint )
+	{
+		float t = tint?.Clamp( 0, 1 ) ?? item.TintDefault;
+		return Dyes.TryGetValue( item, out var dye ) ? Dyed( dye, t ) : item.TintSelection.Evaluate( t );
+	}
+
+	void Repaint( Sandbox.Clothing item, float? tint )
+	{
 		if ( !BodyTarget.IsValid() || item is null || !item.AllowTintSelect ) return;
-		var color = item.TintSelection.Evaluate( tint.Clamp( 0, 1 ) );
+		var color = ColorOf( item, tint );
 		string name = $"Clothing - {item.ResourceName}";
 		foreach ( var child in BodyTarget.GameObject.Children )
 		{
@@ -372,6 +422,19 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		var skin = FirstMaterial( worn.Select( x => x.Clothing.SkinMaterial ) );
 		var eyes = FirstMaterial( worn.Select( x => x.Clothing.EyesMaterial ) );
+
+		// A human body is skinned the stock way: a skin item is the whole look of the body, its
+		// head (a body group), its colour (a material group) and its skin material. Only one made
+		// for this body, the male or the female.
+		if ( IsHumanBody( BodyTarget.Model ) )
+		{
+			skin = FirstMaterial( worn.Select( x => x.Clothing.HumanSkinMaterial ) );
+			eyes = FirstMaterial( worn.Select( x => x.Clothing.HumanEyesMaterial ) );
+			var humanSkin = worn.Select( x => x.Clothing ).FirstOrDefault( x => x.HasHumanSkin && SamePath( x.HumanSkinModel, BodyTarget.Model.ResourcePath ) );
+			BodyTarget.BodyGroups = humanSkin?.HumanSkinBodyGroups ?? BodyTarget.Model.Parts.DefaultMask;
+			BodyTarget.MaterialGroup = humanSkin?.HumanSkinMaterialGroup ?? "default";
+		}
+
 		BodyTarget.SetMaterialOverride( skin, "skin" );
 		BodyTarget.SetMaterialOverride( eyes, "eyes" );
 
@@ -444,8 +507,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		// A garment that lost its copy of the skin no longer covers for the part it hides.
 		var hiding = worn.Select( x => x.Clothing ).Where( x => !skinless.Contains( x ) );
 
+		// Only what is hidden: the rest was set at the start (a human skin's head among them).
 		foreach ( var (name, value) in container.GetBodyGroups( hiding, BodyTarget.Model ) )
-			BodyTarget.SetBodyGroup( name, value );
+			if ( value != 0 ) BodyTarget.SetBodyGroup( name, value );
 		ApplyToon();
 
 		FittedCount = fittedCount;
@@ -499,6 +563,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		bool tinted = TintEyes && !UseLocalAvatar;
 		renderer.Attributes.Set( "eye_tinted", tinted ? 1f : 0f );
 		renderer.Attributes.Set( "eye_tint", new Vector3( ToLinear( EyeColor.r ), ToLinear( EyeColor.g ), ToLinear( EyeColor.b ) ) );
+		// Same as the stock Dresser's.
+		var iris = Dresser.EyeColorGradient.Evaluate( IrisColor.Clamp( 0, 1 ) );
+		renderer.Attributes.Set( "eye_color", new Vector4( iris.r, iris.g, iris.b, 1 ) );
+		renderer.Attributes.Set( "eye_align", new Vector2( IrisAlign.Clamp( 0, 1 ).Remap( 0, 1, -0.2f, 0.2f ), 0 ) );
 	}
 
 	static float ToLinear( float c ) => c <= 0.04045f ? c / 12.92f : MathF.Pow( (c + 0.055f) / 1.055f, 2.4f );
@@ -847,7 +915,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 				renderer.MaterialGroup = item.MaterialGroup;
 
 			if ( item.AllowTintSelect )
-				renderer.Tint = item.TintSelection.Evaluate( entry.Tint?.Clamp( 0, 1 ) ?? item.TintDefault );
+				renderer.Tint = ColorOf( item, entry.Tint );
 
 			// Something appearing out of nothing, a moment after the character did, is
 			// better eased in than popped in. Swapping in a more detailed model later isn't.
@@ -915,6 +983,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		return slots.HasFlag( Sandbox.Clothing.Slots.HeadTop ) && !slots.HasFlag( Sandbox.Clothing.Slots.HeadBottom ) && !item.HideBody.HasFlag( Sandbox.Clothing.BodyGroups.Head );
 	}
 	static bool IsHair( Clothing item ) => item.IsValid() && item.Category.ToString().StartsWith( "Hair" );
+
+	static bool IsHumanBody( Model model ) => (model?.ResourcePath ?? "").Replace( '\\', '/' ).StartsWith( "models/citizen_human/", StringComparison.OrdinalIgnoreCase );
+
+	static bool SamePath( string a, string b ) => string.Equals( (a ?? "").Replace( '\\', '/' ).TrimStart( '/' ), (b ?? "").Replace( '\\', '/' ).TrimStart( '/' ), StringComparison.OrdinalIgnoreCase );
 
 	static Material FirstMaterial( IEnumerable<string> paths )
 	{
