@@ -22,7 +22,7 @@ namespace Sandbox;
 /// citizen.vmdl as a human and throws away clothing that has no human variant.
 /// </summary>
 [Title( "Fit Dresser" ), Category( "Game" ), Icon( "checkroom" )]
-public sealed class FitDresser : Component, Component.ExecuteInEditor
+public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 {
 	/// <summary>The body to dress.</summary>
 	[Property] public SkinnedModelRenderer BodyTarget { get; set; }
@@ -227,6 +227,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	protected override void OnDestroy()
 	{
 		Live.Remove( this );
+		ReleaseDeforms();
 	}
 
 	protected override void OnDisabled()
@@ -450,6 +451,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		FittedCount = fittedCount;
 		StockCount = stockCount;
 		Log.Info( $"FitDresser on '{GameObject.Name}' ({bodyKind} clothing): {FittedCount} fitted, {StockCount} as is" );
+		UpdateDeforms();
 	}
 
 	void OnHeightChanged( float before, float after )

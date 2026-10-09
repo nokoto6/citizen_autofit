@@ -481,6 +481,51 @@ public static class ClothingFitter
 	}
 
 	/// <summary>
+	/// The citizen's deform volumes put onto another body (see <see cref="DeformPlacement"/>):
+	/// for each volume, by its name, its centre and three axes in the citizen's model space in,
+	/// the same in the body's out. Null for a volume there is nothing to place by, and for all of
+	/// them when the body can't be read. Worked out on worker threads the first time a body is
+	/// asked about. Call it from the main thread.
+	/// </summary>
+	public static async Task<(Vector3 Centre, Vector3 X, Vector3 Y, Vector3 Z)?[]> PlaceDeformsAsync( Model body, (string Name, Vector3 Centre, Vector3 X, Vector3 Y, Vector3 Z)[] volumes )
+	{
+		if ( body is null ) return null;
+		string bodyPath = Normalize( body.ResourcePath );
+
+		try
+		{
+			var loaded = await BodyAsync( bodyPath );
+			await GameTask.MainThread();
+			var mapped = await MappedAsync( loaded, BodyKind.Citizen );
+			var reference = await ReferenceAsync( BodyKind.Citizen );
+			await GameTask.MainThread();
+			if ( reference is null ) return null;
+
+			static Vec3 In( Vector3 v ) => new( v.x, v.y, v.z );
+			static Vector3 Out( Vec3 v ) => new( v.X, v.Y, v.Z );
+			var placed = new (Vector3, Vector3, Vector3, Vector3)?[volumes.Length];
+			for ( int i = 0; i < volumes.Length; i++ )
+			{
+				var (name, centre, x, y, z) = volumes[i];
+				Vec3 c = In( centre ), ax = In( x ), ay = In( y ), az = In( z );
+				if ( DeformPlacement.Place( mapped.Pose, reference.Geo, name, ref c, ref ax, ref ay, ref az ) )
+					placed[i] = (Out( c ), Out( ax ), Out( ay ), Out( az ));
+			}
+			return placed;
+		}
+		catch ( TaskCanceledException )
+		{
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"ClothingFitter: couldn't place the deforms on {bodyPath}. {Describe( e )}" );
+		}
+
+		await GameTask.MainThread();
+		return null;
+	}
+
+	/// <summary>
 	/// Fits one garment to one body and reports what came out, without touching any scene.
 	/// The third argument says which stock body the garment was made for: citizen (default), male or female.
 	/// clothingfitter_test models/citizen_custom/citizen_custom.vmdl models/citizen_clothes/jacket/biker_jacket/models/biker_jacket.vmdl
