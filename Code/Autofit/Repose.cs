@@ -100,6 +100,7 @@ public sealed class Repose
 	const float NapeDepth = 0.003f * Units.Metre;  // the nape: this close to the foremost point of the back of the neck
 	const float NapeTurn = 0.005f * Units.Metre;   // how far back the profile goes above and below a nape
 	const float NapeSpan = 0.05f * Units.Metre;    // within this far up and down
+	const float SkullBack = 0.005f * Units.Metre;  // the skull begins where the back of the head is this far behind the nape
 	const float MouthFrontDepth = 0.004f * Units.Metre;  // how deep the front of the mouth is taken
 	const float ProfileHalfWidth = 0.006f * Units.Metre; // how far either side of the middle the profile is read
 	const float ProfileDepth = 0.17f * Units.Metre;      // how far below the eyes
@@ -380,6 +381,7 @@ public sealed class Repose
 		TriMesh reposedMesh = null;
 		float napeHeight = float.NaN;
 		Vec3? chinAtRest = null;   // the bottom of this body's chin in its rest pose, when the stock body has none
+		float skullStock = float.NaN, skullRest = float.NaN;   // where the head begins behind, on the stock body and on this one in its rest pose
 
 		// The lower face: the tip of the nose, the mouth and the chin. Skin found by rays from
 		// the skull lands at the same angle on the other face, and a face with its features
@@ -392,17 +394,29 @@ public sealed class Repose
 			eyeOurs /= result.Eyes.Count;
 			eyeTheirs /= result.Eyes.Count;
 			bool stockLower = LowerFace( stock, stock.Positions, eyeOurs, out var stockFace );
-			if ( !stockLower )
+
+			// The body's own neck, read in its rest pose: taken into the stock proportions a face
+			// and a neck are stretched with them and a sparse profile breaks up.
+			var eyeRest = Vec3.Zero;
+			int restEyes = 0;
+			for ( int i = 0; i < bones; i++ )
+				if ( body.BoneNames[i].StartsWith( "eye_" ) && from[i] == i && EyeFront( body, body.Positions, i, out var front ) ) { eyeRest += front; restEyes++; }
+			// The back of a neck read from the collarbones up: from its joint up, a short neck has
+			// too little of it left for the nape to turn in.
+			int neckOurs = Array.IndexOf( stock.BoneNames, "neck_0" ), neckTheirs = Array.IndexOf( body.BoneNames, "clavicle_L" );
+			if ( restEyes > 0 )
 			{
+				var restMesh = new TriMesh( body.Positions, body.Indices );
+				eyeRest /= restEyes;
 				// A stock face with no chin to find (the citizen's goes straight down into its
 				// chest) leaves nothing to put this one's by, but its chin still tops its neck.
-				// Read in its rest pose: taken into the citizen's proportions, a face is stretched
-				// with its head and its profile breaks up.
-				var eyeRest = Vec3.Zero;
-				int restEyes = 0;
-				for ( int i = 0; i < bones; i++ )
-					if ( body.BoneNames[i].StartsWith( "eye_" ) && from[i] == i && EyeFront( body, body.Positions, i, out var front ) ) { eyeRest += front; restEyes++; }
-				if ( restEyes > 0 && Chin( new TriMesh( body.Positions, body.Indices ), eyeRest / restEyes, out var restChin ) ) chinAtRest = restChin;
+				if ( !stockLower && Chin( restMesh, eyeRest, out var restChin ) ) chinAtRest = restChin;
+				if ( neckTheirs >= 0 && neckOurs >= 0 && SkullStart( restMesh, eyeRest, body.BonePositions[neckTheirs].Z, false, out float rest ) )
+				{
+					skullRest = rest;
+					stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
+					if ( SkullStart( stockMesh, eyeOurs, stock.BonePositions[neckOurs].Z, true, out float ours ) ) skullStock = ours;
+				}
 			}
 			if ( stockLower && LowerFace( body, result.Positions, eyeTheirs, out var bodyFace ) )
 			{
@@ -537,9 +551,9 @@ public sealed class Repose
 		}
 		stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
 		if ( !float.IsNaN( napeHeight ) && result.Face.Count == 4 )
-			result.Neck = Neck.Find( result, stock, stockMesh, result.Face[3].Body, false, result.Face[3].Stock.Z, napeHeight );
+			result.Neck = Neck.Find( result, stock, stockMesh, result.Face[3].Body, skullStock, skullRest, false, result.Face[3].Stock.Z, napeHeight );
 		else if ( chinAtRest is Vec3 chin )
-			result.Neck = Neck.Find( result, stock, stockMesh, chin, true );
+			result.Neck = Neck.Find( result, stock, stockMesh, chin, skullStock, skullRest, true );
 		result.Trunk = Trunk.Find( result, stock, result.skinMesh );
 
 		return result;
@@ -702,6 +716,40 @@ public sealed class Repose
 			}
 			last = k;
 		}
+		return false;
+	}
+
+	/// <summary>
+	/// Where the head begins behind: up the middle of the back of the neck from its foremost
+	/// point (the nape), the first height where the profile has gone <see cref="SkullBack"/> back
+	/// from it, out over the skull. A stand-up collar ends under it. The neck under the nape may
+	/// go straight down a long way (Aurora's does), so only the skull has to turn; with
+	/// <paramref name="strict"/>, as for the stock body, the nape has to be one <see cref="Nape"/>
+	/// finds, which a head and neck in one gentle curve (the citizen's) has not.
+	/// </summary>
+	static bool SkullStart( TriMesh mesh, Vec3 eye, float bottom, bool strict, out float height )
+	{
+		height = float.NaN;
+		if ( strict && !Nape( mesh, eye, bottom, out _ ) ) return false;
+		int slices = (int)((eye.Z - bottom) / ProfileSlice);
+		if ( slices < 3 ) return false;
+		var back = new float[slices];
+		var found = new bool[slices];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int k = 0; k < slices; k++ )
+		{
+			var start = new Vec3( eye.X - Units.Metre, eye.Y, bottom + (k + 0.5f) * ProfileSlice );
+			mesh.Crossings( start, new Vec3( 1, 0, 0 ), 2 * Units.Metre, hits );
+			if ( hits.Count == 0 ) continue;
+			back[k] = start.X + hits[0].T;
+			found[k] = true;
+		}
+		int nape = -1;
+		for ( int k = 0; k < slices; k++ )
+			if ( found[k] && (nape < 0 || back[k] > back[nape]) ) nape = k;
+		if ( nape < 0 ) return false;
+		for ( int k = nape + 1; k < slices; k++ )
+			if ( found[k] && back[k] <= back[nape] - SkullBack ) { height = bottom + (k + 0.5f) * ProfileSlice; return true; }
 		return false;
 	}
 
@@ -1510,24 +1558,31 @@ public sealed class Neck
 	const float Thick = 0.075f * Units.Metre;   // those are for a neck up to this thick from its axis (the human's: 6 cm); a thicker one has them as many times further out (the citizen's: 14 cm)
 	const float ChinShare = 0.87f;              // with no chin to find, the chin is this share of the way from the collarbones up to the head joint (the human male's)
 	const float NapeShare = 1.23f;              // and the nape this share
+	const float SkullShare = 1.45f;             // and the start of the skull behind this share
 	const float Borrowed = 0.9f;                // a neck at least this many times as long as such a borrowed one keeps the cloth the skin carries to it (the humans': 0.97, 1.0)
 	const float Short = 0.7f;                   // and one this short or shorter is held to the borrowed one's shares in full (Aurora's and Akira's: 0.5)
 	const float Above = 0.02f * Units.Metre;    // the neck reaches this far over its top, and fades out over as much again
 	const float FaceSide = 0.5f;                // the neck's top is the chin straight ahead, the nape from this far round on (cosine: 60 degrees)
+	const float Beside = 0.3f, Behind = 0.7f;    // and where the head begins from 107 to 134 degrees round on, past the ears (minus the cosines)
 	const float MaxDrop = 0.05f * Units.Metre;  // cloth is lowered by no more than this down the body's neck in its rest pose
+	const float MinClear = 0.003f * Units.Metre; // a collar taken in round the neck stays this far off it
 	const float MaxMove = 0.15f * Units.Metre;  // and moved no further than this in the stock pose, where a neck can be twice as long (the citizen's for Akira's)
 
 	readonly Repose pose;
 	readonly float axisX, axisY;            // the stock neck's axis, upright through its joint
 	readonly float reach, core;             // Reach and Core for the stock neck's thickness
 	readonly float weight;                  // how much of the way down to its share cloth is lowered
-	readonly float collar, chin, nape;      // heights on the stock body
-	readonly float restCollar, restChin;    // heights on the body in its rest pose, along its up
+	readonly float shorter;                 // how much shorter this neck is than the stock one, 0..1 (see Borrowed and Short)
+	readonly float collar, chin, nape, skull;    // heights on the stock body; skull NaN when it wasn't found
+	readonly float restCollar, restChin, restSkull;  // heights on the body in its rest pose, along its up
 	readonly Vec3 up;
 
-	Neck( Repose pose, float axisX, float axisY, float scale, float weight, float collar, float chin, float nape, float restCollar, float restChin, Vec3 up )
+	Neck( Repose pose, float axisX, float axisY, float scale, float weight, float shorter, float collar, float chin, float nape, float skull, float restCollar, float restChin, float restSkull, Vec3 up )
 	{
 		this.weight = weight;
+		this.shorter = shorter;
+		this.skull = skull;
+		this.restSkull = restSkull;
 		this.pose = pose;
 		this.axisX = axisX;
 		this.axisY = axisY;
@@ -1544,7 +1599,9 @@ public sealed class Neck
 	/// <param name="bodyChin">The bottom of the chin on this body, in the stock pose or with <paramref name="atRest"/> in its rest pose.</param>
 	/// <param name="stockChin">How high the bottom of the chin is on the stock body. NaN for a stock body without one, see ChinShare.</param>
 	/// <param name="napeHeight">How high the nape is on the stock body. NaN for a stock body without one.</param>
-	public static Neck Find( Repose pose, SkinnedGeometry stock, TriMesh stockMesh, Vec3 bodyChin, bool atRest = false, float stockChin = float.NaN, float napeHeight = float.NaN )
+	/// <param name="stockSkull">Where the head begins behind on the stock body (see Repose.SkullStart); NaN when it wasn't found.</param>
+	/// <param name="restSkull">The same on this body in its rest pose, measured along its up; NaN when it wasn't found.</param>
+	public static Neck Find( Repose pose, SkinnedGeometry stock, TriMesh stockMesh, Vec3 bodyChin, float stockSkull, float restSkull, bool atRest = false, float stockChin = float.NaN, float napeHeight = float.NaN )
 	{
 		int neck = Array.IndexOf( stock.BoneNames, "neck_0" );
 		int left = Array.IndexOf( stock.BoneNames, "clavicle_L" ), right = Array.IndexOf( stock.BoneNames, "clavicle_R" );
@@ -1562,6 +1619,7 @@ public sealed class Neck
 			float joint = stock.BonePositions[head].Z - collar;
 			if ( float.IsNaN( stockChin ) ) stockChin = collar + ChinShare * joint;
 			if ( float.IsNaN( napeHeight ) ) napeHeight = collar + NapeShare * joint;
+			if ( float.IsNaN( stockSkull ) ) stockSkull = collar + SkullShare * joint;
 		}
 		float restCollar = Vec3.Dot( 0.5f * (pose.RestPositions[left] + pose.RestPositions[right]), up );
 		float restChin = Vec3.Dot( atRest ? bodyChin : pose.RestOf( bodyChin, up, out _ ), up );
@@ -1571,13 +1629,10 @@ public sealed class Neck
 		// come onto the humans as their own versions sit (fitted from it, a T-shirt's back is 137
 		// mm over the human male's collarbones, his own 150; on the borrowed neck it would be
 		// lowered to 111). Only a far shorter neck is held to it.
-		float weight = 1f;
-		if ( borrowed )
-		{
-			float ratio = (restChin - restCollar) / (stockChin - collar);
-			weight = Math.Clamp( (Borrowed - ratio) / (Borrowed - Short), 0f, 1f );
-			if ( weight <= 0 ) return null;
-		}
+		float shorter = Math.Clamp( (Borrowed - (restChin - restCollar) / (stockChin - collar)) / (Borrowed - Short), 0f, 1f );
+		float weight = borrowed ? shorter : 1f;
+		if ( weight <= 0 ) return null;
+		if ( float.IsNaN( stockSkull ) || float.IsNaN( restSkull ) || stockSkull - collar < 0.02f * Units.Metre || restSkull - restCollar < 0.02f * Units.Metre ) stockSkull = restSkull = float.NaN;
 
 		// How thick the stock neck is: from its axis out to its skin halfway up it, where it is
 		// thinnest. Sideways a ray can slip out through the seam between a head and a body made
@@ -1593,11 +1648,20 @@ public sealed class Neck
 			if ( hits.Count > 0 ) thick = MathF.Min( thick, hits[0].T );
 		}
 		float scale = thick < float.MaxValue ? MathF.Max( 1f, thick / Thick ) : 1f;
-		return new Neck( pose, axisX, axisY, scale, weight, collar, stockChin, napeHeight, restCollar, restChin, up );
+		return new Neck( pose, axisX, axisY, scale, weight, shorter, collar, stockChin, napeHeight, stockSkull, restCollar, restChin, restSkull, up );
 	}
 
 	/// <summary>How much a garment point whose closest stock skin is <paramref name="skin"/> is over the neck. 0..1.</summary>
-	public float Zone( Vec3 skin )
+	public float Zone( Vec3 skin ) => Zone( skin, 2 * Above );
+
+	/// <summary>
+	/// The same for being taken in round the neck (<see cref="TakeIn"/>): only up to the neck's
+	/// top, not over it, and right behind up to where the head begins. Over the nape at the
+	/// sides are the ears, and a balaclava taken in to the head there had them come through it.
+	/// </summary>
+	public float ZoneIn( Vec3 skin ) => Zone( skin, 0, true );
+
+	float Zone( Vec3 skin, float over, bool toSkull = false )
 	{
 		float dx = skin.X - axisX, dy = skin.Y - axisY;
 		float r = MathF.Sqrt( dx * dx + dy * dy );
@@ -1607,22 +1671,41 @@ public sealed class Neck
 		// Over the chin in front is the face, and cloth on it goes where the face goes.
 		float round = Math.Clamp( (1 - dx / MathF.Max( r, 1e-6f )) / (1 - FaceSide), 0f, 1f );
 		float neckTop = chin + (nape - chin) * round;
-		float top = Math.Clamp( (neckTop + 2 * Above - skin.Z) / Above, 0f, 1f );
+		if ( toSkull && !float.IsNaN( skull ) && skull > nape )
+			neckTop += (skull - nape) * Math.Clamp( (-dx / MathF.Max( r, 1e-6f ) - Beside) / (Behind - Beside), 0f, 1f );
+		float top = Math.Clamp( (neckTop + over - skin.Z) / Above, 0f, 1f );
 		float bottom = Math.Clamp( (skin.Z - collar) / (0.5f * (chin - collar)), 0f, 1f );
 		return weight * across * top * bottom;
 	}
 
-	/// <summary>The share of the stock body's neck a point of the stock pose is at.</summary>
-	public float Share( Vec3 stockPoint ) => (stockPoint.Z - collar) / (chin - collar);
+	// How far round from the front the stock skin is: 0 under the chin, 1 from FaceSide on.
+	float Round( Vec3 skin )
+	{
+		float dx = skin.X - axisX, dy = skin.Y - axisY;
+		float r = MathF.Sqrt( dx * dx + dy * dy );
+		return Math.Clamp( (1 - dx / MathF.Max( r, 1e-6f )) / (1 - FaceSide), 0f, 1f );
+	}
 
 	/// <summary>
 	/// How far to move a point in the stock pose and proportions up (never more than 0, so down
-	/// or not at all) for it to be no higher up the neck than <paramref name="share"/> once it is
-	/// back in the body's rest pose.
+	/// or not at all) for it to be no higher up the neck once it is back in the body's rest pose
+	/// than <paramref name="stockPoint"/> was up the stock body's, over the stock skin
+	/// <paramref name="skin"/>: as a share of the way from the collarbones to the chin, and
+	/// behind also of the way to where the head begins.
+	///
+	/// A big head comes far down the back of a short neck: Aurora's skull begins 9 cm over her
+	/// collarbones, the human male's 22 cm over his, while her chin is half as far up as his.
+	/// A puffer jacket's collar, 2.5 cm under the human's skull, went as far up her neck's share
+	/// to the chin and 2.5 cm up the back of her head.
 	/// </summary>
-	public float Lower( Vec3 fitted, float share )
+	public float Lower( Vec3 fitted, Vec3 stockPoint, Vec3 skin )
 	{
-		float target = restCollar + share * (restChin - restCollar);
+		float target = restCollar + (stockPoint.Z - collar) / (chin - collar) * (restChin - restCollar);
+		if ( !float.IsNaN( skull ) )
+		{
+			float behind = restCollar + (stockPoint.Z - collar) / (skull - collar) * (restSkull - restCollar);
+			if ( behind < target ) target += (behind - target) * Round( skin ) * shorter;
+		}
 		var rise = new Vec3( 0, 0, 1 );
 		float drop = 0;
 		for ( int pass = 0; pass < 3; pass++ )
@@ -1641,6 +1724,28 @@ public sealed class Neck
 			drop += (target - height) / slope;
 		}
 		return Math.Clamp( drop, -MaxMove, 0f );
+	}
+
+	/// <summary>
+	/// How far to move a point in the stock pose in towards the neck for it to stand no further
+	/// off this body's neck than <paramref name="clearance"/>, the cloth's gap to the stock skin.
+	/// Cloth goes with the skin it lies on, and a collar that stands round a thick neck and
+	/// meets the bottom of the skull stood round Aurora's thin neck as wide as round the human's,
+	/// opening out towards its top. Only on a neck far shorter than the stock one (see Borrowed):
+	/// the humans' fill their collars.
+	/// </summary>
+	public Vec3 TakeIn( Vec3 fitted, float clearance, TriMesh body, List<(float T, bool Leaving, int Tri)> hits )
+	{
+		if ( shorter <= 0 ) return Vec3.Zero;
+		var away = new Vec3( fitted.X - axisX, fitted.Y - axisY, 0 );
+		float r = away.Length();
+		if ( r < 1e-4f * Units.Metre ) return Vec3.Zero;
+		away /= r;
+		body.Crossings( new Vec3( axisX, axisY, fitted.Z ), away, r, hits );
+		// The neck is what the ray leaves first from the axis; from outside it, it is something else.
+		if ( hits.Count == 0 || !hits[0].Leaving ) return Vec3.Zero;
+		float want = hits[0].T + MathF.Max( clearance, MinClear );
+		return want < r ? away * ((want - r) * shorter) : Vec3.Zero;
 	}
 }
 
