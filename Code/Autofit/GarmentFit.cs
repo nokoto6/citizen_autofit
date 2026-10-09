@@ -276,7 +276,9 @@ public static class GarmentFit
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one (in the stock pose). Glasses go by them.</param>
 	/// <param name="solidOut">If given, set for the vertices of solid objects (glasses, a sword), which were moved as a whole and should be taken back to the body as a whole.</param>
 	/// <param name="stiff">Per stock bone, the part it belongs to that changes as a whole from body to body (a foot: its ankle bone), -1 for none. Garment on such a part follows one smooth change of it instead of every point of the skin.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null )
+	/// <param name="thickness"><see cref="BodyMap.Thickness"/>: per stock vertex, how many times as thick the body is there. Cloth over a slimmer body is taken in by it, see <see cref="TakeUpRoom"/>.</param>
+	/// <param name="clothOut">If given, set for the vertices fitted as cloth: not hair and not part of a solid object.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -288,6 +290,13 @@ public static class GarmentFit
 		for ( int i = 0; i < n; i++ ) pts[i] = verts[firstOf[i]];
 
 		Vec3 SkinMoveAt( Vec3 s, int tri ) => FieldAt( skinMove, s, tri );
+
+		float ThicknessAt( Vec3 s, int tri )
+		{
+			int ia = old.Tris[tri * 3], ib = old.Tris[tri * 3 + 1], ic = old.Tris[tri * 3 + 2];
+			Barycentric( s, old.Verts[ia], old.Verts[ib], old.Verts[ic], out float u, out float v, out float w );
+			return thickness[ia] * u + thickness[ib] * v + thickness[ic] * w;
+		}
 
 		Vec3 FieldAt( Vec3[] field, Vec3 s, int tri )
 		{
@@ -302,12 +311,14 @@ public static class GarmentFit
 		var move = new Vec3[n];
 		var gap0 = new float[n];
 		var away = new Vec3[n];   // direction from the skin to the vertex
+		var slimmer = new float[n];   // how many times as thick as the stock one the body is under the vertex, at most 1
 		for ( int i = 0; i < n; i++ )
 		{
 			Vec3 x = pts[i];
 			int src = firstOf[i];
 			float distance = old.Nearest( x, out var s, out int tri );
 			Vec3 from = s;
+			int fromTri = tri;
 			move[i] = SkinMoveAt( s, tri );
 
 			float mine = 0, share = 0;
@@ -329,10 +340,12 @@ public static class GarmentFit
 					if ( w < 0.1f || !byBone.Nearest( x, boneIndex[src * 4 + j], out var own, out int ownTri, out float ownDistance ) ) continue;
 					sum += SkinMoveAt( own, ownTri ) * w;
 					total += w;
-					if ( w > best ) { best = w; from = own; distance = ownDistance; }
+					if ( w > best ) { best = w; from = own; fromTri = ownTri; distance = ownDistance; }
 				}
 				if ( total > 0 ) move[i] = sum / total;
 			}
+
+			slimmer[i] = thickness != null && fromTri >= 0 ? MathF.Min( ThicknessAt( from, fromTri ), 1f ) : 1f;
 
 			gap0[i] = old.Inside( x ) ? -distance : distance;
 			if ( distance > 1e-7f * Units.Metre )
@@ -369,7 +382,8 @@ public static class GarmentFit
 		// the cloth out. Without this the cloth keeps its whole gap over the new bump, all round
 		// it, and the bump looks that much bigger.
 		var wanted = MeshTools.Copy( gap0 );
-		if ( givenMove == null ) TakeUpRoom( verts, tris, pts, move, gap0, away, wanted );
+		var takeIn = new float[n];
+		if ( givenMove == null ) TakeUpRoom( verts, tris, pts, move, gap0, away, wanted, slimmer, takeIn );
 
 		var fitted = new Vec3[n];
 		for ( int i = 0; i < n; i++ ) fitted[i] = pts[i] + move[i];
@@ -563,6 +577,19 @@ public static class GarmentFit
 		foreach ( var (root, idx) in members )
 			if ( !hair && (bends.Contains( root ) || !IsRigid( idx, firstOf, boneIndex, boneWeight )) ) cloth.Add( (root, idx) );
 
+		// Cloth is taken in over a slimmer body. Hair and solid things (glasses, a hat, a
+		// button) keep their size: they aren't cut to the body.
+		foreach ( var (_, idx) in cloth )
+		{
+			foreach ( int i in idx )
+			{
+				if ( takeIn[i] <= 0 ) continue;
+				move[i] -= away[i] * takeIn[i];
+				fitted[i] = pts[i] + move[i];
+				if ( wanted[i] > LayerGap ) wanted[i] = LayerGap + (wanted[i] - LayerGap) * slimmer[i];
+			}
+		}
+
 		foreach ( var (root, idx) in cloth )
 		{
 			// Interpolation and smoothing can leave a vertex a little under the new skin.
@@ -642,7 +669,7 @@ public static class GarmentFit
 			}
 		}
 
-		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin );
+		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness );
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
@@ -651,6 +678,13 @@ public static class GarmentFit
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
 		if ( solidOut != null )
 			for ( int i = 0; i < verts.Length; i++ ) solidOut[i] = isSolid[weld[i]];
+		if ( clothOut != null )
+		{
+			var isCloth = new bool[n];
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx ) isCloth[i] = true;
+			for ( int i = 0; i < verts.Length; i++ ) clothOut[i] = isCloth[weld[i]];
+		}
 		return result;
 	}
 
@@ -1345,8 +1379,18 @@ public static class GarmentFit
 	/// apron) keeps its thickness instead of its outside sinking into its inside. What the
 	/// body's outward move takes up of the room beyond that is taken off the cloth's move, and
 	/// the collision pass holds the cloth no further out than the room it has left.
+	///
+	/// On a body thinner than the stock one the cloth is taken in as well, the way a garment is
+	/// cut a size smaller: how far it stands off the skin past <see cref="LayerGap"/>, its room
+	/// and its padding alike, shrinks as much as the body is thinner there. The skeleton only
+	/// tells a body's lengths, and a girl's waist on a spine as long as a man's is two thirds as
+	/// deep. Following her skin in with every centimetre it stood off his, a Santa jacket cut
+	/// for a man's belly hung off her like a pot belly. Worked out here, put on the cloth only
+	/// once it is known which of the garment is cloth.
 	/// </summary>
-	static void TakeUpRoom( Vec3[] verts, int[] tris, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, float[] wanted )
+	/// <param name="slimmer">Per vertex, how many times as thick as the stock one the body under it is, at most 1.</param>
+	/// <param name="takeIn">Out: per vertex, how much closer to the skin it goes for that.</param>
+	static void TakeUpRoom( Vec3[] verts, int[] tris, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, float[] wanted, float[] slimmer, float[] takeIn )
 	{
 		TriMesh own = null;
 		var hits = new List<(float T, bool Leaving, int Tri)>();
@@ -1362,10 +1406,15 @@ public static class GarmentFit
 				if ( hit.T > RoomStep ) inside = MathF.Max( inside, hit.T + RoomStep );
 
 			float room = gap0[i] - inside - LayerGap;
-			if ( room <= 0 ) continue;
-			wanted[i] = gap0[i] - room;
-			float grow = Vec3.Dot( move[i], away[i] );
-			if ( grow > 0 ) move[i] -= away[i] * MathF.Min( grow, room );
+			float taken = 0;
+			if ( room > 0 )
+			{
+				wanted[i] = gap0[i] - room;
+				float grow = Vec3.Dot( move[i], away[i] );
+				if ( grow > 0 ) taken = MathF.Min( grow, room );
+				if ( taken > 0 ) move[i] -= away[i] * taken;
+			}
+			takeIn[i] = (gap0[i] - LayerGap - taken) * (1f - slimmer[i]);
 		}
 	}
 
@@ -1525,7 +1574,8 @@ public static class GarmentFit
 	/// vertex that sat under the cloth on the stock body has to be at least as far under it on
 	/// the new one, and the triangle above it is lifted until it is.
 	/// </summary>
-	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin )
+	/// <param name="thickness">Per stock vertex, how many times as thick the body is there (<see cref="BodyMap.Thickness"/>), or null. Cloth over a slimmer body was taken in, and keeps the skin covered from that much closer.</param>
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin, float[] thickness )
 	{
 		if ( clothTris.Count == 0 ) return;
 		var cloth = new TriMesh( pts, clothTris.ToArray() );
@@ -1564,6 +1614,7 @@ public static class GarmentFit
 			float gap = Vec3.Dot( above - old.Verts[v], outBefore[v] );
 			if ( MathF.Abs( gap ) < 0.7f * distance ) continue;
 			if ( gap <= 0 && (!clearSkin || gap < -ClearDepth) ) continue;
+			if ( thickness != null && gap > LayerGap && thickness[v] < 1f ) gap = LayerGap + (gap - LayerGap) * thickness[v];
 			if ( clearSkin ) gap = MathF.Max( gap, ClearGap );
 
 			int a = clothTris[tri * 3], b = clothTris[tri * 3 + 1], c = clothTris[tri * 3 + 2];

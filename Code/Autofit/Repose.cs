@@ -720,11 +720,22 @@ public sealed class Repose
 	/// <param name="bodyBones">The body's four bone slots per vertex, as stock bone indices.</param>
 	/// <param name="ownBones">The garment's own bone slots. A solid piece gets one set of weights for the whole of it, so it stays rigid: the skin's where it sits on the skin (a button on a shirt moves with the cloth round it), its own where it doesn't.</param>
 	/// <param name="skip">Stock bones whose weights don't count (the eyes: what an eye bone drives is the eye, not skin anything rests on).</param>
-	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip )
+	/// <param name="cloth">The vertices fitted as cloth (<see cref="GarmentFit.Fit"/>), or null. Cloth lying on cloth under it is as far off the skin as the innermost layer, see <see cref="OffSkin"/>.</param>
+	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip, bool[] cloth = null )
 	{
 		var weld = MeshTools.Weld( fitted, out int n );
 		var first = new int[n];
 		for ( int i = fitted.Length - 1; i >= 0; i-- ) first[weld[i]] = i;
+
+		TriMesh layers = null;
+		if ( cloth != null )
+		{
+			var clothTris = new List<int>();
+			for ( int t = 0; t + 2 < tris.Length; t += 3 )
+				if ( cloth[tris[t]] && cloth[tris[t + 1]] && cloth[tris[t + 2]] ) { clothTris.Add( tris[t] ); clothTris.Add( tris[t + 1] ); clothTris.Add( tris[t + 2] ); }
+			if ( clothTris.Count > 0 ) layers = new TriMesh( fitted, clothTris.ToArray() );
+		}
+		var hits = new List<(float T, bool Leaving, int Tri)>();
 
 		// Per welded vertex: the skin's weights near the skin, the garment's own further out,
 		// blended by how far off the skin it is. Bones get a column each, for the smoothing.
@@ -739,6 +750,7 @@ public sealed class Repose
 			float skinShare = 0;
 			{
 				float d = body.Nearest( fitted[v], out var q, out int tri );
+				if ( layers != null && cloth[v] ) d = OffSkin( fitted[v], q, d, layers, hits );
 				skinShare = Math.Clamp( (SkinFar - d) / (SkinFar - SkinNear), 0f, 1f );
 				fixedRow[r] = d <= SkinNear || (solid != null && solid[v]);   // on the skin: exactly the skin's way back, not evened out
 				if ( tri >= 0 && skinShare > 0 )
@@ -862,6 +874,25 @@ public sealed class Repose
 	const float SkinNear = 0.03f * Units.Metre;   // cloth this close to the skin goes back with it
 	const float SkinFar = 0.06f * Units.Metre;    // and this far off, by its own weights
 	const int SmoothPasses = 3;
+	const float OwnLayer = 0.001f * Units.Metre;  // cloth closer to a vertex than this is the vertex's own surface
+
+	/// <summary>
+	/// How far off the skin a bit of cloth is, counted from the innermost of the garment's
+	/// layers between it and the skin: a thick garment rests on the skin through its inside. A
+	/// Santa jacket's fur trim is fur over cloth over more fur, 11 cm thick. Its inside lay on
+	/// the bust and went back with the bust, its outside, more than 6 cm off the skin, went back
+	/// by the jacket's own weights, which shrink less than a bust smaller than the stock one.
+	/// The trim came back a fifth thicker and stood off the bust like a shelf.
+	/// </summary>
+	static float OffSkin( Vec3 p, Vec3 skin, float distance, TriMesh layers, List<(float T, bool Leaving, int Tri)> hits )
+	{
+		if ( distance <= SkinNear ) return distance;
+		Vec3 way = (skin - p) / distance;
+		layers.Crossings( p + way * OwnLayer, way, distance - OwnLayer, hits );
+		float innermost = 0;
+		foreach ( var hit in hits ) innermost = MathF.Max( innermost, hit.T + OwnLayer );
+		return distance - innermost;
+	}
 
 	static float[] Barycentric( Vec3 p, Vec3 a, Vec3 b, Vec3 c )
 	{

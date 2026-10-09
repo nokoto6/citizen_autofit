@@ -30,12 +30,22 @@ public sealed class BodyMap
 	/// </summary>
 	public bool[] Found;
 
+	/// <summary>
+	/// Per stock vertex, how many times as thick the other body is there as the stock one,
+	/// through the body from one side to the other (see <see cref="MeasureThickness"/>). What
+	/// cloth is taken in by on a slimmer body.
+	/// </summary>
+	public float[] Thickness;
+
 	public int ByUv, ByRays, NoMatch, Outliers;
 
 	const float LookBeyond = 0.5f * Units.Metre;    // how far past the old skin we look for the new one
 	const float UvMaxMove = 0.15f * Units.Metre;    // a UV match further away than this is a different UV layout
 	const int MinOwnTriangles = 8;                  // a bone needs this many skin triangles of its own to get an axis
 	const float MinWeight = 0.05f;
+	const float ThroughStart = 0.01f * Units.Metre;   // how far off the skin a measure through the body starts
+	const float MinThrough = 0.01f * Units.Metre;     // the stock body thinner than this somewhere says nothing about its size
+	const int ThicknessSmoothing = 3;                 // passes of evening out the measures over the skin
 
 	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs ) =>
 		Build( stock, old, other, otherUvs, null, null );
@@ -168,7 +178,96 @@ public sealed class BodyMap
 			result.Found[i] = kept[weld[i]];
 		}
 
+		var thickness = MeasureThickness( stock, old, other, oldNormals, weld, firstOf, move, edges );
+		result.Thickness = new float[old.Verts.Length];
+		for ( int i = 0; i < old.Verts.Length; i++ ) result.Thickness[i] = thickness[weld[i]];
 		return result;
+	}
+
+	/// <summary>
+	/// How many times thicker the other body is than the stock one, per welded stock vertex.
+	/// The skeleton tells how long each part of a body is, not how thick: a girl's waist on a
+	/// spine as long as a man's is two thirds as deep. Each skin vertex is measured straight
+	/// through the body along its normal, from the front of a waist to its back, say, on both
+	/// bodies (the other one where that skin went), and the ratios are smoothed over the skin:
+	/// a measure that slipped between two fingers or grazed an ear is one wild value among
+	/// sensible neighbours. Where nothing could be measured the neighbours' value spreads in.
+	///
+	/// The head and the feet count as no thinner than the stock ones. They are sized as a whole
+	/// already: <see cref="Repose"/> measures the head on its skin, and a foot changes as one
+	/// piece (see GarmentFit's Stiffen). Nor do lines through them say much: eyes, a mouth and
+	/// ears break up the inside of a head, and under a shoe is a sole, not room.
+	/// </summary>
+	static float[] MeasureThickness( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec3[] oldNormals, int[] weld, int[] firstOf, Vec3[] move, List<(int A, int B)> edges )
+	{
+		int bones = stock.BoneNames.Length;
+		var whole = new bool[bones];
+		for ( int b = 0; b < bones; b++ )   // parents come first
+		{
+			string name = stock.BoneNames[b];
+			int parent = stock.BoneParents[b];
+			whole[b] = name == "head" || name.StartsWith( "ankle_" ) || (parent >= 0 && whole[parent]);
+		}
+
+		int n = firstOf.Length;
+		var normals = new Vec3[n];
+		for ( int v = 0; v < weld.Length; v++ ) normals[weld[v]] += oldNormals[v];
+		var ratio = new Vec3[n];
+		var known = new bool[n];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int i = 0; i < n; i++ )
+		{
+			int v = firstOf[i];
+			float onWhole = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = stock.BoneIndex[v * 4 + j];
+				if ( bone >= 0 && whole[bone] ) onWhole += stock.BoneWeight[v * 4 + j];
+			}
+			if ( onWhole >= 0.5f )
+			{
+				ratio[i] = new Vec3( 1, 0, 0 );
+				known[i] = true;
+				continue;
+			}
+
+			float length = normals[i].Length();
+			if ( length < 1e-20f ) continue;
+			Vec3 normal = normals[i] / length;
+			float ours = Through( old, old.Verts[v], normal, hits );
+			if ( ours < MinThrough ) continue;
+			float theirs = Through( other, old.Verts[v] + move[i], normal, hits );
+			if ( theirs <= 0 ) continue;
+			ratio[i] = new Vec3( theirs / ours, 0, 0 );
+			known[i] = true;
+		}
+
+		MeshTools.Relax( ratio, known, edges, ThicknessSmoothing, 0.5f );
+		for ( int pass = 0; pass < 50 && Array.IndexOf( known, false ) >= 0; pass++ )
+			MeshTools.Relax( ratio, known, edges, 1, 0f );
+
+		var result = new float[n];
+		for ( int i = 0; i < n; i++ )
+			result[i] = known[i] ? Math.Clamp( ratio[i].X, 0.4f, 2.5f ) : 1f;
+		return result;
+	}
+
+	/// <summary>
+	/// How far a line into the body from a point on its skin, against the normal, runs inside
+	/// it. Pieces stuck into each other (a limb into a torso, an eyeball into a head) count as
+	/// one. 0 if the line doesn't start on the skin.
+	/// </summary>
+	static float Through( TriMesh body, Vec3 p, Vec3 normal, List<(float T, bool Leaving, int Tri)> hits )
+	{
+		body.Crossings( p + normal * ThroughStart, normal * -1f, Units.Metre, hits );
+		if ( hits.Count == 0 || hits[0].Leaving || hits[0].T > 2f * ThroughStart ) return 0;
+		int depth = 0;
+		foreach ( var hit in hits )
+		{
+			depth += hit.Leaving ? -1 : 1;
+			if ( depth == 0 ) return hit.T - hits[0].T;
+		}
+		return 0;
 	}
 
 	static bool UvMatch( UvLookup uv, SkinnedGeometry stock, TriMesh old, Vec3[] oldNormals, int v, out Vec3 p )
