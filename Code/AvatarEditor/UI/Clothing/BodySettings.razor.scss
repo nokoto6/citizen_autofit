@@ -61,7 +61,14 @@ TextEntry
     gap: 10px;
 }
 
-// Four bodies in one row: the menu's two fit with room to spare, these would wrap mid-word.
+BodySettings .model-rows
+{
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+// The bodies in a row: the menu's two fit with room to spare, these would wrap mid-word.
 // Under BodySettings, or the menu's own button group padding, loaded later, wins.
 BodySettings .buttongroup
 {

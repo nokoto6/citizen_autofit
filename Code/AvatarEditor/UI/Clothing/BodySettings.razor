@@ -14,10 +14,16 @@
 
     <FormRow Label="Model">
         <Content>
-            <div class="buttongroup bg-round">
-                @foreach ( var (kind, title) in AvatarEditManager.BodyChoices )
+            @* Two rows, the stock bodies and the anime ones: five in one row don't fit. *@
+            <div class="model-rows">
+                @foreach ( bool anime in new[] { false, true } )
                 {
-                    <div class="@(Manager.Body == kind ? "active" : "")" onclick=@(() => Manager.Body = kind)>@title</div>
+                    <div class="buttongroup bg-round">
+                        @foreach ( var (kind, title) in AvatarEditManager.BodyChoices.Where( x => AvatarEditManager.IsAnimeBody( x.Kind ) == anime ) )
+                        {
+                            <div class="@(Manager.Body == kind ? "active" : "")" onclick=@(() => Manager.Body = kind)>@title</div>
+                        }
+                    </div>
                 }
             </div>
         </Content>
