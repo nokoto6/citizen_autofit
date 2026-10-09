@@ -778,8 +778,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 	// How much longer each part of the skeleton gets when the stock graph doubles the height,
 	// measured off its Scale_Twice_delta (the citizen's and the human's are the same clip).
-	// Legs and arms by the joint, the torso by its spine.
-	const float LegsTwice = 1.58f, ArmsTwice = 1.40f, TorsoTwice = 1.95f;
+	// Legs and arms by the joint, the torso by its spine. The arms grow as the legs do, more than
+	// the stock graph's 1.40: with the torso lengthened as well they came out short at full height.
+	const float LegsTwice = 1.58f, ArmsTwice = 1.65f, TorsoTwice = 1.95f;
 
 	// Moving the joints apart only stretches the skin where it bends between two bones; a thigh
 	// skinned to its one bone would keep its length and only the knee would get longer. So the
