@@ -478,6 +478,24 @@ public sealed class Repose
 					result.Landmarks.Add( (ours, shift, BustReach) );
 			}
 		}
+		else if ( tips.Count == 2 )
+		{
+			// A flat chest with a bust to go to: a man's chest still has its front, the tip of
+			// each pectoral over the fold under it, and clothing for him is cut to it (a bra made
+			// for the human male has its cups there). That goes onto the bust. Without it a bra for
+			// the man sat on Aurora with its cups 13 mm over her breasts and its band 36 mm over
+			// the fold under them, her lower breasts bare. A chest with no fold anywhere (the
+			// citizen's) has nothing to go by.
+			if ( Pectoral( stock, stockMesh, out var pec, out float centre ) )
+				foreach ( var tip in tips )
+				{
+					// The pectoral on the tip's side, mirrored across the middle.
+					var mine = tip.Y >= centre ? pec : new Vec3( pec.X, 2 * centre - pec.Y, pec.Z );
+					Vec3 shift = tip - mine;
+					if ( shift.Length() < 0.15f * Units.Metre )
+						result.Landmarks.Add( (mine, shift, BustReach) );
+				}
+		}
 
 		// Last: everything above goes by the skin as it is.
 		if ( tips.Count > 0 ) Drape( result.Positions, body, to, stock, tips );
@@ -759,6 +777,72 @@ public sealed class Repose
 		// is the breastbone itself, on a barrel chest or a man's pecs.
 		if ( (front.Y - centre) * side < MinTipAcross * reach ) bust = 0;
 		return true;
+	}
+
+	const float MinPectoral = 0.004f * Units.Metre;   // a chest front standing out this much over the fold under it is a pectoral
+	const float PectoralAcross = 0.75f;               // and no further out to the side than this share of the way to the shoulder
+
+	/// <summary>
+	/// The tip of a pectoral on a flat chest: of the front of the chest, read off with rays, the
+	/// foremost point that stands out over a fold just under it, a fold the front comes out of
+	/// again below (a belly standing out further lower down doesn't hide it). Out at the side of
+	/// the chest the front only falls away round to the arm; that is no fold and no tip. Read off
+	/// both sides at once, the front averaged across the middle: on the human male the fold under
+	/// the right pectoral is a millimetre shallower than the left one's, too shallow on its own.
+	/// </summary>
+	/// <param name="tip">The left pectoral's tip; the right one is its mirror image across <paramref name="centre"/>.</param>
+	static bool Pectoral( SkinnedGeometry stock, TriMesh mesh, out Vec3 tip, out float centre )
+	{
+		tip = Vec3.Zero;
+		centre = 0;
+		int low = Array.IndexOf( stock.BoneNames, "spine_1" ), high = Array.IndexOf( stock.BoneNames, "clavicle_L" );
+		int shoulder = Array.IndexOf( stock.BoneNames, "arm_upper_L" );
+		if ( low < 0 || high < 0 || shoulder < 0 || mesh == null ) return false;
+		float z0 = stock.BonePositions[low].Z, z1 = stock.BonePositions[high].Z;
+		centre = stock.BonePositions[low].Y;
+		float reach = MathF.Abs( stock.BonePositions[shoulder].Y - centre ) * 0.8f;
+		const float step = 0.005f * Units.Metre;
+		int columns = (int)MathF.Ceiling( reach * (PectoralAcross - MinTipAcross) / step ) + 1;
+		int rows = (int)MathF.Ceiling( (z1 - z0) / step ) + 1;
+		var front = new float[columns, rows];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int c = 0; c < columns; c++ )
+			for ( int r = 0; r < rows; r++ )
+			{
+				float sum = 0;
+				int count = 0;
+				for ( int way = -1; way <= 1; way += 2 )
+				{
+					var start = new Vec3( Units.Metre, centre + way * (MinTipAcross * reach + c * step), z0 + r * step );
+					mesh.Crossings( start, new Vec3( -1, 0, 0 ), 2 * Units.Metre, hits );
+					if ( hits.Count > 0 ) { sum += start.X - hits[0].T; count++; }
+				}
+				front[c, r] = count == 2 ? sum / 2 : float.NaN;
+			}
+
+		float most = float.MinValue;
+		bool found = false;
+		int depth = (int)(BustDepth / step);
+		for ( int c = 0; c < columns; c++ )
+			for ( int r = 1; r < rows; r++ )
+			{
+				float x = front[c, r];
+				if ( float.IsNaN( x ) ) continue;
+				// Down to the fold: the lowest the front goes before it comes out past this point
+				// again, and how far it comes out again under the fold.
+				float fold = x, after = float.MinValue;
+				for ( int d = r - 1; d >= 0 && r - d <= depth; d-- )
+				{
+					if ( float.IsNaN( front[c, d] ) || front[c, d] > x ) break;
+					if ( front[c, d] < fold ) { fold = front[c, d]; after = fold; }
+					else after = MathF.Max( after, front[c, d] );
+				}
+				if ( x - fold < MinPectoral || after - fold < MinPectoral || x <= most ) continue;
+				most = x;
+				tip = new Vec3( x, centre + MinTipAcross * reach + c * step, z0 + r * step );
+				found = true;
+			}
+		return found;
 	}
 
 	static bool HasChildren( SkinnedGeometry geo, int bone )
