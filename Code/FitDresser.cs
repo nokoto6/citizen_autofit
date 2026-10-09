@@ -682,7 +682,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	// skinned to its one bone would keep its length and only the knee would get longer. So the
 	// bones of the lengthened parts are scaled too: along the bone (their X axis) by as much as
 	// the part grows, across it by this share of that, or a tall body would come out thin and
-	// a short one stocky.
+	// a short one stocky. Not the spine: a longer torso is no thicker round the belly.
 	const float ThickShare = 0.5f;
 
 	// Height for a body with proportions of its own: 1 is as built.
@@ -693,7 +693,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 	// at twice the height, what the bone itself is scaled by along its length then, and whether
 	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
-	float[] stretchTwice, lengthTwice;
+	float[] stretchTwice, lengthTwice, thickShare;
 	bool[] underPelvis;
 	int[] feet;
 	Transform[] animated, stretchedPose;
@@ -714,7 +714,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 
 		var bones = body.Model.Bones.AllBones;
 		// After a hotload the tables can be missing ones added since they were made.
-		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || lengthTwice?.Length != bones.Count || thickShare?.Length != bones.Count || feet is null )
 			MakeStretch( body.Model );
 
 		var so = body.SceneModel;
@@ -751,7 +751,8 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			var pose = stretchedPose[i];
 			if ( underPelvis[i] ) pose.Position += Vector3.Up * lift;
 			float along = 1f + (stretch - 1f) * (lengthTwice[i] - 1f);
-			pose.Scale = new Vector3( along, 1f + (along - 1f) * ThickShare, 1f + (along - 1f) * ThickShare );
+			float thick = 1f + (along - 1f) * thickShare[i];
+			pose.Scale = new Vector3( along, thick, thick );
 			so.SetBoneOverride( i, pose );
 		}
 		stretched = true;
@@ -771,6 +772,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 		stretchModel = model;
 		stretchTwice = new float[bones.Count];
 		lengthTwice = new float[bones.Count];
+		thickShare = new float[bones.Count];
 		underPelvis = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
@@ -794,6 +796,7 @@ public sealed class FitDresser : Component, Component.ExecuteInEditor
 			else if ( name.StartsWith( "leg_upper_" ) || name.StartsWith( "leg_lower_" ) ) length = LegsTwice;
 			else if ( name.StartsWith( "arm_upper_" ) || name.StartsWith( "arm_lower_" ) ) length = ArmsTwice;
 			lengthTwice[i] = length;
+			thickShare[i] = name.StartsWith( "spine_" ) ? 0f : ThickShare;
 
 			underPelvis[i] = name == "pelvis" || (bone.Parent is not null && underPelvis[bone.Parent.Index]);
 			if ( name.StartsWith( "ankle_" ) ) feetList.Add( i );
