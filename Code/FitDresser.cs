@@ -853,8 +853,11 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		float torso = 0f, legs = 0f;
 		foreach ( var bone in bones )
 		{
-			if ( bone.Name.StartsWith( "spine_" ) ) torso += bone.LocalTransform.Position.Length;
-			else if ( bone.Name is "leg_lower_L" or "ankle_L" ) legs += bone.LocalTransform.Position.Length;
+			// LocalTransform is from the model's root, not the parent.
+			if ( bone.Parent is null ) continue;
+			float offset = (bone.LocalTransform.Position - bone.Parent.LocalTransform.Position).Length;
+			if ( bone.Name.StartsWith( "spine_" ) ) torso += offset;
+			else if ( bone.Name is "leg_lower_L" or "ankle_L" ) legs += offset;
 		}
 		float legsTwice = legs > 0f ? LegsTwice + (TorsoTwice - 1f) * torso / legs : LegsTwice;
 
