@@ -167,6 +167,12 @@ public sealed partial class AvatarEditManager : Component
 
 	protected override void OnUpdate()
 	{
+		if ( recolour is not null && sinceDyed >= RecolourAfter )
+		{
+			var item = recolour;
+			recolour = null;
+			SetTint( item, GetTint( item ) );
+		}
 		if ( Shown?.BodyTarget is not { } renderer || Scene.Camera is null ) return;
 		UpdateEyes( renderer );
 		UpdateCamera( renderer );
@@ -284,7 +290,15 @@ public sealed partial class AvatarEditManager : Component
 		// brown hair violet until the body was switched away and back, which sets them all anew.
 		SyncDyes( d );
 		d.SetClothingDye( clothing, dye >= 0 && dye < DyePalette.Length ? DyePalette[dye].Color : null );
+		// The shade is put on again a moment later, once the colour panel has redrawn for the new
+		// dye: picking natural after a dye left the hair violet until the shade was moved.
+		recolour = clothing;
+		sinceDyed = 0;
 	}
+
+	Clothing recolour;
+	RealTimeSince sinceDyed;
+	const float RecolourAfter = 0.15f;
 
 	void SyncDyes( FitDresser d )
 	{
