@@ -1806,6 +1806,8 @@ public static class GarmentFit
 
 	const float BindTurnSlack = 0.02f;                     // radians (about a degree): bind poses turned less than this apart are the same
 	const float BindMoveSlack = 0.002f * Units.Metre;      // and moved less than this
+	const float OwnFrameTurn = 0.17f;                      // radians (about 10 degrees): a skeleton turned this far as a whole was exported in a frame of its own
+	const float OwnFrameMove = 0.05f * Units.Metre;        // or moved this far
 
 	/// <summary>
 	/// Puts a garment exported in a frame of its own into the stock body's. Bone merging hangs
@@ -1813,9 +1815,9 @@ public static class GarmentFit
 	/// a cigar exported with its whole skeleton turned a quarter round about the vertical still
 	/// sits in the mouth. The fit works in model space and took the vertices where they lie in
 	/// the file: to the side of the head. Here the garment goes where bone merging puts it on
-	/// the stock body. Only a garment whose bones are all off by one and the same turn and shift
-	/// is moved: one whose bones disagree with the stock ones each in its own way was made for
-	/// an older skeleton, and is left as it is.
+	/// the stock body. Only a garment whose bones are all off by one and the same turn and shift,
+	/// and by a lot, is moved. Stock garments made for an older citizen have skeletons a few
+	/// millimetres or degrees off, as a whole or bone by bone, and keep the fit they always had.
 	/// </summary>
 	/// <returns>False if the garment was left as it is.</returns>
 	public static bool ToStockBind( SkinnedGeometry garment, SkinnedGeometry stock )
@@ -1844,8 +1846,8 @@ public static class GarmentFit
 		float angle = 2f * MathF.Acos( Math.Clamp( MathF.Abs( turn[3] ), 0f, 1f ) );
 		bool moved = false;
 		for ( int i = 0; i < bones && !moved; i++ )
-			moved = used[i] && (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - garment.BonePositions[i]).Length() > BindMoveSlack;
-		if ( angle <= BindTurnSlack && !moved ) return false;
+			moved = used[i] && (Quat.Rotate( turn, garment.BonePositions[i] ) + shift - garment.BonePositions[i]).Length() > OwnFrameMove;
+		if ( angle < OwnFrameTurn && !moved ) return false;
 
 		for ( int v = 0; v < garment.Positions.Length; v++ )
 		{
