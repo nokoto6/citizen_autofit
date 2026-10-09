@@ -665,7 +665,7 @@ public static class GarmentFit
 				foreach ( int i in idx )
 				{
 					float w = neck.Zone( skinAt[i] );
-					if ( w > 0 ) drop[i] = new Vec3( 0, 0, w * neck.Lower( pts[i] + move[i], neck.Share( pts[i] ) ) );
+					if ( w > 0 ) drop[i] = new Vec3( 0, 0, w * neck.Lower( pts[i] + move[i], pts[i], skinAt[i] ) );
 				}
 
 			// Each vertex works its drop out on its own. Evened out over its neighbours, the cloth
@@ -675,6 +675,23 @@ public static class GarmentFit
 				foreach ( int i in idx )
 				{
 					move[i] += drop[i];
+					fitted[i] = pts[i] + move[i];
+				}
+
+			// Then in round the neck where it now is, as far off it as off the stock skin.
+			var inward = new Vec3[n];
+			var neckHits = new List<(float T, bool Leaving, int Tri)>();
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					float w = neck.ZoneIn( skinAt[i] );
+					if ( w > 0 ) inward[i] = w * neck.TakeIn( fitted[i], gap0[i], other, neckHits );
+				}
+			MeshTools.Relax( inward, all, edges, 2, 0.5f );
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					move[i] += inward[i];
 					fitted[i] = pts[i] + move[i];
 				}
 		}
