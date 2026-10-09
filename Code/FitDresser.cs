@@ -510,6 +510,11 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		// Only what is hidden: the rest was set at the start (a human skin's head among them).
 		foreach ( var (name, value) in container.GetBodyGroups( hiding, BodyTarget.Model ) )
 			if ( value != 0 ) BodyTarget.SetBodyGroup( name, value );
+
+		// A body with brows of its own (Aurora's are a mesh of their own) takes them off for brows
+		// worn as clothing, and with the head when something hides it.
+		if ( worn.Any( x => x.Clothing.Category == Sandbox.Clothing.ClothingCategory.Eyebrows ) || hiding.Any( x => x.HideBody.HasFlag( Sandbox.Clothing.BodyGroups.Head ) ) )
+			HideBodyGroup( BrowsGroup );
 		ApplyToon();
 
 		FittedCount = fittedCount;
@@ -993,6 +998,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		return slots.HasFlag( Sandbox.Clothing.Slots.HeadTop ) && !slots.HasFlag( Sandbox.Clothing.Slots.HeadBottom ) && !item.HideBody.HasFlag( Sandbox.Clothing.BodyGroups.Head );
 	}
 	static bool IsHair( Clothing item ) => item.IsValid() && item.Category.ToString().StartsWith( "Hair" );
+
+	const string BrowsGroup = "Brows";
+
+	// Sets a body group to its last choice, the empty one, as the stock dresser hides them. Not
+	// every body has every group.
+	void HideBodyGroup( string name )
+	{
+		var part = BodyTarget.Model?.Parts?.All?.FirstOrDefault( x => x.Name.Equals( name, StringComparison.OrdinalIgnoreCase ) );
+		if ( part?.Choices is { Count: > 1 } choices )
+			BodyTarget.SetBodyGroup( part.Name, choices.Count - 1 );
+	}
 
 	static bool IsHumanBody( Model model ) => (model?.ResourcePath ?? "").Replace( '\\', '/' ).StartsWith( "models/citizen_human/", StringComparison.OrdinalIgnoreCase );
 
