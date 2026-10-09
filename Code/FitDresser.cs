@@ -198,6 +198,29 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	}
 
 	/// <summary>
+	/// Prints, for each dresser, every tinted garment: the colour its renderers are drawn in, the
+	/// dye on it and the shade asked for, and the colour those should give. Changes nothing.
+	/// </summary>
+	[ConCmd( "fitdresser_tints" )]
+	public static void Tints()
+	{
+		Live.RemoveWhere( x => !x.IsValid() );
+		foreach ( var dresser in Live )
+		{
+			if ( !dresser.BodyTarget.IsValid() ) continue;
+			Log.Info( $"fitdresser_tints: '{dresser.GameObject.Name}' enabled {dresser.GameObject.Enabled}, {dresser.Dyes.Count} dyes: {string.Join( ", ", dresser.Dyes.Select( x => $"{x.Key.ResourceName}={x.Value.Hex}" ) )}" );
+			foreach ( var entry in dresser.Clothing )
+			{
+				var item = entry?.Clothing;
+				if ( item is null || !item.AllowTintSelect ) continue;
+				var drawn = dresser.BodyTarget.GameObject.Children.Where( x => x.Name == $"Clothing - {item.ResourceName}" )
+					.SelectMany( x => x.Components.GetAll<SkinnedModelRenderer>() ).Select( x => x.Tint.Hex );
+				Log.Info( $"   {item.ResourceName}: shade {entry.Tint?.ToString() ?? "default"}, should be {dresser.ColorOf( item, entry.Tint ).Hex}, drawn {string.Join( " ", drawn )}" );
+			}
+		}
+	}
+
+	/// <summary>
 	/// Prints, for each dresser's body, what its toon copies were given: shader, colour texture
 	/// and features of each material slot. Changes nothing.
 	/// </summary>
