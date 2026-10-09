@@ -70,6 +70,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float ShoulderWidth { get; set; } = 0.5f;
 
 	/// <summary>
+	/// How strong, wide and square the jaw is, 0 as built: the body's own <see cref="JawMorph"/>
+	/// morph, which Aurora and Akira have. Bodies without it ignore this.
+	/// </summary>
+	[Property, Range( 0, 1 )]
+	public float JawStrength { get; set; } = 0f;
+
+	public const string JawMorph = "jaw_strong";
+	float jawSet = -1f;
+	SceneModel jawOn;
+
+	/// <summary>
 	/// Skin tone, same as the stock Dresser's tint: 0 to 1 across the skin shader's range of
 	/// tones, set on the body and on any skin a garment carries. With Use Local Avatar the
 	/// avatar's own tone is used.
@@ -241,6 +252,20 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		Live.Add( this );
 		Stretch();
+		ApplyJaw();
+	}
+
+	// Set once per change (each set starts a blend from the animation's value), and again when
+	// the body's scene model is a new one.
+	void ApplyJaw()
+	{
+		var body = BodyTarget;
+		if ( !body.IsValid() || body.SceneModel is not { } so || !so.IsValid() ) return;
+		if ( jawSet == JawStrength && jawOn == so ) return;
+		jawSet = JawStrength;
+		jawOn = so;
+		if ( body.Model?.Morphs.Names.Contains( JawMorph ) == true )
+			body.Morphs.Set( JawMorph, JawStrength );
 	}
 
 	protected override void OnDestroy()

@@ -47,6 +47,7 @@ public sealed partial class AvatarEditManager : Component
 	const string DyeCookie = "fitavatar.dyes";
 	// The outfit's container has no field for it, so it is kept apart like the dyes.
 	const string ShoulderCookie = "fitavatar.shoulders";
+	const string JawCookie = "fitavatar.jaw";
 
 	string lastSaved;
 	public ClothingContainer Container { get; set; } = new();
@@ -117,6 +118,7 @@ public sealed partial class AvatarEditManager : Component
 		ReadDyes( Game.Cookies.GetString( DyeCookie, "" ) );
 		lastSavedDyes = WriteDyes();
 		shoulderWidth = lastSavedShoulders = Game.Cookies.Get( ShoulderCookie, 0.5f );
+		jawStrength = lastSavedJaw = Game.Cookies.Get( JawCookie, 0f );
 		AvatarBackgroundRig.RestoreSaved();
 	}
 
@@ -195,6 +197,14 @@ public sealed partial class AvatarEditManager : Component
 		set { shoulderWidth = value; if ( Shown is { } d ) d.ShoulderWidth = value; }
 	}
 	float shoulderWidth = 0.5f, lastSavedShoulders = 0.5f;
+
+	/// <summary>How strong the anime bodies' jaw is, 0 as built (see FitDresser.JawStrength).</summary>
+	public float JawStrength
+	{
+		get => jawStrength;
+		set { jawStrength = value; if ( Shown is { } d ) d.JawStrength = value; }
+	}
+	float jawStrength, lastSavedJaw;
 
 	public float Age
 	{
@@ -382,6 +392,7 @@ public sealed partial class AvatarEditManager : Component
 		d.Clothing = Container.Clothing.Where( x => x.Clothing.IsValid() ).Select( x => new ClothingEntry( x.Clothing ) { Tint = x.Tint } ).ToList();
 		d.Height = Container.Height;
 		d.ShoulderWidth = shoulderWidth;
+		d.JawStrength = jawStrength;
 		d.Age = Container.Age;
 		d.Tint = Container.Tint;
 		d.TintEyes = tintEyes;
@@ -410,7 +421,7 @@ public sealed partial class AvatarEditManager : Component
 		}
 	}
 
-	public bool HasUnsavedChanges => lastSaved != Container.Serialize() || lastSavedDyes != WriteDyes() || lastSavedShoulders != shoulderWidth;
+	public bool HasUnsavedChanges => lastSaved != Container.Serialize() || lastSavedDyes != WriteDyes() || lastSavedShoulders != shoulderWidth || lastSavedJaw != jawStrength;
 
 	public void SaveChanges()
 	{
@@ -420,6 +431,8 @@ public sealed partial class AvatarEditManager : Component
 		Game.Cookies.SetString( DyeCookie, lastSavedDyes );
 		lastSavedShoulders = shoulderWidth;
 		Game.Cookies.Set( ShoulderCookie, shoulderWidth );
+		lastSavedJaw = jawStrength;
+		Game.Cookies.Set( JawCookie, jawStrength );
 	}
 
 	public void RevertChanges()
@@ -427,6 +440,7 @@ public sealed partial class AvatarEditManager : Component
 		Container.Deserialize( lastSaved );
 		ReadDyes( lastSavedDyes );
 		shoulderWidth = lastSavedShoulders;
+		jawStrength = lastSavedJaw;
 		ApplyChangesToModel();
 	}
 
