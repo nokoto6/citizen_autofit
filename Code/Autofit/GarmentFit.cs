@@ -173,6 +173,7 @@ public static class GarmentFit
 	const float MaxPush = 0.05f * Units.Metre;   // the collision pass is a touch-up; anything further is a misread
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
 	const float CoverReach = 0.02f * Units.Metre; // a skin vertex further out of the cloth than this is a bad match, not a bump
+	const float CoverTurn = 0.5f;                 // so is skin whose outward direction turned further than this (cosine: 60 degrees)
 	const float Hidden = 0.005f * Units.Metre;   // further under the stock skin than this was never meant to be seen
 	const float ClearGap = 0.004f * Units.Metre;  // what cloth that used to hide the skin is held above it once the skin shows
 	const float ClearDepth = 0.015f * Units.Metre; // how far under the skin such cloth may have dipped (a crease) and still be lifted
@@ -278,7 +279,8 @@ public static class GarmentFit
 	/// <param name="stiff">Per stock bone, the part it belongs to that changes as a whole from body to body (a foot: its ankle bone), -1 for none. Garment on such a part follows one smooth change of it instead of every point of the skin.</param>
 	/// <param name="thickness"><see cref="BodyMap.Thickness"/>: per stock vertex, how many times as thick the body is there. Cloth over a slimmer body is taken in by it, see <see cref="TakeUpRoom"/>.</param>
 	/// <param name="clothOut">If given, set for the vertices fitted as cloth: not hair and not part of a solid object.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null )
+	/// <param name="neck">The neck on the stock body and on this one (<see cref="Repose.Neck"/>). Cloth over it goes no further up this body's neck than it went up the stock body's.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -312,6 +314,7 @@ public static class GarmentFit
 		var gap0 = new float[n];
 		var away = new Vec3[n];   // direction from the skin to the vertex
 		var slimmer = new float[n];   // how many times as thick as the stock one the body is under the vertex, at most 1
+		var skinAt = new Vec3[n]; // the stock skin the vertex follows
 		for ( int i = 0; i < n; i++ )
 		{
 			Vec3 x = pts[i];
@@ -346,7 +349,7 @@ public static class GarmentFit
 			}
 
 			slimmer[i] = thickness != null && fromTri >= 0 ? MathF.Min( ThicknessAt( from, fromTri ), 1f ) : 1f;
-
+			skinAt[i] = from;
 			gap0[i] = old.Inside( x ) ? -distance : distance;
 			if ( distance > 1e-7f * Units.Metre )
 				away[i] = (x - from) / distance * (gap0[i] >= 0 ? 1f : -1f);
@@ -588,6 +591,30 @@ public static class GarmentFit
 				fitted[i] = pts[i] + move[i];
 				if ( wanted[i] > LayerGap ) wanted[i] = LayerGap + (wanted[i] - LayerGap) * slimmer[i];
 			}
+		}
+
+		// Cloth over the neck goes no further up this body's neck than it went up the stock
+		// body's (see Neck): on a shorter neck, the top of a collar comes down with it. Not hair:
+		// it grows where the scalp is.
+		if ( neck != null && givenMove == null && !hair && cloth.Count > 0 )
+		{
+			var drop = new Vec3[n];
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					float w = neck.Zone( skinAt[i] );
+					if ( w > 0 ) drop[i] = new Vec3( 0, 0, w * neck.Lower( pts[i] + move[i], neck.Share( pts[i] ) ) );
+				}
+
+			// Each vertex works its drop out on its own. Evened out over its neighbours, the cloth
+			// comes down in one piece.
+			MeshTools.Relax( drop, all, edges, 2, 0.5f );
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					move[i] += drop[i];
+					fitted[i] = pts[i] + move[i];
+				}
 		}
 
 		foreach ( var (root, idx) in cloth )
@@ -1604,6 +1631,12 @@ public static class GarmentFit
 			outBefore[v] /= before;
 			outAfter[v] /= after;
 
+			// Skin that turned round on its way to the other body was matched to some other bit
+			// of it: an ear the rays found at another angle, facing sideways where the stock ear
+			// faced back and down. Holding the cloth off it the way it was held off the stock ear
+			// pushed a collar's corner out sideways into a horn.
+			if ( Vec3.Dot( outBefore[v], outAfter[v] ) < CoverTurn ) continue;
+
 			float distance = cloth.Nearest( old.Verts[v], out var above, out int tri );
 			if ( tri < 0 || distance > GapCap ) continue;
 
@@ -1634,15 +1667,26 @@ public static class GarmentFit
 				float need = gap - Vec3.Dot( above - (old.Verts[skin] + skinMove[skin]), outAfter[skin] );
 				if ( need <= 1e-4f * Units.Metre || need > (clearSkin ? ClearDepth + ClearGap : CoverReach) ) continue;
 
-				Vec3 push = outAfter[skin] * need;
-				if ( bu > 0.05f && (!lift.TryGetValue( a, out var have ) || push.LengthSquared() > have.LengthSquared()) ) lift[a] = push;
-				if ( bv > 0.05f && (!lift.TryGetValue( b, out have ) || push.LengthSquared() > have.LengthSquared()) ) lift[b] = push;
-				if ( bw > 0.05f && (!lift.TryGetValue( c, out have ) || push.LengthSquared() > have.LengthSquared()) ) lift[c] = push;
+				// The point above the skin goes out by what it needs, shared between the corners by
+				// how much of the point each one makes: a corner it is barely on hardly moves. With
+				// every corner taking the whole need, a corner with a seventh of a say in the point
+				// went out by all of it, again on every pass, and was drawn out into a spike.
+				Vec3 push = outAfter[skin] * (need / (bu * bu + bv * bv + bw * bw));
+				Lift( lift, a, push * MathF.Max( bu, 0 ) );
+				Lift( lift, b, push * MathF.Max( bv, 0 ) );
+				Lift( lift, c, push * MathF.Max( bw, 0 ) );
 			}
 
 			if ( lift.Count == 0 ) break;
 			foreach ( var (vertex, push) in lift ) fitted[vertex] += push;
 		}
+	}
+
+	// A vertex lifted for several bits of skin takes the biggest lift.
+	static void Lift( Dictionary<int, Vec3> lift, int vertex, Vec3 push )
+	{
+		if ( push.LengthSquared() <= 0 ) return;
+		if ( !lift.TryGetValue( vertex, out var have ) || push.LengthSquared() > have.LengthSquared() ) lift[vertex] = push;
 	}
 
 	/// <summary>

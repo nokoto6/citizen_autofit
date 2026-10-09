@@ -60,6 +60,15 @@ public sealed class Repose
 	/// </summary>
 	public List<(Vec3 At, Vec3 Shift, float Reach)> Landmarks = new();
 
+	/// <summary>The neck on the stock body and on this one, to keep cloth over it at the share of the neck it covers. Null when the chin or the nape wasn't found.</summary>
+	public Neck Neck;
+
+	// The body in the stock pose and proportions, with its skin weights as stock bones and
+	// without the eyes: how cloth lying on its skin goes back to its rest pose (RestOf).
+	TriMesh skinMesh;
+	int[] skinBones;
+	float[] skinWeights;
+
 	/// <summary>The front of each eye, on the stock body and on this one (in the stock pose). What glasses go by.</summary>
 	public List<(Vec3 Stock, Vec3 Body)> Eyes = new();
 	/// <summary>The face down its middle, top to bottom: between the eyes, the tip of the nose, the mouth, the chin. Empty when a face has no mouth to find.</summary>
@@ -334,6 +343,7 @@ public sealed class Repose
 		}
 
 		TriMesh reposedMesh = null;
+		float napeHeight = float.NaN;
 
 		// The lower face: the tip of the nose, the mouth and the chin. Skin found by rays from
 		// the skull lands at the same angle on the other face, and a face with its features
@@ -370,7 +380,10 @@ public sealed class Repose
 			{
 				var shift = new Vec3( 0, 0, napeTheirs.Z - napeOurs.Z );
 				if ( shift.Length() < 0.15f * Units.Metre )
+				{
 					result.Landmarks.Add( (napeOurs, shift, NapeReach) );
+					napeHeight = napeOurs.Z;
+				}
 			}
 		}
 
@@ -404,6 +417,24 @@ public sealed class Repose
 
 		// Last: everything above goes by the skin as it is.
 		if ( tips.Count > 0 ) Drape( result.Positions, body, to, stock, tips );
+
+		// The neck goes by the skin as draped too: the skin the clothes are fitted to, and the
+		// skin under them that they go back to the rest pose by.
+		if ( !float.IsNaN( napeHeight ) && result.Face.Count == 4 )
+		{
+			result.skinMesh = new TriMesh( result.Positions, body.Indices );
+			result.skinBones = new int[body.BoneIndex.Length];
+			result.skinWeights = new float[body.BoneWeight.Length];
+			for ( int k = 0; k < body.BoneIndex.Length; k++ )
+			{
+				int bone = body.BoneIndex[k];
+				int s = bone >= 0 && bone < bones ? to[bone] : -1;
+				bool eye = s >= 0 && stock.BoneNames[s].StartsWith( "eye_" );
+				result.skinBones[k] = eye ? -1 : s;
+				result.skinWeights[k] = eye || s < 0 ? 0 : body.BoneWeight[k];
+			}
+			result.Neck = Neck.Find( result, stock, result.Face[3], napeHeight );
+		}
 
 		return result;
 	}
@@ -762,6 +793,44 @@ public sealed class Repose
 	}
 
 	/// <summary>
+	/// Where a point lying on this body's skin in the stock pose and proportions ends up in the
+	/// body's rest pose: back the way the skin under it came in, which is what <see cref="SkinUnder"/>,
+	/// <see cref="FromStockProportions"/> and <see cref="ToBodyRest"/> do to cloth on the skin.
+	/// Also how far it goes there for a step along <paramref name="along"/>.
+	/// </summary>
+	public Vec3 RestOf( Vec3 p, Vec3 along, out Vec3 rate )
+	{
+		rate = along;
+		skinMesh.Nearest( p, out var q, out int tri );
+		if ( tri < 0 ) return p;
+		int a = skinMesh.Tris[tri * 3], b = skinMesh.Tris[tri * 3 + 1], c = skinMesh.Tris[tri * 3 + 2];
+		var bary = Barycentric( q, skinMesh.Verts[a], skinMesh.Verts[b], skinMesh.Verts[c] );
+		var sum = Vec3.Zero;
+		var turn = Vec3.Zero;
+		float total = 0;
+		for ( int k = 0; k < 3; k++ )
+		{
+			int corner = k == 0 ? a : k == 1 ? b : c;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = skinBones[corner * 4 + j];
+				float w = skinWeights[corner * 4 + j] * bary[k];
+				if ( bone < 0 || w <= 0 ) continue;
+				int by = follow[bone];
+				sum += (Quat.Rotate( carry[by], Scaled( p - stockPositions[by], by, false ) ) + RestPositions[by]) * w;
+				turn += Quat.Rotate( carry[by], Scaled( along, by, false ) ) * w;
+				total += w;
+			}
+		}
+		if ( total <= 1e-6f ) return p;
+		rate = turn / total;
+		return sum / total;
+	}
+
+	/// <summary>The rotation from the stock bind pose to the body's rest pose for a stock bone.</summary>
+	public float[] Carry( int stockBone ) => carry[stockBone];
+
+	/// <summary>
 	/// A garment bone's rest transform on the body. For a bone the stock skeleton has, the
 	/// body's; for one it doesn't (a hat's own jiggle bone), placed under the nearest stock
 	/// bone the way the garment itself places it.
@@ -1004,3 +1073,103 @@ public sealed class Repose
 		return result;
 	}
 }
+
+/// <summary>
+/// The neck on the stock body and on another one, as a share of its height: 0 at the
+/// collarbones, 1 at the bottom of the chin. Cloth over the neck goes no further up this body's
+/// neck than it went up the stock body's.
+///
+/// A body can have a far shorter neck for the size of its head (Aurora's is half the human's,
+/// her head as big). Cloth goes back to such a body with the skin it lies on, and the top of a
+/// stand-up collar lies on the bottom of the skull: it stays as far up the head as on the stock
+/// body, and on a neck half as long that is up to the ears.
+/// </summary>
+public sealed class Neck
+{
+	const float Reach = 0.11f * Units.Metre;    // skin further from the neck's axis than this is the shoulders or the face, not the neck
+	const float Core = 0.09f * Units.Metre;     // and closer than this, all of it is
+	const float Above = 0.02f * Units.Metre;    // the neck reaches this far over its top, and fades out over as much again
+	const float FaceSide = 0.5f;                // the neck's top is the chin straight ahead, the nape from this far round on (cosine: 60 degrees)
+	const float MaxDrop = 0.05f * Units.Metre;  // cloth is lowered by no more than this
+
+	readonly Repose pose;
+	readonly float axisX, axisY;            // the stock neck's axis, upright through its joint
+	readonly float collar, chin, nape;      // heights on the stock body
+	readonly float restCollar, restChin;    // heights on the body in its rest pose, along its up
+	readonly Vec3 up;
+
+	Neck( Repose pose, float axisX, float axisY, float collar, float chin, float nape, float restCollar, float restChin, Vec3 up )
+	{
+		this.pose = pose;
+		this.axisX = axisX;
+		this.axisY = axisY;
+		this.collar = collar;
+		this.chin = chin;
+		this.nape = nape;
+		this.restCollar = restCollar;
+		this.restChin = restChin;
+		this.up = up;
+	}
+
+	/// <param name="chinMark">The bottom of the chin on the stock body and on this one (in the stock pose).</param>
+	/// <param name="napeHeight">How high the nape is on the stock body.</param>
+	public static Neck Find( Repose pose, SkinnedGeometry stock, (Vec3 Stock, Vec3 Body) chinMark, float napeHeight )
+	{
+		int neck = Array.IndexOf( stock.BoneNames, "neck_0" );
+		int left = Array.IndexOf( stock.BoneNames, "clavicle_L" ), right = Array.IndexOf( stock.BoneNames, "clavicle_R" );
+		int root = Array.IndexOf( stock.BoneParents, -1 );
+		if ( neck < 0 || left < 0 || right < 0 || root < 0 ) return null;
+
+		// Up on the body in its rest pose is wherever the stock body's up went.
+		var up = Quat.Rotate( pose.Carry( root ), new Vec3( 0, 0, 1 ) );
+		float collar = 0.5f * (stock.BonePositions[left].Z + stock.BonePositions[right].Z);
+		float restCollar = Vec3.Dot( 0.5f * (pose.RestPositions[left] + pose.RestPositions[right]), up );
+		float restChin = Vec3.Dot( pose.RestOf( chinMark.Body, up, out _ ), up );
+		if ( chinMark.Stock.Z - collar < 0.02f * Units.Metre || restChin - restCollar < 0.02f * Units.Metre ) return null;
+		return new Neck( pose, stock.BonePositions[neck].X, stock.BonePositions[neck].Y, collar, chinMark.Stock.Z, napeHeight, restCollar, restChin, up );
+	}
+
+	/// <summary>How much a garment point whose closest stock skin is <paramref name="skin"/> is over the neck. 0..1.</summary>
+	public float Zone( Vec3 skin )
+	{
+		float dx = skin.X - axisX, dy = skin.Y - axisY;
+		float r = MathF.Sqrt( dx * dx + dy * dy );
+		float across = Math.Clamp( (Reach - r) / (Reach - Core), 0f, 1f );
+
+		// The neck's top: the chin in front, the nape behind and at the sides (below the ears).
+		// Over the chin in front is the face, and cloth on it goes where the face goes.
+		float round = Math.Clamp( (1 - dx / MathF.Max( r, 1e-6f )) / (1 - FaceSide), 0f, 1f );
+		float neckTop = chin + (nape - chin) * round;
+		float top = Math.Clamp( (neckTop + 2 * Above - skin.Z) / Above, 0f, 1f );
+		float bottom = Math.Clamp( (skin.Z - collar) / (0.5f * (chin - collar)), 0f, 1f );
+		return across * top * bottom;
+	}
+
+	/// <summary>The share of the stock body's neck a point of the stock pose is at.</summary>
+	public float Share( Vec3 stockPoint ) => (stockPoint.Z - collar) / (chin - collar);
+
+	/// <summary>
+	/// How far to move a point in the stock pose and proportions up (never more than 0, so down
+	/// or not at all) for it to be no higher up the neck than <paramref name="share"/> once it is
+	/// back in the body's rest pose.
+	/// </summary>
+	public float Lower( Vec3 fitted, float share )
+	{
+		float target = restCollar + share * (restChin - restCollar);
+		var rise = new Vec3( 0, 0, 1 );
+		float drop = 0;
+		for ( int pass = 0; pass < 3; pass++ )
+		{
+			// The way back is linear for the skin under the point; that skin changes as the
+			// point moves, so a couple of rounds.
+			var rest = pose.RestOf( fitted + rise * drop, rise, out var rate );
+			float height = Vec3.Dot( rest, up );
+			if ( pass == 0 && height <= target ) return 0;
+			float slope = Vec3.Dot( rate, up );
+			if ( slope < 0.1f ) break;
+			drop += (target - height) / slope;
+		}
+		return Math.Clamp( drop, -MaxDrop, 0f );
+	}
+}
+

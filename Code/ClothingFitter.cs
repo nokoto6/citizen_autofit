@@ -951,7 +951,7 @@ public static class ClothingFitter
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
 		var solid = new bool[garment.Positions.Length];
 		var fittedAsCloth = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth );
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
