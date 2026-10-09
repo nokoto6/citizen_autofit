@@ -797,7 +797,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
 	float[] stretchTwice, lengthTwice;
-	bool[] underPelvis;
+	bool[] underPelvis, alongSpine;
 	float[] thickShare;
 	int[] feet;
 	Transform[] animated, stretchedPose;
@@ -818,7 +818,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		var bones = body.Model.Bones.AllBones;
 		// After a hotload the tables can be missing ones added since they were made.
-		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || alongSpine?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
 			MakeStretch( body.Model );
 
 		float even = 1f + (stretch - 1f) * EvenShare;
@@ -839,7 +839,11 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			}
 
 			var local = animated[parent.Index].ToLocal( animated[i] );
-			var offset = local.Position * even * (1f + (limbs - 1f) * (stretchTwice[i] - 1f));
+			float grow = 1f + (limbs - 1f) * (stretchTwice[i] - 1f);
+			var offset = local.Position * even;
+			// Along the spine is its bones' X axis; the shoulders keep their width.
+			if ( alongSpine[i] ) offset.x *= grow;
+			else offset *= grow;
 			stretchedPose[i] = stretchedPose[parent.Index].ToWorld( new Transform( offset, local.Rotation ) );
 		}
 
@@ -881,6 +885,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		lengthTwice = new float[bones.Count];
 		underPelvis = new bool[bones.Count];
 		thickShare = new float[bones.Count];
+		alongSpine = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
 		var feetList = new List<int>();
@@ -895,9 +900,12 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			float twice = 1f;
 			if ( parent.StartsWith( "leg_upper_" ) || parent.StartsWith( "leg_lower_" ) ) twice = legsTwice;
 			else if ( parent.StartsWith( "arm_upper_" ) || parent.StartsWith( "arm_lower_" ) ) twice = ArmsTwice;
-			// The spine's segments, from the pelvis up to the base of the neck.
-			else if ( (name.StartsWith( "spine_" ) || name == "neck_0") && (parent == "pelvis" || parent.StartsWith( "spine_" )) ) twice = TorsoTwice;
+			// Whatever hangs off the spine (the next vertebra, the neck, the collarbones and with them
+			// the shoulders) moves up along it: lengthening only the vertebrae between each other
+			// left the shoulders where they were and the torso no longer.
+			else if ( parent.StartsWith( "spine_" ) || (parent == "pelvis" && name.StartsWith( "spine_" )) ) twice = TorsoTwice;
 			stretchTwice[i] = twice;
+			alongSpine[i] = parent.StartsWith( "spine_" ) || (parent == "pelvis" && name.StartsWith( "spine_" ));
 
 			// The bones the lengthened parts are skinned to: the thigh, shin, upper arm and
 			// forearm with their twist bones, and the spine.
