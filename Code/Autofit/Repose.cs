@@ -90,6 +90,9 @@ public sealed class Repose
 	/// </summary>
 	public List<(string Name, Vec3 Stock, Vec3 Body)> Features = new();
 
+	const float BrowLength = 1.4f;     // a citizen's brows are as long as this many times its eye's width
+	const float BrowHeight = 0.7f;     // as tall as this share of it
+	const float BrowInward = 0.1f;     // and their middle is this share of it in from the eye's
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
 	const float FaceReach = 0.03f * Units.Metre;   // how far around the nose, the mouth and the chin
@@ -429,25 +432,28 @@ public sealed class Repose
 			var theirs = FaceMarks.Find( body, result.Positions, reposedMesh, result.Eyes[l].Body, result.Eyes[1 - l].Body );
 			foreach ( var (name, at) in ours )
 				if ( theirs.TryGetValue( name, out var there ) ) result.Features.Add( (name, at, there) );
-			// Brows go where a face has brows of its own. A face without them (the citizen's, whose
-			// brows are garments) wears them right over the top of its lids, and as big next to its
-			// eyes as this face's are next to its own: there the brows of this face are taken to
-			// be, and the brows worn there go onto them.
+			// Brows go onto the brows a face has of its own: the brow line, from its inner end to
+			// its outer one and from its lower edge to its upper one. A face without them (the
+			// citizen's, whose brows are garments) wears them over its lids, where its brow
+			// garments draw them: from the top of the lid up, about as long as 1.4 of its eye and
+			// 0.7 of it tall, a little in from the eye's middle. That box goes onto the other
+			// face's brow, so a brow of the usual size covers it, a bushy one stays bushier and a
+			// thin anime brow makes them thinner.
+			float middle = 0.5f * (result.Eyes[0].Stock.Y + result.Eyes[1].Stock.Y);
 			foreach ( string side in new[] { "L", "R" } )
 			{
 				string eye = "eye" + side, brow = "brow" + side;
-				if ( ours.ContainsKey( brow ) || !ours.TryGetValue( "lid" + side, out var lid ) || !theirs.TryGetValue( brow, out var browAt ) ) continue;
-				if ( !ours.TryGetValue( eye + ".in", out var inS ) || !ours.TryGetValue( eye + ".out", out var outS ) || !theirs.TryGetValue( eye + ".in", out var inB ) || !theirs.TryGetValue( eye + ".out", out var outB ) ) continue;
-				float wB = MathF.Abs( outB.Y - inB.Y );
-				if ( wB < 1e-4f * Units.Metre ) continue;
-				float ratio = MathF.Abs( outS.Y - inS.Y ) / wB;
-				result.Features.Add( (brow, lid, browAt) );
-				foreach ( string end in new[] { ".top", ".in", ".out" } )
-					if ( theirs.TryGetValue( brow + end, out var there ) )
-					{
-						var d = there - browAt;
-						result.Features.Add( (brow + end, lid + new Vec3( 0, d.Y * ratio, d.Z * ratio ), there) );
-					}
+				if ( ours.ContainsKey( brow ) || !ours.TryGetValue( "lid" + side, out var lid ) ) continue;
+				if ( !ours.TryGetValue( eye + ".in", out var inS ) || !ours.TryGetValue( eye + ".out", out var outS ) ) continue;
+				if ( !theirs.TryGetValue( brow, out var bottom ) || !theirs.TryGetValue( brow + ".top", out var top ) || !theirs.TryGetValue( brow + ".in", out var inner ) || !theirs.TryGetValue( brow + ".out", out var outer ) ) continue;
+				float wide = MathF.Abs( outS.Y - inS.Y );
+				float inward = middle > 0.5f * (inS.Y + outS.Y) ? 1f : -1f;
+				float centre = 0.5f * (inS.Y + outS.Y) + inward * BrowInward * wide;
+				float length = BrowLength * wide, tall = BrowHeight * wide;
+				result.Features.Add( (brow, new Vec3( lid.X, centre, lid.Z ), bottom) );
+				result.Features.Add( (brow + ".top", new Vec3( lid.X, centre, lid.Z + tall ), top) );
+				result.Features.Add( (brow + ".in", new Vec3( lid.X, centre + inward * 0.5f * length, lid.Z + 0.5f * tall ), inner) );
+				result.Features.Add( (brow + ".out", new Vec3( lid.X, centre - inward * 0.5f * length, lid.Z + 0.5f * tall ), outer) );
 			}
 		}
 

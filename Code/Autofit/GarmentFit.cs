@@ -285,8 +285,9 @@ public static class GarmentFit
 	/// <param name="neck">The neck on the stock body and on this one (<see cref="Repose.Neck"/>). Cloth over it goes no further up this body's neck than it went up the stock body's.</param>
 	/// <param name="onSkin"><see cref="BodyMap.OnSkin"/>: where each stock vertex lies on this body's skin for paint on it, the face lined up by its features. Without it paint goes by <paramref name="skinMove"/>.</param>
 	/// <param name="paintOut">If given, set for the vertices of paint on the skin (a tattoo, makeup, brows). They go back to the body's rest pose with the skin under them, see <see cref="Repose.OntoSkin"/>.</param>
+	/// <param name="features">The face's features on the stock body and on this one (<see cref="Repose.Features"/>). Lashes go by the lines round the eyes.</param>
 	/// <param name="trunk">This body's trunk in the stock pose and in its rest pose (<see cref="Repose.Trunk"/>). Cloth on its lower part is as far up it, as a share of it, in the rest pose as in the stock pose.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null, Trunk trunk = null )
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null, Trunk trunk = null, List<(string Name, Vec3 Stock, Vec3 Body)> features = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -364,8 +365,11 @@ public static class GarmentFit
 
 		// Paint on the skin (a tattoo, makeup, brows) goes onto this body's skin and nowhere else,
 		// see PaintOn. Fitted as cloth it was held off the skin by every pass made for cloth.
+		// Lashes grow from the lids instead, see LashesOn.
 		var usedPaint = new bool[n];
 		foreach ( int v in tris ) usedPaint[weld[v]] = true;
+		if ( features != null && LashesOn( verts, tris, weld, pts, usedPaint, move, features, solidOut, clothOut, paintOut ) is Vec3[] lashes )
+			return lashes;
 		if ( Painted( usedPaint, gap0 ) || Brows( usedPaint, pts, gap0, old, eyes ) )
 			return PaintOn( verts, weld, pts, usedPaint, gap0, move, old, other, skinMove, onSkin, solidOut, clothOut, paintOut );
 
@@ -776,6 +780,151 @@ public static class GarmentFit
 			for ( int i = 0; i < verts.Length; i++ ) clothOut[i] = isCloth[weld[i]];
 		}
 		return result;
+	}
+
+	const float LashReach = 0.25f;   // a card rooted this close to the line over or under an eye, as a share of the eye's width, grows from the lid
+	const float LashSpan = 1f;       // and no part of it further off than this
+	const float LashShare = 0.9f;    // a garment this much of whose cards do is lashes
+
+	/// <summary>
+	/// Lashes: cards that grow from the edge of a lid, the line over an eye's opening or under it
+	/// (<see cref="FaceMarks"/>). They stand well off the skin, so laid on the skin like paint
+	/// or hair they went wherever the skin round them went: on a face whose eyes are bigger, set
+	/// lower or shaped otherwise, over the brows (Aurora) or under the eyes (the humans). Each
+	/// card goes with the spot of the lid it is rooted at instead: the same share of the way
+	/// along this face's lid line from the inner corner to the outer one, turned with the line
+	/// there, and grown or shrunk as the eye is wider or narrower. Told from brows by where they
+	/// grow: brows start well above the lid line.
+	/// </summary>
+	/// <returns>The garment fitted, or null if it isn't lashes.</returns>
+	static Vec3[] LashesOn( Vec3[] verts, int[] tris, int[] weld, Vec3[] pts, bool[] used, Vec3[] move, List<(string Name, Vec3 Stock, Vec3 Body)> features, bool[] solidOut, bool[] clothOut, bool[] paintOut )
+	{
+		// The lines over and under each eye, on both faces, from the inner corner to the outer one.
+		var lines = new List<(Vec3[] Stock, Vec3[] Body, float Wide, float Scale)>();
+		foreach ( string eye in new[] { "eyeL", "eyeR" } )
+			// The marks along the line over the eye and the one under it (FaceMarks).
+			foreach ( var names in new[] { new[] { ".in", ".top.1", ".top.2", ".top.3", ".out" }, new[] { ".in", ".bottom.1", ".bottom.2", ".bottom.3", ".out" } } )
+			{
+				var stock = new Vec3[names.Length];
+				var body = new Vec3[names.Length];
+				bool all = true;
+				for ( int k = 0; k < names.Length && all; k++ )
+				{
+					all = false;
+					foreach ( var (name, at, there) in features )
+						if ( name == eye + names[k] ) { stock[k] = at; body[k] = there; all = true; break; }
+				}
+				if ( !all ) continue;
+				float wide = (stock[^1] - stock[0]).Length();
+				if ( wide < 1e-4f * Units.Metre ) continue;
+				lines.Add( (stock, body, wide, (body[^1] - body[0]).Length() / wide) );
+			}
+		if ( lines.Count == 0 ) return null;
+
+		var piece = Islands( pts.Length, MeshTools.Edges( tris, weld ) );
+		var cards = new Dictionary<int, List<int>>();
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			if ( !used[i] ) continue;
+			if ( !cards.TryGetValue( piece[i], out var list ) ) cards[piece[i]] = list = new List<int>();
+			list.Add( i );
+		}
+
+		// Each card's root: its vertex nearest to a lid line, and that line. A card grows from the
+		// lid when it is rooted at the line and all of it stays near it: a shell painted over the
+		// whole face touches the lid line too.
+		var roots = new List<(List<int> Card, int Line, float Along)>();
+		int rooted = 0;
+		foreach ( var card in cards.Values )
+		{
+			float best = float.MaxValue, along = 0;
+			int line = -1;
+			foreach ( int i in card )
+				for ( int k = 0; k < lines.Count; k++ )
+				{
+					float d = AlongLine( lines[k].Stock, pts[i], out float t );
+					if ( d < best ) { best = d; line = k; along = t; }
+				}
+			float furthest = 0;
+			foreach ( int i in card ) furthest = MathF.Max( furthest, AlongLine( lines[line].Stock, pts[i], out _ ) );
+			if ( best <= LashReach * lines[line].Wide && furthest <= LashSpan * lines[line].Wide ) rooted++;
+			roots.Add( (card, line, along) );
+		}
+		if ( rooted < LashShare * cards.Count ) return null;
+
+		var fitted = new Vec3[pts.Length];
+		for ( int i = 0; i < pts.Length; i++ ) fitted[i] = pts[i] + move[i];
+		foreach ( var (card, k, along) in roots )
+		{
+			var (from, to, _, scale) = lines[k];
+			var (a, ta, ua, fa) = LineFrame( from, along );
+			var (b, tb, ub, fb) = LineFrame( to, along );
+			foreach ( int i in card )
+			{
+				var d = pts[i] - a;
+				fitted[i] = b + (tb * Vec3.Dot( d, ta ) + ub * Vec3.Dot( d, ua ) + fb * Vec3.Dot( d, fa )) * scale;
+			}
+		}
+
+		var result = new Vec3[verts.Length];
+		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
+		if ( solidOut != null ) Array.Clear( solidOut );
+		if ( clothOut != null ) Array.Clear( clothOut );
+		if ( paintOut != null ) Array.Clear( paintOut );
+		return result;
+	}
+
+	// How far a point is from a line through points, and how far along it (0..1 by length) its nearest point is.
+	static float AlongLine( Vec3[] line, Vec3 p, out float along )
+	{
+		float total = 0;
+		for ( int k = 1; k < line.Length; k++ ) total += (line[k] - line[k - 1]).Length();
+		float best = float.MaxValue, run = 0;
+		along = 0;
+		for ( int k = 1; k < line.Length; k++ )
+		{
+			Vec3 a = line[k - 1], ab = line[k] - a;
+			float length = ab.Length();
+			float t = length > 1e-9f ? Math.Clamp( Vec3.Dot( p - a, ab ) / (length * length), 0f, 1f ) : 0f;
+			float d = (p - (a + ab * t)).Length();
+			if ( d < best ) { best = d; along = total > 1e-9f ? (run + t * length) / total : 0; }
+			run += length;
+		}
+		return best;
+	}
+
+	// The point a share of the way along a line, and a frame there: along the line, up, forward.
+	static (Vec3 At, Vec3 Along, Vec3 Up, Vec3 Forward) LineFrame( Vec3[] line, float along )
+	{
+		float total = 0;
+		for ( int k = 1; k < line.Length; k++ ) total += (line[k] - line[k - 1]).Length();
+		float want = along * total, run = 0;
+		int seg = line.Length - 2;
+		for ( int k = 1; k < line.Length; k++ )
+		{
+			float length = (line[k] - line[k - 1]).Length();
+			if ( run + length >= want ) { seg = k - 1; break; }
+			run += length;
+		}
+		var ab = line[seg + 1] - line[seg];
+		float l = ab.Length();
+		var at = line[seg] + (l > 1e-9f ? ab * ((want - run) / l) : Vec3.Zero);
+		// The tangent turns smoothly from one corner of the line to the next, so cards either side of a corner don't jump apart.
+		float f = l > 1e-9f ? Math.Clamp( (want - run) / l, 0f, 1f ) : 0f;
+		var tangent = Corner( line, seg ) * (1 - f) + Corner( line, seg + 1 ) * f;
+		tangent = tangent.Length() > 1e-9f ? tangent / tangent.Length() : new Vec3( 0, 1, 0 );
+		var forward = new Vec3( 1, 0, 0 ) - tangent * tangent.X;
+		forward /= MathF.Max( forward.Length(), 1e-9f );
+		return (at, tangent, Vec3.Cross( forward, tangent ), forward);
+	}
+
+	// The direction of a line through points at one of them, halfway between the pieces either side.
+	static Vec3 Corner( Vec3[] line, int k )
+	{
+		var sum = Vec3.Zero;
+		if ( k > 0 ) { var d = line[k] - line[k - 1]; float l = d.Length(); if ( l > 1e-9f ) sum += d / l; }
+		if ( k < line.Length - 1 ) { var d = line[k + 1] - line[k]; float l = d.Length(); if ( l > 1e-9f ) sum += d / l; }
+		return sum;
 	}
 
 	const float PaintGap = 0.003f * Units.Metre;     // a garment this close to the stock skin all over is painted on it
