@@ -68,7 +68,7 @@
         </FormRow>
     }
 
-    @if ( Manager.Body == AvatarEditManager.BodyKind.Aurora )
+    @if ( Manager.IsAnime )
     {
         <FormRow Label="Eyes">
             <Content>
@@ -181,15 +181,15 @@
     ];
 
     // The tones of the body's tint lookup. The table is half the tone (the skin shader doubles it
-    // over the skin's colour), so it is shown doubled. Aurora has a table of her own.
-    static readonly Dictionary<bool, ColorSwatch[]> skinSwatches = new();
+    // over the skin's colour), so it is shown doubled. The anime bodies have tables of their own.
+    static readonly Dictionary<string, ColorSwatch[]> skinSwatches = new();
 
     ColorSwatch[] GetSkinSwatches()
     {
-        bool aurora = Manager.Body == AvatarEditManager.BodyKind.Aurora;
-        if ( skinSwatches.TryGetValue( aurora, out var known ) ) return known;
+        string path = Manager.SkinToneMaterial;
+        if ( skinSwatches.TryGetValue( path, out var known ) ) return known;
 
-        var material = Material.Load( aurora ? "models/aurora/aurora_body.vmat" : "models/citizen/skin/citizen_skin01.vmat" );
+        var material = Material.Load( path );
         var tex = material?.GetTexture( "g_tTintLookup" );
         if ( tex is null ) return [];
         var lookup = tex.GetBitmap( 0 );
@@ -203,7 +203,7 @@
             swatches.Add( new ColorSwatch { Value = f, Color = new Color( MathF.Min( 1, c.r * 2 ), MathF.Min( 1, c.g * 2 ), MathF.Min( 1, c.b * 2 ) ) } );
         }
 
-        return skinSwatches[aurora] = swatches.ToArray();
+        return skinSwatches[path] = swatches.ToArray();
     }
 
     void Clicked( Clothing x )

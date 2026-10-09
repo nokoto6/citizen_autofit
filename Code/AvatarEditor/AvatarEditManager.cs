@@ -10,7 +10,8 @@ namespace FitAvatar;
 /// <summary>
 /// s&amp;box's avatar editor (game/addons/menu/Code/AvatarEditor, MIT, Facepunch), brought into a
 /// game: the same screens and scene, with FitDresser doing the dressing. The editor picks one of
-/// four bodies (the citizen, the two humans and Aurora, whose clothing is refitted to her), and
+/// five bodies (the citizen, the two humans, and the anime girl Aurora and boy Akira, whose
+/// clothing is refitted to them), and
 /// has the toon look as a switch. What the menu saves to the player's avatar is kept in a cookie
 /// here, as a game can't change the avatar.
 /// </summary>
@@ -22,6 +23,7 @@ public sealed partial class AvatarEditManager : Component
 		HumanMale,
 		HumanFemale,
 		Aurora,
+		Akira,
 	}
 
 	static readonly (BodyKind Kind, string Title, string Model, FitDresser.ClothingVersion Version)[] Bodies =
@@ -30,6 +32,7 @@ public sealed partial class AvatarEditManager : Component
 		(BodyKind.HumanMale, "Human", "models/citizen_human/citizen_human_male.vmdl", FitDresser.ClothingVersion.HumanMale),
 		(BodyKind.HumanFemale, "Human F", "models/citizen_human/citizen_human_female.vmdl", FitDresser.ClothingVersion.HumanFemale),
 		(BodyKind.Aurora, "Aurora", "models/aurora/aurora.vmdl", FitDresser.ClothingVersion.Auto),
+		(BodyKind.Akira, "Akira", "models/akira/akira.vmdl", FitDresser.ClothingVersion.Auto),
 	];
 
 	public static IEnumerable<(BodyKind Kind, string Title)> BodyChoices => Bodies.Select( x => (x.Kind, x.Title) );
@@ -64,7 +67,19 @@ public sealed partial class AvatarEditManager : Component
 
 	public bool IsHuman => body is BodyKind.HumanMale or BodyKind.HumanFemale;
 
-	/// <summary>The citizen and Aurora are toned and aged by the skin shader; the humans wear a skin instead.</summary>
+	/// <summary>The VRoid bodies: their eyes are painted on and tinted, their skin has tones of its own.</summary>
+	public bool IsAnime => IsAnimeBody( body );
+	static bool IsAnimeBody( BodyKind kind ) => kind is BodyKind.Aurora or BodyKind.Akira;
+
+	/// <summary>The material whose tint lookup holds the body's skin tones. The anime bodies have tables of their own.</summary>
+	public string SkinToneMaterial => body switch
+	{
+		BodyKind.Aurora => "models/aurora/aurora_body.vmat",
+		BodyKind.Akira => "models/akira/akira_body.vmat",
+		_ => "models/citizen/skin/citizen_skin01.vmat",
+	};
+
+	/// <summary>The citizen and the anime bodies are toned and aged by the skin shader; the humans wear a skin instead.</summary>
 	public bool CitizenActive => !IsHuman;
 
 	public bool Toon
@@ -125,7 +140,7 @@ public sealed partial class AvatarEditManager : Component
 			// hair under a hat and, on the humans, for what only comes in a citizen version (the
 			// tattoos, makeup and brows, made before there were humans).
 			dresser.FitAtRuntime = true;
-			dresser.RemoveSkinFromClothing = kind == BodyKind.Aurora;
+			dresser.RemoveSkinFromClothing = IsAnimeBody( kind );
 			dressers[kind] = dresser;
 		}
 		ShowBody();
@@ -276,7 +291,7 @@ public sealed partial class AvatarEditManager : Component
 	}
 
 	/// <summary>
-	/// A workshop item, put on. The menu only previews one; refitting one to Aurora takes a few
+	/// A workshop item, put on. The menu only previews one; refitting one to an anime body takes a few
 	/// seconds, so here a click puts it on and a second click takes it off.
 	/// </summary>
 	public async Task<Clothing> WearPackageAsync( Package package )
@@ -288,7 +303,7 @@ public sealed partial class AvatarEditManager : Component
 		return clothing;
 	}
 
-	// Hovering an item doesn't try it on: on Aurora every garment is refitted, which takes
+	// Hovering an item doesn't try it on: on the anime bodies every garment is refitted, which takes
 	// seconds, and a preview on every icon the mouse crosses would queue up dozens of fits.
 	public void OnClothingHover( Clothing clothing )
 	{
