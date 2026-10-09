@@ -671,7 +671,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		made.Set( "g_tToonIris", Valid( original.GetTexture( "g_tIris" ) ) ?? Texture.White );
 
 		// Skin the stock shader tones by skin_tint (the citizen's tint mask).
-		if ( shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0 ) made.Set( "g_flToonSkin", 1f );
+		bool toned = shader.Contains( "skin" ) && original.GetFeature( "F_TINT_MASK" ) > 0;
+		if ( toned ) made.Set( "g_flToonSkin", 1f );
+
+		// The material's own colour tint, over its tint mask where it has one: a dark suit is a
+		// light texture tinted dark there, and without it the trousers came out white.
+		var tint = original.GetVector4( "g_vColorTint" );
+		bool masked = original.GetFeature( "F_TINT_MASK" ) > 0;
+		// A shader without the parameter reads it as black, which is no tint at all.
+		bool hasTint = tint.x + tint.y + tint.z > 0;
+		made.Set( "g_vToonColorTint", toned || !hasTint ? Vector3.One : new Vector3( tint.x, tint.y, tint.z ) );
+		made.Set( "g_tToonTintMask", (masked ? Valid( original.GetTexture( "g_tTintMask" ) ) : null) ?? Texture.White );
 
 		// complex.shader packs roughness with the normal, which is what gives a jacket its sheen,
 		// and has metalness as a texture or a number.

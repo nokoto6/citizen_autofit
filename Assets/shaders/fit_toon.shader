@@ -144,6 +144,11 @@ PS
 
 	CreateInputTexture2D( TextureToonMetal, Linear, 8, "", "_metal", "Toon,10/34", Default( 1.0 ) );
 	Texture2D g_tToonMetal < Channel( R, Box( TextureToonMetal ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
+	// The original's colour tint (complex.shader's g_vColorTint), over its tint mask where it has
+	// one: a dark suit is a light texture tinted dark there.
+	float3 g_vToonColorTint < UiType( Color ); Default3( 1.0, 1.0, 1.0 ); UiGroup( "Toon,10/37" ); >;
+	CreateInputTexture2D( TextureToonTintMask, Linear, 8, "", "_tint", "Toon,10/38", Default( 1.0 ) );
+	Texture2D g_tToonTintMask < Channel( R, Box( TextureToonTintMask ), Linear ); OutputFormat( BC7 ); SrgbRead( false ); >;
 
 	// Ordered dither threshold, 0..1, from a 4x4 Bayer matrix.
 	float Bayer( float2 vPixel )
@@ -249,7 +254,7 @@ PS
 		if ( DepthNormals::WantsDepthNormals() )
 			return DepthNormals::Output( m.Normal, m.Roughness, m.Opacity );
 
-		float3 vAlbedo = m.Albedo;
+		float3 vAlbedo = m.Albedo * lerp( float3( 1, 1, 1 ), SrgbGammaToLinear( g_vToonColorTint ), g_tToonTintMask.Sample( TextureFiltering, i.vTextureCoords.xy ).r );
 		float flAge = saturate( g_flSkinAge ) * g_flToonAge;
 		[branch]
 		if ( flAge > 0.0 )
