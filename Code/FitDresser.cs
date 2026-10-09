@@ -62,6 +62,13 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float Height { get; set; } = 0.5f;
 
 	/// <summary>
+	/// How much broader the shoulders are, on top of what the height gives them: 0 leaves them as
+	/// the height sets them, 1 the collarbones longer by <see cref="ShoulderRange"/>. On any body.
+	/// </summary>
+	[Property, Range( 0, 1 )]
+	public float ShoulderWidth { get; set; } = 0f;
+
+	/// <summary>
 	/// How strong, wide and square the jaw is, 0 as built: the body's own <see cref="JawMorph"/>
 	/// morph, which Aurora and Akira have. Bodies without it ignore this.
 	/// </summary>
@@ -888,6 +895,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// the height change (+10% at the tallest), a short one narrows by a quarter of it (-5%).
 	const float TallShoulders = 0.5f, ShortShoulders = 0.25f;
 
+	// How much longer the collarbones get at the top of ShoulderWidth. Narrower than built looked
+	// wrong, so the slider only broadens.
+	const float ShoulderRange = 0.25f;
+
 	// Height for a body with proportions of its own: 1 is as built.
 	float stretch = 1f;
 	bool stretched;
@@ -910,8 +921,9 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		var body = BodyTarget;
 		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
-		float broad = 1f + (stretch - 1f) * (stretch > 1f ? TallShoulders : ShortShoulders);
-		if ( stretch == 1f )
+		float broad = (1f + (stretch - 1f) * (stretch > 1f ? TallShoulders : ShortShoulders))
+			* (1f + ShoulderWidth.Clamp( 0f, 1f ) * ShoulderRange);
+		if ( stretch == 1f && broad == 1f )
 		{
 			Unstretch();
 			return;
