@@ -112,8 +112,10 @@ workshop player models, each with a Fit Dresser.
   brought in line with the detailed fit once it is there.
 - **Morph targets.** A beard or a moustache keeps following the mouth: the garment's morphs are
   read from its morph texture, turned and scaled with the fit and put on the fitted model.
-- **Jiggle bones.** They are run by the garment's animation graph, which a model built at
-  runtime can't carry, so the fitted garment borrows the original's.
+- **Jiggle bones.** Ones the garment's physics swings (a pendant on a chain, a ponytail) keep
+  it: the fitted model gets the original's bodies and joints, its swinging bones placed where
+  their vertices went. Ones run by an animation graph, which a model built at runtime can't
+  carry, get the original's graph borrowed.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
   materials and with compressed vertex and index buffers. The fitter reads `.vmdl_c` files
   itself, because the engine doesn't hand out skin weights.

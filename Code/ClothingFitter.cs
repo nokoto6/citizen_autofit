@@ -92,6 +92,7 @@ public static class ClothingFitter
 		public List<int> BoneParents = new();
 		public List<Vec3> OutPositions = new();
 		public List<float[]> OutRotations = new();
+		public List<bool> Own = new();   // a bone of the garment's own (a jiggle bone), which the body doesn't have
 	}
 
 	// One draw call's worth of a fitted garment: what goes into one mesh.
@@ -353,6 +354,8 @@ public static class ClothingFitter
 			}
 
 			var file = ReadCompiled( garmentPath );
+			var physics = Model.Load( garmentPath )?.Physics;
+			var simulated = Simulated( physics );
 			var levels = await OnWorker( () =>
 			{
 				var read = CompiledModel.ReadLods( file );
@@ -381,7 +384,7 @@ public static class ClothingFitter
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases, simulated ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
 				if ( i == 0 ) shapes[key] = (result.StockFit, level.SurfaceIndices());
@@ -397,7 +400,7 @@ public static class ClothingFitter
 				await BuildTurn();
 				if ( started != generation ) return null;
 				var building = System.Diagnostics.Stopwatch.StartNew();
-				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : "") );
+				model = Build( done, $"fitted/{key}" + (i > 0 ? $"/from{i}" : ""), physics );
 				main += building.Elapsed.TotalMilliseconds;
 
 				if ( i == 0 ) break;
@@ -414,7 +417,7 @@ public static class ClothingFitter
 				{
 					var level = levels[i];
 					var detailed = done[0];
-					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body.Geo, bodyAtlases ) );
+					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body.Geo, bodyAtlases, simulated ) );
 					if ( started != generation ) return null;
 					done[i] = result;
 					worker += result.Milliseconds;
@@ -423,7 +426,7 @@ public static class ClothingFitter
 				await BuildTurn();
 				if ( started != generation ) return null;
 				var building = System.Diagnostics.Stopwatch.StartNew();
-				model = Build( done, $"fitted/{key}/final" );
+				model = Build( done, $"fitted/{key}/final", physics );
 				main += building.Elapsed.TotalMilliseconds;
 			}
 
@@ -919,7 +922,8 @@ public static class ClothingFitter
 		move.LengthSquared() >= MorphFloor * MorphFloor || turn.LengthSquared() >= TurnFloor * TurnFloor;
 
 	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, SkinnedGeometry body = null, Dictionary<string, Atlas> bodyAtlases = null )
+	/// <param name="simulated">The bones the engine moves by the garment's physics (see <see cref="Simulated"/>).</param>
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, SkinnedGeometry body = null, Dictionary<string, Atlas> bodyAtlases = null, HashSet<string> simulated = null )
 	{
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
@@ -991,14 +995,25 @@ public static class ClothingFitter
 		// The garment's bones in the body's rest pose.
 		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][] };
 		var boneMap = GarmentFit.BoneMap( garment, reference.Geo );
+		var ownBone = new bool[garment.BoneNames.Length];
+		var swung = new bool[garment.BoneNames.Length];
+		for ( int i = 0; i < ownBone.Length; i++ )
+		{
+			ownBone[i] = boneMap[i] < 0 || reference.Geo.BoneNames[boneMap[i]] != garment.BoneNames[i];
+			swung[i] = ownBone[i] && simulated != null && simulated.Contains( garment.BoneNames[i] );
+		}
+		var swungRests = target.Pose.OwnBoneRests( garment, boneMap, swung, positions );
 		for ( int i = 0; i < garment.BoneNames.Length; i++ )
 		{
 			int s = boneMap[i];
 			// A bone the body has is the body's bone: its frame is whatever the body says it
-			// is, since that is what bone merging will hand the garment. Anything else hangs
-			// off the nearest such bone where the garment itself puts it.
+			// is, since that is what bone merging will hand the garment. One of the garment's own
+			// that its physics swings goes with the vertices it carries, as it swings them about
+			// itself. Anything else hangs off the nearest bone the body has where the garment
+			// itself puts it, as an animation of the original would pose it.
 			(result.BonePositions[i], result.BoneRotations[i]) =
-				s >= 0 && target.Pose.BodyHas[s] && reference.Geo.BoneNames[s] == garment.BoneNames[i] ? (target.Pose.RestPositions[s], target.Pose.RestRotations[s])
+				swung[i] ? swungRests[i]
+				: s >= 0 && target.Pose.BodyHas[s] && !ownBone[i] ? (target.Pose.RestPositions[s], target.Pose.RestRotations[s])
 				: s >= 0 ? target.Pose.GarmentBoneRest( s, garment.BonePositions[i], garment.BoneRotations[i] )
 				: (garment.BonePositions[i], garment.BoneRotations[i]);
 		}
@@ -1030,6 +1045,7 @@ public static class ClothingFitter
 				outIndex[name] = index;
 				result.BoneNames.Add( name );
 				result.BoneParents.Add( garment.BoneParents[i] >= 0 ? redirect[garment.BoneParents[i]] : -1 );
+				result.Own.Add( ownBone[i] );
 				// A stand-in is a bone the body has, so it is the body's bone, frame and all.
 				var (position, rotation) = name == garment.BoneNames[i]
 					? (result.BonePositions[i], result.BoneRotations[i])
@@ -1057,6 +1073,7 @@ public static class ClothingFitter
 			outIndex[stock.BoneNames[s]] = index;
 			result.BoneNames.Add( stock.BoneNames[s] );
 			result.BoneParents.Add( parent );
+			result.Own.Add( false );
 			result.OutPositions.Add( target.Pose.RestPositions[s] );
 			result.OutRotations.Add( target.Pose.RestRotations[s] );
 			return index;
@@ -1199,7 +1216,7 @@ public static class ClothingFitter
 	/// A model out of the LOD levels fitted so far, most detailed first. While the detailed
 	/// ones are still missing, the best one there is stands in for them.
 	/// </summary>
-	static Model Build( List<Fitted> levels, string name )
+	static Model Build( List<Fitted> levels, string name, PhysicsGroupDescription physics )
 	{
 		var g = levels[0].Garment;
 		var builder = Model.Builder.WithName( name );
@@ -1216,6 +1233,8 @@ public static class ClothingFitter
 			int parent = skeleton.BoneParents[i];
 			builder.AddBone( skeleton.BoneNames[i], new Vector3( p.X, p.Y, p.Z ), new Rotation( r[0], r[1], r[2], r[3] ), parent >= 0 ? skeleton.BoneNames[parent] : null );
 		}
+
+		AddPhysics( builder, skeleton, physics );
 
 		for ( int lod = 0; lod < g.LodDistances.Length && lod < 8; lod++ )
 			builder.WithLodDistance( lod, g.LodDistances[lod] );
@@ -1250,6 +1269,163 @@ public static class ClothingFitter
 		}
 
 		return builder.Create();
+	}
+
+	/// <summary>
+	/// The bones a garment's physics moves: those its bodies sit on, when it has joints to hold
+	/// them (see <see cref="AddPhysics"/>). Empty for a garment without.
+	/// </summary>
+	static HashSet<string> Simulated( PhysicsGroupDescription physics )
+	{
+		var bones = new HashSet<string>();
+		if ( physics is null || physics.Joints.Count == 0 ) return bones;
+		foreach ( var part in physics.Parts )
+			if ( !string.IsNullOrEmpty( part.BoneName ) ) bones.Add( part.BoneName );
+		return bones;
+	}
+
+	/// <summary>
+	/// The garment's physics, which is what swings its jiggle bones: the engine simulates the
+	/// bodies of a bone-merged model that sit on bones the body doesn't have (a pendant's),
+	/// held by joints to the ones it does, which follow the body. A built model has no physics
+	/// unless it is given some, and without it a swag chain's pendant stayed fixed to the neck
+	/// bone its own bone hangs off, coming up in front of the chin when the head tipped back.
+	/// So it gets the original's: every body on a bone the fitted skeleton kept, and the joints
+	/// between them. The garment's own bodies are as they were on their bones, which went where
+	/// the fit put their vertices. Whatever is on the body's bones (where a joint holds a
+	/// pendant, a block for it to rest against) is put back where it was next to them on the
+	/// stock body, or a joint would pull a pendant to where it hung on the stock body and a
+	/// block made for the stock chest would stand in a deeper one.
+	/// </summary>
+	static void AddPhysics( ModelBuilder builder, Fitted skeleton, PhysicsGroupDescription physics )
+	{
+		if ( physics is null || physics.Parts.Count == 0 || physics.Joints.Count == 0 ) return;
+
+		var boneOf = new Dictionary<string, int>();
+		for ( int i = 0; i < skeleton.BoneNames.Count; i++ ) boneOf[skeleton.BoneNames[i]] = i;
+		// The stock pose is the garment skeleton's, the one the fit started from.
+		var garment = skeleton.Garment;
+		var madeOf = new Dictionary<string, int>();
+		for ( int i = 0; i < garment.BoneNames.Length; i++ ) madeOf[garment.BoneNames[i]] = i;
+
+		int parts = physics.Parts.Count;
+		var bone = new int[parts];
+		var made = new Transform[parts];
+		var rest = new Transform[parts];
+		bool any = false;
+		for ( int p = 0; p < parts; p++ )
+		{
+			var part = physics.Parts[p];
+			bone[p] = !string.IsNullOrEmpty( part.BoneName ) && boneOf.TryGetValue( part.BoneName, out int b ) && madeOf.ContainsKey( part.BoneName ) ? b : -1;
+			if ( bone[p] < 0 ) continue;
+			var at = skeleton.OutPositions[bone[p]];
+			var turn = skeleton.OutRotations[bone[p]];
+			int g = madeOf[part.BoneName];
+			var was = garment.BonePositions[g];
+			var wasTurn = garment.BoneRotations[g];
+			made[p] = new Transform( new Vector3( was.X, was.Y, was.Z ), new Rotation( wasTurn[0], wasTurn[1], wasTurn[2], wasTurn[3] ) );
+			rest[p] = new Transform( new Vector3( at.X, at.Y, at.Z ), new Rotation( turn[0], turn[1], turn[2], turn[3] ) );
+			any |= skeleton.Own[bone[p]];
+		}
+		// Nothing of the garment's own to swing.
+		if ( !any ) return;
+
+		bool Own( int p ) => bone[p] >= 0 && skeleton.Own[bone[p]];
+
+		// Something made next to part p's stock bone, in the frame of its fitted bone, put where
+		// it was next to part q.
+		Transform Moved( int p, int q, Transform local ) =>
+			rest[p].ToLocal( rest[q].ToWorld( made[q].ToLocal( made[p].ToWorld( local ) ) ) );
+
+		// Each part on a body bone goes with the own part it is jointed to, failing that the
+		// nearest one.
+		var partner = new int[parts];
+		for ( int p = 0; p < parts; p++ )
+		{
+			partner[p] = -1;
+			if ( bone[p] < 0 || Own( p ) ) continue;
+			foreach ( var joint in physics.Joints )
+			{
+				int other = joint.Body1 == p ? joint.Body2 : joint.Body2 == p ? joint.Body1 : -1;
+				if ( other >= 0 && other < parts && Own( other ) ) { partner[p] = other; break; }
+			}
+			if ( partner[p] >= 0 ) continue;
+			float nearest = float.MaxValue;
+			for ( int q = 0; q < parts; q++ )
+			{
+				if ( !Own( q ) ) continue;
+				float distance = made[q].Position.Distance( made[p].Position );
+				if ( distance < nearest ) { nearest = distance; partner[p] = q; }
+			}
+		}
+
+		var body = new int[parts];
+		int count = 0;
+		for ( int p = 0; p < parts; p++ )
+		{
+			body[p] = -1;
+			if ( bone[p] < 0 ) continue;
+			var part = physics.Parts[p];
+			var place = partner[p] >= 0 ? Moved( p, partner[p], Transform.Zero ) : Transform.Zero;
+			var added = builder.AddBody( part.Mass, part.Parts.FirstOrDefault()?.Surface, skeleton.BoneNames[bone[p]] ).SetBindPose( rest[p] );
+			foreach ( var sphere in part.Spheres )
+				added.AddSphere( new Sphere( place.PointToWorld( sphere.Sphere.Center ), sphere.Sphere.Radius ) );
+			foreach ( var capsule in part.Capsules )
+				added.AddCapsule( capsule.Capsule, place );
+			foreach ( var hull in part.Hulls )
+				added.AddHull( hull.GetPoints().ToArray(), place );
+			foreach ( var mesh in part.Meshes )
+			{
+				var vertices = mesh.GetVertices();
+				for ( int v = 0; v < vertices.Length; v++ ) vertices[v] = place.PointToWorld( vertices[v] );
+				var indices = mesh.GetIndices();
+				var triangles = new uint[indices.Length];
+				for ( int k = 0; k < indices.Length; k++ ) triangles[k] = (uint)indices[k];
+				added.AddMesh( vertices, triangles, Span<byte>.Empty );
+			}
+			body[p] = count++;
+		}
+
+		foreach ( var joint in physics.Joints )
+		{
+			int a = joint.Body1, b = joint.Body2;
+			if ( a < 0 || b < 0 || a >= parts || b >= parts || body[a] < 0 || body[b] < 0 ) continue;
+
+			// The joint's point on the garment's own body stays where it is, the other comes to it.
+			var frame1 = joint.Frame1;
+			var frame2 = joint.Frame2;
+			if ( Own( b ) ) frame1 = Moved( a, b, frame1 );
+			else if ( Own( a ) ) frame2 = Moved( b, a, frame2 );
+
+			PhysicsJointBuilder added;
+			switch ( joint.Type )
+			{
+				case PhysicsGroupDescription.JointType.Ball:
+					var ball = builder.AddBallJoint( body[a], body[b], frame1, frame2, joint.EnableCollision );
+					if ( joint.EnableSwingLimit ) ball.WithSwingLimit( joint.SwingMax );
+					if ( joint.EnableTwistLimit ) ball.WithTwistLimit( joint.TwistMin, joint.TwistMax );
+					added = ball;
+					break;
+				case PhysicsGroupDescription.JointType.Hinge:
+					var hinge = builder.AddHingeJoint( body[a], body[b], frame1, frame2, joint.EnableCollision );
+					if ( joint.EnableTwistLimit ) hinge.WithTwistLimit( joint.TwistMin, joint.TwistMax );
+					if ( joint.EnableAngularMotor ) hinge.WithTargetVelocity( joint.AngularTargetVelocity ).WithMaxTorque( joint.MaxTorque );
+					added = hinge;
+					break;
+				case PhysicsGroupDescription.JointType.Slider:
+					var slider = builder.AddSliderJoint( body[a], body[b], frame1, frame2, joint.EnableCollision );
+					if ( joint.EnableLinearLimit ) slider.WithLimit( joint.LinearMin, joint.LinearMax );
+					added = slider;
+					break;
+				default:
+					added = builder.AddFixedJoint( body[a], body[b], frame1, frame2, joint.EnableCollision )
+						.WithLinearFrequency( joint.LinearFrequency ).WithLinearDamping( joint.LinearDampingRatio )
+						.WithAngularFrequency( joint.AngularFrequency ).WithAngularDamping( joint.AngularDampingRatio );
+					break;
+			}
+			added.LinearStrength = joint.LinearStrength;
+			added.AngularStrength = joint.AngularStrength;
+		}
 	}
 
 	static FittedVertex MakeVertex( Vec2 uv, int v, Vec3 p, Vec3 n, Vec3 t, float sign, int[] bones, float[] weights, byte[] colors )

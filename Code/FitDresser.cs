@@ -1091,8 +1091,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		if ( !fitted.IsValid() )
 			return false;
 
-		// Jiggle bones and anything else that moves a garment on its own are run by the
-		// garment's animation graph. A model built at runtime can't have one, so the fitted
+		// Jiggle bones are run by the garment's physics, which the fitted model is built with,
+		// or by its animation graph. A model built at runtime can't have a graph, so the fitted
 		// model borrows the original's. Same skeleton, so the graph doesn't know the difference.
 		var original = await Model.LoadAsync( stockPath );
 		if ( !overtaken() && renderer.IsValid() && original?.AnimGraph is { } graph )
