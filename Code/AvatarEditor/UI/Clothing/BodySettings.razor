@@ -57,7 +57,7 @@
         <FormRow Label="Skin">
             <Content>
                 <div class="skin-items">
-                    @foreach( var item in Manager.GetAllClothing().Where( x => x.HasHumanSkin ) )
+                    @foreach( var item in Manager.HumanSkins() )
                     {
                         var c = Manager.IsSelected( item ) ? "active" : "";
 
@@ -79,6 +79,58 @@
                         <div class="eye @(Manager.TintEyes && Manager.EyeColor == color ? "active" : "")" style="background-color: @color.Hex" onclick=@(() => Manager.EyeColor = color)></div>
                     }
                 </div>
+            </Content>
+        </FormRow>
+    }
+
+    @* The stock editor's eye and body sliders, on the citizen as there: the eye shader and the deform volumes are its own. *@
+    @if ( Manager.Body == AvatarEditManager.BodyKind.Citizen )
+    {
+        <FormRow Label="Eye Color">
+            <Content>
+                <ColorSwatchPicker Value:bind="@Manager.IrisColor" Swatches="@EyeSwatches()"></ColorSwatchPicker>
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Eye Alignment">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.IrisAlign" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Neck Size">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.NeckSize" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Waist Size">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.WaistSize" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Chest Size">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.ChestSize" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Head Shape">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.HeadShape" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Nose Size">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.NoseSize" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
+
+        <FormRow Label="Chin Size">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.ChinSize" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
             </Content>
         </FormRow>
     }
@@ -112,7 +164,14 @@
     [Parameter]
     public AvatarEditManager Manager { get; set; }
 
-    protected override int BuildHash() => HashCode.Combine( Manager.Body, Manager.Toon, Manager.TintEyes, Manager.EyeColor, Manager.OutfitHash );
+    protected override int BuildHash() => HashCode.Combine( Manager.Body, Manager.Toon, Manager.TintEyes, Manager.EyeColor, Manager.OutfitHash, Manager.IrisColor );
+
+    static ColorSwatch[] eyeSwatches;
+
+    // The stock eye palette, in as many steps as the skin's.
+    ColorSwatch[] EyeSwatches() => eyeSwatches ??= Enumerable.Range( 0, 33 )
+        .Select( i => new ColorSwatch { Value = i / 32f, Color = Dresser.EyeColorGradient.Evaluate( i / 32f ) } )
+        .ToArray();
 
     static readonly Color[] EyeColors =
     [

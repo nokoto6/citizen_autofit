@@ -41,6 +41,7 @@ public sealed partial class AvatarEditManager : Component
 	[Property] public bool StartToon { get; set; } = true;
 
 	const string SaveCookie = "fitavatar.outfit";
+	const string DyeCookie = "fitavatar.dyes";
 
 	string lastSaved;
 	public ClothingContainer Container { get; set; } = new();
@@ -96,6 +97,8 @@ public sealed partial class AvatarEditManager : Component
 		var saved = Game.Cookies.GetString( SaveCookie, null );
 		Container = string.IsNullOrEmpty( saved ) ? ClothingContainer.CreateFromLocalUser() ?? new() : ClothingContainer.CreateFromJson( saved );
 		lastSaved = Container.Serialize();
+		ReadDyes( Game.Cookies.GetString( DyeCookie, "" ) );
+		lastSavedDyes = WriteDyes();
 		AvatarBackgroundRig.RestoreSaved();
 	}
 
@@ -135,6 +138,13 @@ public sealed partial class AvatarEditManager : Component
 
 	public IEnumerable<Clothing> GetAllClothing() => allClothing;
 
+	/// <summary>The human skins made for the body shown: the male ones on the male, the female ones on the female.</summary>
+	public IEnumerable<Clothing> HumanSkins()
+	{
+		string model = Bodies.FirstOrDefault( x => x.Kind == body ).Model ?? "";
+		return allClothing.Where( x => x.HasHumanSkin && string.Equals( (x.HumanSkinModel ?? "").TrimStart( '/' ), model, StringComparison.OrdinalIgnoreCase ) );
+	}
+
 	protected override void OnUpdate()
 	{
 		if ( Shown?.BodyTarget is not { } renderer || Scene.Camera is null ) return;
@@ -168,6 +178,99 @@ public sealed partial class AvatarEditManager : Component
 	{
 		get => Container.Tint;
 		set { Container.Tint = value; if ( Shown is { } d ) d.Tint = value; }
+	}
+
+	// The stock editor's eye sliders: a place on the stock eye palette and how the irises are
+	// turned. The citizen's eyes read them.
+	public float IrisColor
+	{
+		get => Container.EyeColor;
+		set { Container.EyeColor = value; if ( Shown is { } d ) d.IrisColor = Container.EyeColor; }
+	}
+
+	public float IrisAlign
+	{
+		get => Container.EyeAlign;
+		set { Container.EyeAlign = value; if ( Shown is { } d ) d.IrisAlign = Container.EyeAlign; }
+	}
+
+	// The stock editor's body deforms, on the citizen (see FitDresser.Deforms).
+	public float NeckSize { get => Container.NeckSize; set { Container.NeckSize = value; ApplyDeforms(); } }
+	public float WaistSize { get => Container.WaistSize; set { Container.WaistSize = value; ApplyDeforms(); } }
+	public float ChestSize { get => Container.ChestSize; set { Container.ChestSize = value; ApplyDeforms(); } }
+	public float HeadShape { get => Container.HeadShape; set { Container.HeadShape = value; ApplyDeforms(); } }
+	public float NoseSize { get => Container.NoseSize; set { Container.NoseSize = value; ApplyDeforms(); } }
+	public float ChinSize { get => Container.ChinSize; set { Container.ChinSize = value; ApplyDeforms(); } }
+
+	void ApplyDeforms()
+	{
+		if ( Shown is not { } d ) return;
+		d.NeckSize = Container.NeckSize;
+		d.WaistSize = Container.WaistSize;
+		d.ChestSize = Container.ChestSize;
+		d.HeadShape = Container.HeadShape;
+		d.NoseSize = Container.NoseSize;
+		d.ChinSize = Container.ChinSize;
+		d.UpdateDeforms();
+	}
+
+	/// <summary>
+	/// Hair dyes, as in Protect The House's barber: a colour laid over the hair's shade. Natural
+	/// is the hair's own blonde to black range.
+	/// </summary>
+	public static readonly (string Name, Color Color)[] DyePalette =
+	[
+		("Snow", Color.FromBytes( 0xF2, 0xF2, 0xF0 )),
+		("Ash", Color.FromBytes( 0x9A, 0xA0, 0xA8 )),
+		("Ruby", Color.FromBytes( 0xE2, 0x3C, 0x4E )),
+		("Ember", Color.FromBytes( 0xF0, 0x66, 0x2C )),
+		("Gold", Color.FromBytes( 0xF2, 0xC1, 0x4E )),
+		("Lime", Color.FromBytes( 0x8F, 0xD1, 0x4F )),
+		("Emerald", Color.FromBytes( 0x2F, 0xBF, 0x6E )),
+		("Teal", Color.FromBytes( 0x27, 0xC4, 0xC0 )),
+		("Azure", Color.FromBytes( 0x3A, 0xA0, 0xF0 )),
+		("Sapphire", Color.FromBytes( 0x3A, 0x5B, 0xF0 )),
+		("Violet", Color.FromBytes( 0x8A, 0x5B, 0xF0 )),
+		("Orchid", Color.FromBytes( 0xC8, 0x5B, 0xF0 )),
+		("Rose", Color.FromBytes( 0xF0, 0x5B, 0xB0 )),
+	];
+
+	// The dye on each dyed garment, by its place in DyePalette.
+	readonly Dictionary<Clothing, int> dyes = new();
+	string lastSavedDyes = "";
+
+	/// <summary>Hair of any kind, which can be dyed.</summary>
+	public static bool IsDyeable( Clothing c ) => c is not null && c.AllowTintSelect && (c.Category.ToString().StartsWith( "Hair" ) || c.Category.ToString().StartsWith( "FacialHair" ) || c.Category == Clothing.ClothingCategory.Eyebrows);
+
+	/// <summary>The dye on a garment, -1 for its natural colour.</summary>
+	public int GetDye( Clothing clothing ) => dyes.TryGetValue( clothing, out var i ) ? i : -1;
+
+	public void SetDye( Clothing clothing, int dye )
+	{
+		if ( clothing is null ) return;
+		if ( dye < 0 || dye >= DyePalette.Length ) dyes.Remove( clothing );
+		else dyes[clothing] = dye;
+		Shown?.SetClothingDye( clothing, dye >= 0 && dye < DyePalette.Length ? DyePalette[dye].Color : null );
+	}
+
+	/// <summary>The colour a garment is drawn in at a tint, dyed or not: what the colour strip shows.</summary>
+	public Color ColorAt( Clothing clothing, float tint ) => GetDye( clothing ) is int dye && dye >= 0
+		? FitDresser.Dyed( DyePalette[dye].Color, tint )
+		: clothing.TintSelection.Evaluate( tint );
+
+	string WriteDyes() => string.Join( ";", dyes.Where( x => x.Key.IsValid() ).OrderBy( x => x.Key.ResourcePath ).Select( x => $"{x.Key.ResourcePath}={DyePalette[x.Value].Name}" ) );
+
+	void ReadDyes( string saved )
+	{
+		dyes.Clear();
+		foreach ( var pair in (saved ?? "").Split( ';', StringSplitOptions.RemoveEmptyEntries ) )
+		{
+			var parts = pair.Split( '=' );
+			if ( parts.Length != 2 ) continue;
+			int dye = Array.FindIndex( DyePalette, x => x.Name == parts[1] );
+			var clothing = ResourceLibrary.Get<Clothing>( parts[0] );
+			if ( dye >= 0 && clothing.IsValid() ) dyes[clothing] = dye;
+		}
 	}
 
 	/// <summary>
@@ -222,7 +325,7 @@ public sealed partial class AvatarEditManager : Component
 	/// </summary>
 	ClothingEntry Wear( Clothing clothing )
 	{
-		Container.Clothing.RemoveAll( x => x.Clothing is { } worn && !worn.CanBeWornWith( clothing ) && !HatAndHair( worn, clothing ) );
+		Container.Clothing.RemoveAll( x => x.Clothing is { } worn && (!worn.CanBeWornWith( clothing ) && !HatAndHair( worn, clothing ) || worn.HasHumanSkin && clothing.HasHumanSkin) );
 		var entry = new ClothingEntry( clothing );
 		Container.Clothing.Add( entry );
 		return entry;
@@ -242,7 +345,17 @@ public sealed partial class AvatarEditManager : Component
 		d.Tint = Container.Tint;
 		d.TintEyes = tintEyes;
 		d.EyeColor = eyeColor;
+		d.IrisColor = Container.EyeColor;
+		d.IrisAlign = Container.EyeAlign;
 		d.Toon = toon;
+		d.Dyes.Clear();
+		foreach ( var (clothing, dye) in dyes ) d.Dyes[clothing] = DyePalette[dye].Color;
+		d.NeckSize = Container.NeckSize;
+		d.WaistSize = Container.WaistSize;
+		d.ChestSize = Container.ChestSize;
+		d.HeadShape = Container.HeadShape;
+		d.NoseSize = Container.NoseSize;
+		d.ChinSize = Container.ChinSize;
 		d.Apply();
 	}
 
@@ -252,22 +365,25 @@ public sealed partial class AvatarEditManager : Component
 		get
 		{
 			var hash = new HashCode();
-			foreach ( var x in Container.Clothing ) { hash.Add( x.Clothing ); hash.Add( x.Tint ); }
+			foreach ( var x in Container.Clothing ) { hash.Add( x.Clothing ); hash.Add( x.Tint ); hash.Add( GetDye( x.Clothing ) ); }
 			return hash.ToHashCode();
 		}
 	}
 
-	public bool HasUnsavedChanges => lastSaved != Container.Serialize();
+	public bool HasUnsavedChanges => lastSaved != Container.Serialize() || lastSavedDyes != WriteDyes();
 
 	public void SaveChanges()
 	{
 		lastSaved = Container.Serialize();
+		lastSavedDyes = WriteDyes();
 		Game.Cookies.SetString( SaveCookie, lastSaved );
+		Game.Cookies.SetString( DyeCookie, lastSavedDyes );
 	}
 
 	public void RevertChanges()
 	{
 		Container.Deserialize( lastSaved );
+		ReadDyes( lastSavedDyes );
 		ApplyChangesToModel();
 	}
 

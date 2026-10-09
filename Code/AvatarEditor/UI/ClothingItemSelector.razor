@@ -95,10 +95,7 @@
 @code
 {
     AvatarEditManager Manager => Scene.GetAll<AvatarEditManager>().First();
-    // By path, and failing that by file name among the loaded ones: a resource type made by the
-    // game itself can come up before its files are known by path.
-    AvatarClothingCategory Category => ResourceLibrary.Get<AvatarClothingCategory>( Source?.TrimStart( '/' ) )
-        ?? ResourceLibrary.GetAll<AvatarClothingCategory>().FirstOrDefault( x => x.ResourcePath.EndsWith( (Source ?? "").Split( '/' ).Last(), StringComparison.OrdinalIgnoreCase ) );
+    AvatarClothingCategory Category => AvatarClothingCategory.Get( Source );
 
     [Parameter] public string Source { get; set; }
 
@@ -132,10 +129,7 @@
     {
         main = e;
 
-        _suball = new();
-        _suball.Name = "all";
-        _suball.Title = "All";
-        _suball.Categories = main.SubCategories.SelectMany(x => x.Categories).ToArray();
+        _suball = new( "all", "All", null, main.SubCategories.SelectMany(x => x.Categories).ToArray() );
 
         var cookieValue = Game.Cookies.GetString($"clothing;{Category.Name};{main.Name};lasttab");
         sub = main.SubCategories.FirstOrDefault(x => x.Name == cookieValue);

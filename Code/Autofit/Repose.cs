@@ -64,8 +64,6 @@ public sealed class Repose
 	public List<(Vec3 Stock, Vec3 Body)> Eyes = new();
 	/// <summary>The face down its middle, top to bottom: between the eyes, the tip of the nose, the mouth, the chin. Empty when a face has no mouth to find.</summary>
 	public List<(Vec3 Stock, Vec3 Body)> Face = new();
-	/// <summary>The tip of the nose and the bottom of the chin, on the stock body and on this one (in the stock pose). Read off the profile alone, so a face with no mouth to find has them too. Empty when there are no eyes to start from.</summary>
-	public List<(Vec3 Stock, Vec3 Body)> NoseAndChin = new();
 
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
@@ -341,11 +339,6 @@ public sealed class Repose
 			foreach ( var (ours, theirs) in result.Eyes ) { eyeOurs += ours; eyeTheirs += theirs; }
 			eyeOurs /= result.Eyes.Count;
 			eyeTheirs /= result.Eyes.Count;
-			if ( Profile( stock.Positions, eyeOurs, out var noseOurs, out _ ) && Profile( result.Positions, eyeTheirs, out var noseTheirs, out _ ) )
-			{
-				result.NoseAndChin.Add( (noseOurs, noseTheirs) );
-				result.NoseAndChin.Add( (ChinBottom( stock.Positions, eyeOurs, noseOurs ), ChinBottom( result.Positions, eyeTheirs, noseTheirs )) );
-			}
 			if ( LowerFace( stock, stock.Positions, eyeOurs, out var stockFace ) && LowerFace( body, result.Positions, eyeTheirs, out var bodyFace ) )
 			{
 				result.Face.Add( (eyeOurs, eyeTheirs) );
@@ -488,21 +481,6 @@ public sealed class Repose
 			if ( positions[v].X >= most - MouthFrontDepth ) { mouthFront += positions[v]; inFront++; }
 		mouthFront /= inFront;
 
-		if ( !Profile( positions, eye, out var noseTip, out var chinFront ) ) return false;
-		// A chin has to be below the mouth, or the profile ran off somewhere else.
-		if ( chinFront.Z >= mouthFront.Z ) return false;
-		marks = new[] { noseTip, mouthFront, chinFront };
-		return true;
-	}
-
-	/// <summary>
-	/// The tip of the nose and the bottom of the chin, read off the face's profile down its
-	/// middle: the nose stands out most below the eyes, and the chin is where the profile,
-	/// going down, drops away to the neck.
-	/// </summary>
-	static bool Profile( Vec3[] positions, Vec3 eye, out Vec3 noseTip, out Vec3 chinFront )
-	{
-		noseTip = chinFront = Vec3.Zero;
 		// The profile: the foremost point in each slice of height, down the middle of the face.
 		int slices = (int)(ProfileDepth / ProfileSlice);
 		var front = new Vec3[slices];
@@ -525,26 +503,10 @@ public sealed class Repose
 			chin = k;
 			gap = 0;
 		}
-		noseTip = front[nose];
-		chinFront = front[chin];
+		// A chin has to be below the mouth, or the profile ran off somewhere else.
+		if ( front[chin].Z >= mouthFront.Z ) return false;
+		marks = new[] { front[nose], mouthFront, front[chin] };
 		return true;
-	}
-
-	/// <summary>
-	/// The bottom of the chin: the lowest point down the middle of the face that is still at
-	/// the front of it, no further back than <see cref="ChinBack"/> behind the tip of the nose.
-	/// Walking the profile down stops at the first gap in it, and a face with few vertices down
-	/// its middle (the citizen's) has a gap at the mouth.
-	/// </summary>
-	static Vec3 ChinBottom( Vec3[] positions, Vec3 eye, Vec3 nose )
-	{
-		var chin = nose;
-		foreach ( var p in positions )
-		{
-			if ( MathF.Abs( p.Y - eye.Y ) > ProfileHalfWidth || p.Z >= nose.Z || p.Z <= eye.Z - ProfileDepth || p.X < nose.X - ChinBack ) continue;
-			if ( p.Z < chin.Z ) chin = p;
-		}
-		return chin;
 	}
 
 	static bool EyeFront( SkinnedGeometry geo, Vec3[] positions, int eyeBone, out Vec3 front )
@@ -721,18 +683,6 @@ public sealed class Repose
 		}
 
 		return result;
-	}
-
-	/// <summary>
-	/// Where a point given on the stock body is on this body, in its own rest pose: carried the
-	/// way a garment vertex skinned to that one bone is. What puts the stock body's deform
-	/// volumes onto another body.
-	/// </summary>
-	public Vec3 StockToBodyRest( Vec3 point, int bone, SkinnedGeometry stock )
-	{
-		var bones = new[] { bone, -1, -1, -1 };
-		var weights = new[] { 1f, 0f, 0f, 0f };
-		return ToBodyRest( Grow( [point], bones, weights, stock ), bones, weights )[0];
 	}
 
 	/// <summary>

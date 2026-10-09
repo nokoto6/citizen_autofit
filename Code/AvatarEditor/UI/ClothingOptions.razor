@@ -12,7 +12,21 @@
 
     @if ( Clothing.AllowTintSelect )
     {
-        var currentTint = Manager.GetTint(Clothing);
+        @* Hair can be dyed, as in Protect The House's barber: the dye's colour, the strip below its shade. *@
+        @if ( AvatarEditManager.IsDyeable( Clothing ) )
+        {
+            var dye = Manager.GetDye( Clothing );
+
+            <div class="dyes">
+                <div class="dye natural @(dye < 0 ? "active" : "")" tooltip="Natural" style="background-color: @Clothing.TintSelection.Evaluate( 0.6f ).Hex" onclick=@(() => Manager.SetDye( Clothing, -1 ))></div>
+                @for ( int i = 0; i < AvatarEditManager.DyePalette.Length; i++ )
+                {
+                    var index = i;
+                    var (name, color) = AvatarEditManager.DyePalette[i];
+                    <div class="dye @(dye == index ? "active" : "")" tooltip="@name" style="background-color: @FitDresser.Dyed( color, 0.4f ).Hex" onclick=@(() => Manager.SetDye( Clothing, index ))></div>
+                }
+            </div>
+        }
 
         <ColorSwatchPicker Value:bind="@TintValue" Swatches="@GetSwatches()"></ColorSwatchPicker>
     }
@@ -25,7 +39,7 @@
 
     AvatarEditManager Manager => Scene.GetAll<AvatarEditManager>().First();
 
-    protected override int BuildHash() => System.HashCode.Combine(Clothing);
+    protected override int BuildHash() => System.HashCode.Combine( Clothing, Manager.GetDye( Clothing ) );
 
     ColorSwatch[] GetSwatches()
     {
@@ -35,7 +49,7 @@
         for (int i = 0; i < squares; i++)
         {
             var f = (float)i / squares;
-            var c = Clothing.TintSelection.Evaluate( f );
+            var c = Manager.ColorAt( Clothing, f );
             swatches.Add(new ColorSwatch { Value = f, Color = c });
         }
 

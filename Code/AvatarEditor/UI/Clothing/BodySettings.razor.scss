@@ -62,24 +62,26 @@ TextEntry
 }
 
 // Four bodies in one row: the menu's two fit with room to spare, these would wrap mid-word.
-.buttongroup
+// Under BodySettings, or the menu's own button group padding, loaded later, wins.
+BodySettings .buttongroup
 {
     font-size: 16px;
+    gap: 2px;
 
     > *
     {
         white-space: nowrap;
         flex-shrink: 0;
-        padding: 8px 12px;
+        padding: 8px 11px;
     }
 }
 
-FormRow > .label
+BodySettings FormRow > .label
 {
     width: 110px;
 }
 
-FormRow > .content
+BodySettings FormRow > .content
 {
     width: 380px;
 }
