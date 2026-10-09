@@ -1254,6 +1254,127 @@ public sealed class Repose
 	}
 
 	/// <summary>
+	/// The rest transforms on the body of the garment's own bones that its physics swings
+	/// (<paramref name="own"/>: ones the stock skeleton doesn't have, like a pendant's jiggle
+	/// bone), each with the vertices it carries. The engine swings such a bone about its origin,
+	/// so the bone has to stay where it was on its vertices: at a pendant's loop. Carried by its stock ancestor (<see cref="GarmentBoneRest"/>) it doesn't,
+	/// as the fit moves the vertices with the skin under them and grows them with the body; on
+	/// Akira a swag chain's pendant came out 4 cm above its bone and swung about its middle.
+	/// Each bone takes the turn and shift that best carry its vertices from the stock pose
+	/// (<paramref name="garment"/>'s positions) to <paramref name="rest"/>. A bone with too few
+	/// vertices to tell follows its parent, if that is the garment's own too, or the shift of
+	/// what it has. Null for the bones that aren't the garment's own.
+	/// </summary>
+	public (Vec3 Position, float[] Rotation)[] OwnBoneRests( SkinnedGeometry garment, int[] boneMap, bool[] own, Vec3[] rest )
+	{
+		int bones = garment.BoneNames.Length;
+		var weight = new float[bones];
+		var from = new Vec3[bones];
+		var to = new Vec3[bones];
+		var held = new int[bones];
+		for ( int k = 0; k < garment.BoneIndex.Length; k++ )
+		{
+			int b = garment.BoneIndex[k];
+			float w = garment.BoneWeight[k];
+			if ( b < 0 || b >= bones || !own[b] || w <= 0 ) continue;
+			int v = k / 4;
+			weight[b] += w;
+			from[b] += garment.Positions[v] * w;
+			to[b] += rest[v] * w;
+			if ( w >= 0.5f ) held[b]++;
+		}
+
+		var spread = new float[bones][];
+		var size = new float[bones];
+		for ( int b = 0; b < bones; b++ )
+		{
+			if ( weight[b] <= 0 ) continue;
+			from[b] /= weight[b];
+			to[b] /= weight[b];
+			spread[b] = new float[9];
+		}
+		for ( int k = 0; k < garment.BoneIndex.Length; k++ )
+		{
+			int b = garment.BoneIndex[k];
+			float w = garment.BoneWeight[k];
+			if ( b < 0 || b >= bones || spread[b] == null || w <= 0 ) continue;
+			int v = k / 4;
+			Vec3 p = garment.Positions[v] - from[b], q = rest[v] - to[b];
+			var h = spread[b];
+			size[b] += w * p.LengthSquared();
+			h[0] += w * q.X * p.X; h[1] += w * q.X * p.Y; h[2] += w * q.X * p.Z;
+			h[3] += w * q.Y * p.X; h[4] += w * q.Y * p.Y; h[5] += w * q.Y * p.Z;
+			h[6] += w * q.Z * p.X; h[7] += w * q.Z * p.Y; h[8] += w * q.Z * p.Z;
+		}
+
+		// Parents come first in a model's skeleton, so a parent's rest is there for its children.
+		var result = new (Vec3 Position, float[] Rotation)[bones];
+		for ( int i = 0; i < bones; i++ )
+		{
+			if ( !own[i] ) continue;
+			var position = garment.BonePositions[i];
+			var rotation = garment.BoneRotations[i];
+			int s = boneMap[i];
+			int parent = garment.BoneParents[i];
+			var matrix = held[i] >= OwnBoneHeld ? GarmentFit.Rotation( spread[i] ) : null;
+			if ( matrix != null )
+			{
+				// Grown or shrunk with the body, a pendant still hangs from its loop: the bone
+				// keeps its place on the vertices at their new size.
+				float grown = 0;
+				for ( int k = 0; k < 9; k++ ) grown += matrix[k] * spread[i][k];
+				grown = size[i] > 0 ? Math.Clamp( grown / size[i], 0.25f, 4f ) : 1f;
+				var turn = FromMatrix( matrix );
+				result[i] = (to[i] + Quat.Rotate( turn, position - from[i] ) * grown, Quat.Multiply( turn, rotation ));
+			}
+			else if ( parent >= 0 && parent < i && own[parent] )
+			{
+				var turn = Quat.Multiply( result[parent].Rotation, Quat.Inverse( garment.BoneRotations[parent] ) );
+				result[i] = (result[parent].Position + Quat.Rotate( turn, position - garment.BonePositions[parent] ), Quat.Multiply( turn, rotation ));
+			}
+			else if ( s >= 0 )
+			{
+				result[i] = GarmentBoneRest( s, position, rotation );
+				if ( weight[i] > 0 ) result[i].Position += to[i] - (RestPositions[s] + Quat.Rotate( carry[s], from[i] - stockPositions[s] ));
+			}
+			else
+				result[i] = (position + (weight[i] > 0 ? to[i] - from[i] : Vec3.Zero), rotation);
+		}
+		return result;
+	}
+
+	const int OwnBoneHeld = 3;   // vertices mostly on a bone it takes to tell how they turned
+
+	// A rotation matrix (row-major) as a quaternion.
+	static float[] FromMatrix( float[] m )
+	{
+		float trace = m[0] + m[4] + m[8];
+		float x, y, z, w;
+		if ( trace > 0 )
+		{
+			float s = MathF.Sqrt( trace + 1f ) * 2f;
+			w = 0.25f * s; x = (m[7] - m[5]) / s; y = (m[2] - m[6]) / s; z = (m[3] - m[1]) / s;
+		}
+		else if ( m[0] > m[4] && m[0] > m[8] )
+		{
+			float s = MathF.Sqrt( 1f + m[0] - m[4] - m[8] ) * 2f;
+			w = (m[7] - m[5]) / s; x = 0.25f * s; y = (m[1] + m[3]) / s; z = (m[2] + m[6]) / s;
+		}
+		else if ( m[4] > m[8] )
+		{
+			float s = MathF.Sqrt( 1f + m[4] - m[0] - m[8] ) * 2f;
+			w = (m[2] - m[6]) / s; x = (m[1] + m[3]) / s; y = 0.25f * s; z = (m[5] + m[7]) / s;
+		}
+		else
+		{
+			float s = MathF.Sqrt( 1f + m[8] - m[0] - m[4] ) * 2f;
+			w = (m[3] - m[1]) / s; x = (m[2] + m[6]) / s; y = (m[5] + m[7]) / s; z = 0.25f * s;
+		}
+		float length = MathF.Sqrt( x * x + y * y + z * z + w * w );
+		return new[] { x / length, y / length, z / length, w / length };
+	}
+
+	/// <summary>
 	/// Grows a garment that was fitted in the stock proportions back to the body's. Each
 	/// vertex is scaled about the bones it is skinned to, which is exactly what bone merging
 	/// will then carry over to the body's own skeleton.
