@@ -190,6 +190,8 @@ public static class GarmentFit
 	const int BulgePasses = 6;                      // rounds of finding the skin that comes through a solid and bulging it
 	const int LoosePieces = 16;                  // more rigid pieces than this in one heap is hair or the like, not an object
 	const float LooseLength = 0.15f * Units.Metre; // a loose piece longer than this bends like cloth rather than moving as one
+	const float BeadSize = 0.06f * Units.Metre;   // a piece no bigger than this corner to corner
+	const float BeadShape = 0.5f;                 // and at least this thick for its length is a bead
 
 	// Points inside each triangle to test: centre, edge midpoints and one near each corner.
 	static readonly float[][] Samples =
@@ -283,7 +285,8 @@ public static class GarmentFit
 	/// <param name="neck">The neck on the stock body and on this one (<see cref="Repose.Neck"/>). Cloth over it goes no further up this body's neck than it went up the stock body's.</param>
 	/// <param name="onSkin"><see cref="BodyMap.OnSkin"/>: where each stock vertex lies on this body's skin for paint on it, the face lined up by its features. Without it paint goes by <paramref name="skinMove"/>.</param>
 	/// <param name="paintOut">If given, set for the vertices of paint on the skin (a tattoo, makeup, brows). They go back to the body's rest pose with the skin under them, see <see cref="Repose.OntoSkin"/>.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null )
+	/// <param name="trunk">This body's trunk in the stock pose and in its rest pose (<see cref="Repose.Trunk"/>). Cloth on its lower part is as far up it, as a share of it, in the rest pose as in the stock pose.</param>
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null, Trunk trunk = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
 		var weld = MeshTools.Weld( verts, out int n );
@@ -540,17 +543,24 @@ public static class GarmentFit
 
 			var whole = new List<int>();
 			foreach ( int r in parts ) whole.AddRange( rigid[r] );
-			bool wraps = FitRigid( whole, pts, move, gap0, away, fitted, PushSolid, false );
 			var solidTris = new List<int>();
 			foreach ( int r in parts )
 				if ( pieceTris.TryGetValue( piece[rigid[r][0]], out var mine ) ) solidTris.AddRange( mine );
-			if ( eyes != null && OnTheEyes( whole, pts, eyes ) )
+			bool wraps = Wraps( whole, solidTris, pts, gap0, away );
+			bool onEyes = eyes != null && OnTheEyes( whole, pts, eyes );
+			bool[] marks = null;
+			bool onFace = wraps && !onEyes && eyes != null && eyes.Length == 2 && face != null && face.Length == 4 && OnTheFace( solidTris, pts, old, eyes, face, out marks );
+			// A hat or a helmet: round the head and resting on its crown, the skin above the eyes.
+			float crown = eyes != null && eyes.Length == 2 ? MathF.Max( eyes[0].Stock.Z, eyes[1].Stock.Z ) : float.NaN;
+			bool hat = wraps && !onEyes && !onFace && !float.IsNaN( crown ) && OnTheCrown( whole, solidTris, pts, gap0, crown ) && !OverTheFace( solidTris, pts, face );
+			FitRigid( whole, pts, move, gap0, away, fitted, PushSolid, false, wraps, hat ? crown : float.NaN );
+			if ( onEyes )
 			{
 				var front = PutOnTheEyes( whole, pts, fitted, eyes );
 				if ( wraps ) GoRound( whole, front, eyes, fitted, gap0, away, PushSolid );
 				PushOut( whole, fitted, gap0, away, PushSolid, false );
 			}
-			else if ( wraps && eyes != null && eyes.Length == 2 && face != null && face.Length == 4 && OnTheFace( solidTris, pts, old, eyes, face, out var marks ) )
+			else if ( onFace )
 			{
 				PutOnTheFace( whole, pts, fitted, eyes, face, marks );
 				var band = LetOutBand( whole, pts, move, fitted, gap0, away, PushSolid, edges, piece, eyes );
@@ -617,6 +627,28 @@ public static class GarmentFit
 				fitted[i] = pts[i] + move[i];
 				if ( wanted[i] > LayerGap ) wanted[i] = LayerGap + (wanted[i] - LayerGap) * slimmer[i];
 			}
+		}
+
+		// Cloth on the lower trunk goes back to the body's rest pose as far up its trunk as it is
+		// in the stock pose (see Trunk): the hem of a shirt over the hips, a waistband. Not hair.
+		if ( trunk != null && givenMove == null && !hair && cloth.Count > 0 )
+		{
+			var rise = new Vec3[n];
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					float w = trunk.Zone( skinAt[i] );
+					if ( w > 0 ) rise[i] = new Vec3( 0, 0, w * trunk.Shift( pts[i] + move[i], trunk.Share( pts[i] ) ) );
+				}
+
+			// Evened out over the neighbours, the cloth moves in one piece.
+			MeshTools.Relax( rise, all, edges, 2, 0.5f );
+			foreach ( var (_, idx) in cloth )
+				foreach ( int i in idx )
+				{
+					move[i] += rise[i];
+					fitted[i] = pts[i] + move[i];
+				}
 		}
 
 		// Cloth over the neck goes no further up this body's neck than it went up the stock
@@ -730,6 +762,7 @@ public static class GarmentFit
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
+		if ( !hair ) Beads( pts, fitted, members, isSolid );
 
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
@@ -856,6 +889,39 @@ public static class GarmentFit
 		if ( paintOut != null )
 			for ( int i = 0; i < verts.Length; i++ ) paintOut[i] = used[weld[i]];
 		return result;
+	}
+
+	/// <summary>
+	/// A bead (a pearl on a string, a knot) is as thick as it is long and small, and keeps its
+	/// shape: it goes as a whole, by the average of where its vertices went, and back to the
+	/// body's rest pose as a whole too, as a solid. Pushed off the skin vertex by vertex like cloth,
+	/// a pearl on a necklace was squashed on the side towards the neck, and taken back by the
+	/// skin under each of its vertices, the ones on the neck grown less than those on the chest,
+	/// every pearl came out twice as tall as wide.
+	/// </summary>
+	static void Beads( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, bool[] isSolid )
+	{
+		foreach ( var idx in members.Values )
+		{
+			if ( isSolid[idx[0]] ) continue;
+			var lo = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+			var hi = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+			foreach ( int i in idx )
+			{
+				lo = new Vec3( MathF.Min( lo.X, pts[i].X ), MathF.Min( lo.Y, pts[i].Y ), MathF.Min( lo.Z, pts[i].Z ) );
+				hi = new Vec3( MathF.Max( hi.X, pts[i].X ), MathF.Max( hi.Y, pts[i].Y ), MathF.Max( hi.Z, pts[i].Z ) );
+			}
+			var size = hi - lo;
+			if ( size.Length() > BeadSize || MathF.Min( size.X, MathF.Min( size.Y, size.Z ) ) < BeadShape * MathF.Max( size.X, MathF.Max( size.Y, size.Z ) ) ) continue;
+			var shift = Vec3.Zero;
+			foreach ( int i in idx ) shift += fitted[i] - pts[i];
+			shift /= idx.Count;
+			foreach ( int i in idx )
+			{
+				fitted[i] = pts[i] + shift;
+				isSolid[i] = true;
+			}
+		}
 	}
 
 	/// <summary>
@@ -2129,27 +2195,62 @@ public static class GarmentFit
 
 	delegate bool PushTest( Vec3 p, float oldGap, Vec3 outward, out Vec3 push );
 
-	/// <param name="keepGaps">Also restore the gap each vertex had over the skin, the way cloth does. For loose pieces like hair cards.</param>
-	/// <returns>Whether the piece goes all the way round the body, and so was scaled with it.</returns>
-	static bool FitRigid( List<int> idx, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, Vec3[] fitted, PushTest push, bool keepGaps )
+	const float WrapContact = 0.5f;   // a piece whose resting side faces out on average less than this goes all the way round the body
+	const float WrapArea = 0.35f;     // or by area, less than this
+	const float StretchRidge = 0.1f;  // how hard a piece stretched to a part of the body holds on to one scale every way, as a share of its spread
+	const float MostStretch = 1.25f;  // and the most it is stretched one way more than another, either side of that scale
+
+	/// <summary>
+	/// Whether a solid goes all the way round a part of the body (a hat, glasses, a bracelet):
+	/// the parts of it resting on the skin face out every way, not to one side as a sword's or a
+	/// backpack's do. Counted by vertex, or by area: a watch's face is cut much finer than its
+	/// strap, and counted by vertex it faced out the way its face does.
+	/// </summary>
+	static bool Wraps( List<int> idx, List<int> tris, Vec3[] pts, float[] gap0, Vec3[] away )
 	{
+		var meanAway = Vec3.Zero;
+		int touching = 0;
+		foreach ( int i in idx )
+			if ( gap0[i] < Contact ) { meanAway += away[i]; touching++; }
+		if ( touching < 8 ) return false;
+		if ( (meanAway / touching).Length() < WrapContact ) return true;
+
+		var area = new Dictionary<int, float>();
+		for ( int t = 0; t + 2 < tris.Count; t += 3 )
+		{
+			float a = Vec3.Cross( pts[tris[t + 1]] - pts[tris[t]], pts[tris[t + 2]] - pts[tris[t]] ).Length();
+			for ( int c = 0; c < 3; c++ ) area[tris[t + c]] = (area.TryGetValue( tris[t + c], out float have ) ? have : 0) + a;
+		}
+		var byArea = Vec3.Zero;
+		float total = 0;
+		foreach ( int i in idx )
+			if ( gap0[i] < Contact && area.TryGetValue( i, out float a ) ) { byArea += away[i] * a; total += a; }
+		return total > 0 && (byArea / total).Length() < WrapArea;
+	}
+
+	/// <param name="keepGaps">Also restore the gap each vertex had over the skin, the way cloth does. For loose pieces like hair cards.</param>
+	/// <param name="wraps">Whether the piece goes all the way round the body (<see cref="Wraps"/>), and so grows with it.</param>
+	/// <param name="crown">
+	/// For a hat or a helmet (<see cref="OnTheCrown"/>), the height of the eyes on the stock body,
+	/// NaN for anything else. A hat takes the shape of the head it goes round, stretched along each
+	/// way as far as the skin under it went that way and bent to the crown (<see cref="Reshape"/>).
+	/// A hat on a head deeper from front to back than the stock one: grown the same every way, its
+	/// front and back cut into the forehead and the back of the head, and the push out of them
+	/// lifted the whole of it until its band sat on the top of the head, 2.5 cm higher than where
+	/// a human's version of the same cap sits.
+	/// </param>
+	static void FitRigid( List<int> idx, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, Vec3[] fitted, PushTest push, bool keepGaps, bool wraps, float crown )
+	{
+		bool shaped = !float.IsNaN( crown );
 		// Trust the vertices that actually rest on the body. The far end of a sword says
 		// nothing about how the back under it moved.
 		var w = new float[idx.Count];
 		float total = 0;
-		var meanAway = Vec3.Zero;
-		int touching = 0;
 		for ( int k = 0; k < idx.Count; k++ )
 		{
-			int i = idx[k];
-			w[k] = MathF.Exp( -MathF.Max( gap0[i], 0 ) / Contact );
+			w[k] = MathF.Exp( -MathF.Max( gap0[idx[k]], 0 ) / Contact );
 			total += w[k];
-			if ( gap0[i] < Contact ) { meanAway += away[i]; touching++; }
 		}
-
-		// A piece that goes all the way round the body (hat, glasses, bracelet) has to grow
-		// with it. One that sits on one side (sword, backpack, button) only moves and turns.
-		bool wraps = touching >= 8 && (meanAway / touching).Length() < 0.5f;
 
 		var sourceMean = Vec3.Zero;
 		var targetMean = Vec3.Zero;
@@ -2181,16 +2282,152 @@ public static class GarmentFit
 			scale = Math.Clamp( trace / spread, 0.5f, 2f );
 		}
 
+		Vec3 Turned( Vec3 p ) => new( rotation[0] * p.X + rotation[1] * p.Y + rotation[2] * p.Z, rotation[3] * p.X + rotation[4] * p.Y + rotation[5] * p.Z, rotation[6] * p.X + rotation[7] * p.Y + rotation[8] * p.Z );
+
+		// Stretched along each way of the body's frame (forward, sideways, up) by as much as the
+		// skin under it went, turned first: a least squares scale per way, held to the one scale
+		// for ways the piece hardly spreads along (a pair of goggles is flat top to bottom).
+		var stretch = new Vec3( scale, scale, scale );
+		if ( rotation != null && shaped && spread > 1e-12f )
+		{
+			Vec3 moved = Vec3.Zero, square = Vec3.Zero;
+			for ( int k = 0; k < idx.Count; k++ )
+			{
+				Vec3 p = Turned( pts[idx[k]] - sourceMean ), q = pts[idx[k]] + move[idx[k]] - targetMean;
+				float f = w[k] / total;
+				moved += new Vec3( q.X * p.X, q.Y * p.Y, q.Z * p.Z ) * f;
+				square += new Vec3( p.X * p.X, p.Y * p.Y, p.Z * p.Z ) * f;
+			}
+			float ridge = StretchRidge * spread / 3f;
+			float Way( float m, float s ) => Math.Clamp( (m + ridge * scale) / (s + ridge), scale / MostStretch, scale * MostStretch );
+			stretch = new Vec3( Way( moved.X, square.X ), Way( moved.Y, square.Y ), Way( moved.Z, square.Z ) );
+		}
+
 		foreach ( int i in idx )
 		{
 			Vec3 p = pts[i] - sourceMean;
 			if ( rotation != null )
-				p = new Vec3( rotation[0] * p.X + rotation[1] * p.Y + rotation[2] * p.Z, rotation[3] * p.X + rotation[4] * p.Y + rotation[5] * p.Z, rotation[6] * p.X + rotation[7] * p.Y + rotation[8] * p.Z ) * scale;
+			{
+				p = Turned( p );
+				p = new Vec3( p.X * stretch.X, p.Y * stretch.Y, p.Z * stretch.Z );
+			}
 			fitted[i] = targetMean + p;
 		}
 
+		if ( shaped ) Reshape( idx, pts, move, gap0, away, w, fitted, push, crown );
 		PushOut( idx, fitted, gap0, away, push, keepGaps );
-		return wraps;
+	}
+
+	const float CrownShare = 0.8f;    // a solid round the head with this much of what rests on it above the eyes (by area) is a hat or a helmet
+
+	/// <summary>
+	/// Whether a solid round the head rests on its crown, the skin above the eyes, for the most
+	/// part: a hat, a helmet, a costume head. Not a cigar, rolled round in the mouth, nor a mask.
+	/// </summary>
+	static bool OnTheCrown( List<int> idx, List<int> tris, Vec3[] pts, float[] gap0, float crown )
+	{
+		// By area: a strap under the chin is finely cut and has as many vertices as a crown.
+		var area = new Dictionary<int, float>();
+		for ( int t = 0; t + 2 < tris.Count; t += 3 )
+		{
+			float a = Vec3.Cross( pts[tris[t + 1]] - pts[tris[t]], pts[tris[t + 2]] - pts[tris[t]] ).Length();
+			for ( int c = 0; c < 3; c++ ) area[tris[t + c]] = (area.TryGetValue( tris[t + c], out float have ) ? have : 0) + a;
+		}
+		float touching = 0, above = 0;
+		foreach ( int i in idx )
+		{
+			if ( gap0[i] >= Contact || !area.TryGetValue( i, out float a ) ) continue;
+			touching += a;
+			if ( pts[i].Z >= crown ) above += a;
+		}
+		return touching > 0 && above >= CrownShare * touching;
+	}
+
+	/// <summary>
+	/// Whether a solid is in front of the nose or the mouth (<see cref="Repose.Face"/>): a helmet
+	/// with a visor or a chin guard, a costume head. Those go on by the face they cover as a whole,
+	/// not bent to the crown like a hat: bent to it, a frog's head had its mouth 4 cm off the face's.
+	/// </summary>
+	static bool OverTheFace( List<int> tris, Vec3[] pts, (Vec3 Stock, Vec3 Body)[] face )
+	{
+		if ( face == null || face.Length != 4 || tris.Count == 0 ) return false;
+		var solid = new TriMesh( pts, tris.ToArray() );
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		for ( int k = 1; k <= 2; k++ )
+		{
+			solid.Crossings( face[k].Stock, new Vec3( 1, 0, 0 ), FaceCover, hits );
+			if ( hits.Count > 0 ) return true;
+		}
+		return false;
+	}
+
+	const float ReshapeReach = 0.015f * Units.Metre;   // how far round a bit of a solid resting on the skin the skin's own move carries it
+
+	/// <summary>
+	/// A solid that goes round a part of the body, made to the shape of the stock body there,
+	/// bent to the shape of this one: where it rests on the skin it goes where that skin went,
+	/// over and above the one move and stretch of the whole of it, and the rest of it (a brim, a
+	/// crown standing off the head) goes the way of the resting parts nearest to it. A human's
+	/// forehead stands out 4 cm further than the stock one's at the brow and no further at the
+	/// crown; a cap moved and stretched as a whole met it with its band and was lifted off it.
+	/// The skin's moves are smooth over a head, and so is the bend: what is sewn or riveted on
+	/// moves with the hat under it.
+	/// </summary>
+	/// <param name="weight">Per vertex of <paramref name="idx"/>, how much it rests on the skin (FitRigid's).</param>
+	static void Reshape( List<int> idx, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, float[] weight, Vec3[] fitted, PushTest push, float crown )
+	{
+		var resting = new List<(Vec3 At, Vec3 Off, float Weight)>();
+		for ( int k = 0; k < idx.Count; k++ )
+		{
+			int i = idx[k];
+			if ( gap0[i] >= Contact || pts[i].Z < crown ) continue;
+			resting.Add( (pts[i], pts[i] + move[i] - fitted[i], weight[k]) );
+		}
+		if ( resting.Count == 0 ) return;
+
+		var bend = new Vec3[idx.Count];
+		float reach2 = ReshapeReach * ReshapeReach;
+		for ( int k = 0; k < idx.Count; k++ )
+		{
+			var sum = Vec3.Zero;
+			float total = 0;
+			foreach ( var (at, off, w) in resting )
+			{
+				// Falls off with distance, slowly enough that a brim far out in front still goes
+				// the way of the band it is sewn to rather than of nothing.
+				float d2 = (pts[idx[k]] - at).LengthSquared() / reach2;
+				float f = w / (1f + d2 * d2);
+				sum += off * f;
+				total += f;
+			}
+			if ( total > 0 ) bend[k] = sum / total;
+		}
+		for ( int k = 0; k < idx.Count; k++ ) fitted[idx[k]] += bend[k];
+
+		// What still cuts into the skin is pushed out where it does, and the solid round it
+		// with it, less and less further off: pushed out as a whole, a band cutting into a
+		// forehead lifted the whole hat.
+		var digs = new List<(Vec3 At, Vec3 Push)>();
+		for ( int round = 0; round < PushRounds; round++ )
+		{
+			digs.Clear();
+			foreach ( int i in idx )
+				if ( pts[i].Z >= crown && push( fitted[i], gap0[i] < Contact ? gap0[i] : MathF.Min( gap0[i], 0 ), away[i], out var p ) ) digs.Add( (pts[i], p) );
+			if ( digs.Count == 0 ) break;
+			for ( int k = 0; k < idx.Count; k++ )
+			{
+				var best = Vec3.Zero;
+				foreach ( var (at, p) in digs )
+				{
+					float x = (pts[idx[k]] - at).Length() / (2f * ReshapeReach);
+					if ( x >= 1 ) continue;
+					var lift = p * (1 - x * x * (3 - 2 * x));
+					if ( lift.LengthSquared() > best.LengthSquared() ) best = lift;
+				}
+				bend[k] = best;
+			}
+			for ( int k = 0; k < idx.Count; k++ ) fitted[idx[k]] += bend[k];
+		}
 	}
 
 	const float EyewearHeight = 0.08f * Units.Metre;   // a solid across both eyes no taller than this is eyewear, not a helmet
