@@ -805,7 +805,7 @@ public static class ClothingFitter
 				result.BodyWeights = geo.BoneWeight;
 				result.Pivots = reference.Geo.BoneNames.Select( x => x.StartsWith( "eye_" ) ).ToArray();
 				var skin = new SkinByBone( result.Mesh, result.BodyBones, geo.BoneWeight, reference.Geo.BoneParents );
-				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks );
+				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks, result.Pose.Features );
 				result.Milliseconds = watch.ElapsedMilliseconds;
 				return result;
 			} );
@@ -938,7 +938,8 @@ public static class ClothingFitter
 		var given = detailed != null ? GarmentFit.Follow( garment.Positions, detailed.Garment.Positions, detailed.Garment.Indices, detailed.StockFit ) : null;
 		var solid = new bool[garment.Positions.Length];
 		var fittedAsCloth = new bool[garment.Positions.Length];
-		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck );
+		var painted = new bool[garment.Positions.Length];
+		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck, target.Map.OnSkin, painted );
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
@@ -946,6 +947,7 @@ public static class ClothingFitter
 		var (backBones, backWeights) = Repose.SkinUnder( positions, garment.Indices, target.Mesh, target.BodyBones, target.BodyWeights, bones, garment.BoneWeight, solid, target.Pivots, fittedAsCloth );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights );
+		positions = target.Pose.OntoSkin( stockFit, positions, painted );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );

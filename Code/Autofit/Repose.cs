@@ -63,6 +63,12 @@ public sealed class Repose
 	/// <summary>The neck on the stock body and on this one, to keep cloth over it at the share of the neck it covers. Null when the chin or the nape wasn't found.</summary>
 	public Neck Neck;
 
+	// The body in its rest pose and its triangles, and its skin in the stock pose: what
+	// OntoSkin takes paint back by.
+	Vec3[] bodyRest;
+	int[] bodyIndices;
+	TriMesh posedSkin;
+
 	// The body in the stock pose and proportions, with its skin weights as stock bones and
 	// without the eyes: how cloth lying on its skin goes back to its rest pose (RestOf).
 	TriMesh skinMesh;
@@ -73,6 +79,12 @@ public sealed class Repose
 	public List<(Vec3 Stock, Vec3 Body)> Eyes = new();
 	/// <summary>The face down its middle, top to bottom: between the eyes, the tip of the nose, the mouth, the chin. Empty when a face has no mouth to find.</summary>
 	public List<(Vec3 Stock, Vec3 Body)> Face = new();
+	/// <summary>
+	/// The features of the face found on both bodies (<see cref="FaceMarks"/>): the openings of the
+	/// eyes, where the brows start, the mouth's corners, the nose, the chin, the crown. On the stock
+	/// body and on this one, in the stock pose. What paint on the skin goes by.
+	/// </summary>
+	public List<(string Name, Vec3 Stock, Vec3 Body)> Features = new();
 
 	const float EyeReach = 0.07f * Units.Metre;    // how far around an eye the skin slides with it
 	const float BustReach = 0.08f * Units.Metre;   // how far around the front of the chest
@@ -387,6 +399,38 @@ public sealed class Repose
 			}
 		}
 
+		// The features of the face, seen from the front.
+		if ( result.Eyes.Count == 2 )
+		{
+			stockMesh ??= new TriMesh( stock.Positions, stock.Indices );
+			reposedMesh ??= new TriMesh( result.Positions, body.Indices );
+			int l = result.Eyes[0].Stock.Y >= result.Eyes[1].Stock.Y ? 0 : 1;
+			var ours = FaceMarks.Find( stock, stock.Positions, stockMesh, result.Eyes[l].Stock, result.Eyes[1 - l].Stock );
+			var theirs = FaceMarks.Find( body, result.Positions, reposedMesh, result.Eyes[l].Body, result.Eyes[1 - l].Body );
+			foreach ( var (name, at) in ours )
+				if ( theirs.TryGetValue( name, out var there ) ) result.Features.Add( (name, at, there) );
+			// Brows go where a face has brows of its own. A face without them (the citizen's, whose
+			// brows are garments) wears them right over the top of its lids, and as big next to its
+			// eyes as this face's are next to its own: there the brows of this face are taken to
+			// be, and the brows worn there go onto them.
+			foreach ( string side in new[] { "L", "R" } )
+			{
+				string eye = "eye" + side, brow = "brow" + side;
+				if ( ours.ContainsKey( brow ) || !ours.TryGetValue( "lid" + side, out var lid ) || !theirs.TryGetValue( brow, out var browAt ) ) continue;
+				if ( !ours.TryGetValue( eye + ".in", out var inS ) || !ours.TryGetValue( eye + ".out", out var outS ) || !theirs.TryGetValue( eye + ".in", out var inB ) || !theirs.TryGetValue( eye + ".out", out var outB ) ) continue;
+				float wB = MathF.Abs( outB.Y - inB.Y );
+				if ( wB < 1e-4f * Units.Metre ) continue;
+				float ratio = MathF.Abs( outS.Y - inS.Y ) / wB;
+				result.Features.Add( (brow, lid, browAt) );
+				foreach ( string end in new[] { ".top", ".in", ".out" } )
+					if ( theirs.TryGetValue( brow + end, out var there ) )
+					{
+						var d = there - browAt;
+						result.Features.Add( (brow + end, lid + new Vec3( 0, d.Y * ratio, d.Z * ratio ), there) );
+					}
+			}
+		}
+
 		// The front of the chest on each side: a bust sits higher or lower on one body than on
 		// another, and rays from the spine only move skin towards or away from it. Cloth made to
 		// bulge over the citizen's chest would bulge where the chest isn't.
@@ -417,6 +461,8 @@ public sealed class Repose
 
 		// Last: everything above goes by the skin as it is.
 		if ( tips.Count > 0 ) Drape( result.Positions, body, to, stock, tips );
+		result.bodyRest = body.Positions;
+		result.bodyIndices = body.Indices;
 
 		// The neck goes by the skin as draped too: the skin the clothes are fitted to, and the
 		// skin under them that they go back to the rest pose by.
@@ -791,6 +837,49 @@ public sealed class Repose
 
 		return result;
 	}
+
+	/// <summary>
+	/// Paint on the skin (<see cref="GarmentFit.Fit"/>), taken back to the body's rest pose
+	/// (<see cref="ToBodyRest"/>), goes onto the same spot of the same triangle of the body in
+	/// its rest pose, as far off it as it was in the stock pose (grown or shrunk with the
+	/// triangle). Taken back bone by bone it is off the skin by however much the bones' moves
+	/// differ across a triangle: on a short neck, sized very differently from the stock body's
+	/// next to the chest and the collarbones, the edge of a tattoo came back 6 mm off the skin.
+	/// Only what lies within a few millimetres of the skin, faded over into the bone-by-bone
+	/// place further off (the tips of a brow's hairs). Over a bust it goes onto the skin itself,
+	/// not the skin as Drape hangs cloth over it.
+	/// </summary>
+	/// <param name="stockFit">The garment fitted, in the stock pose and proportions.</param>
+	/// <param name="rest">The same garment taken back to the rest pose by its bones. Changed in place, and returned.</param>
+	/// <param name="paint">Per vertex, whether it is paint (<see cref="GarmentFit.Fit"/>'s paintOut). Null for none.</param>
+	public Vec3[] OntoSkin( Vec3[] stockFit, Vec3[] rest, bool[] paint )
+	{
+		if ( bodyRest == null || paint == null || Array.IndexOf( paint, true ) < 0 ) return rest;
+		TriMesh skin;
+		lock ( this ) skin = posedSkin ??= new TriMesh( Positions, bodyIndices ).Skin();
+		for ( int v = 0; v < stockFit.Length; v++ )
+		{
+			if ( !paint[v] ) continue;
+			float d = skin.Nearest( stockFit[v], out var q, out int tri );
+			if ( tri < 0 || d >= OntoFar ) continue;
+			int a = skin.Tris[tri * 3], b = skin.Tris[tri * 3 + 1], c = skin.Tris[tri * 3 + 2];
+			var bary = Barycentric( q, Positions[a], Positions[b], Positions[c] );
+			var n0 = skin.TriNormals[tri];
+			var raw = Vec3.Cross( Positions[b] - Positions[a], Positions[c] - Positions[a] );
+			float flip = Vec3.Dot( raw, n0 ) >= 0 ? 1f : -1f;
+			var n1 = Vec3.Cross( bodyRest[b] - bodyRest[a], bodyRest[c] - bodyRest[a] ) * flip;
+			float l0 = n0.Length(), l1 = n1.Length();
+			if ( l0 < 1e-12f || l1 < 1e-12f ) continue;
+			float off = Vec3.Dot( stockFit[v] - q, n0 / l0 ) * MathF.Sqrt( l1 / l0 );
+			var exact = bodyRest[a] * bary[0] + bodyRest[b] * bary[1] + bodyRest[c] * bary[2] + n1 / l1 * off;
+			float w = Math.Clamp( (OntoFar - d) / (OntoFar - OntoNear), 0f, 1f );
+			rest[v] = rest[v] * (1 - w) + exact * w;
+		}
+		return rest;
+	}
+
+	const float OntoNear = 0.003f * Units.Metre;   // paint this close to the skin goes back exactly with it
+	const float OntoFar = 0.006f * Units.Metre;    // and from this far, by its bones alone
 
 	/// <summary>
 	/// Where a point lying on this body's skin in the stock pose and proportions ends up in the

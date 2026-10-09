@@ -282,6 +282,29 @@ public sealed class TriMesh
 	// The part of the surface that can be seen from outside. Null until FindExposed is called.
 	TriMesh exposed;
 
+	// The skin, see Skin. Null until asked for.
+	TriMesh skin;
+
+	/// <summary>
+	/// The body's skin as a mesh of its own: the big pieces of it (<see cref="MeshTools.SkinTriangles"/>),
+	/// not the lashes, brows and eyes on it. What paint goes onto. Worked out once, on first use.
+	/// </summary>
+	public TriMesh Skin()
+	{
+		// Several garments are fitted at once on different threads. (Locked on the mesh itself: a
+		// lock object of its own would be null on a mesh made before a hotload added it.)
+		lock ( this )
+		{
+			if ( skin != null ) return skin;
+			var isSkin = MeshTools.SkinTriangles( Verts, Tris );
+			var kept = new List<int>();
+			for ( int t = 0; t < isSkin.Length; t++ )
+				if ( isSkin[t] ) { kept.Add( Tris[t * 3] ); kept.Add( Tris[t * 3 + 1] ); kept.Add( Tris[t * 3 + 2] ); }
+			skin = new TriMesh( Verts, kept.ToArray() );
+			return skin;
+		}
+	}
+
 	const float ExposedPatch = 0.025f * Units.Metre;   // exposed or buried is decided for patches about this big
 	const float ProbeOut = 0.001f * Units.Metre;
 
