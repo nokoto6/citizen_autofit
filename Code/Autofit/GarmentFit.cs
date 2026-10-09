@@ -180,6 +180,11 @@ public static class GarmentFit
 	const float TuckDepth = 0.002f * Units.Metre;  // how far under the skin the way out to a bit of hair starts; deeper, it would cross the edge of a hat sunk into the head
 	const float TuckFar = 0.4f * Units.Metre;      // hair further than this from the body can't be under a hat
 	const float Touching = 0.002f * Units.Metre; // rigid pieces this close together are parts of one object
+	const float SolidClear = 0.003f * Units.Metre;  // how far under a worn solid's surface the skin it covers is kept, unless it was made to sit closer
+	const float SolidPoke = 0.005f * Units.Metre;   // skin further out through a solid than this sticks out on its own (an ear through a headphone pad), it isn't the curve of the skin between the solid's vertices
+	const float BulgeReach = 0.05f * Units.Metre;   // how far round a spot of skin that comes up through a solid the solid gives way
+	const float ThinPart = 0.02f * Units.Metre;     // skin with more of the body this close under it is a thin part (an ear, a brow), not something to bulge a solid over
+	const int BulgePasses = 6;                      // rounds of finding the skin that comes through a solid and bulging it
 	const int LoosePieces = 16;                  // more rigid pieces than this in one heap is hair or the like, not an object
 	const float LooseLength = 0.15f * Units.Metre; // a loose piece longer than this bends like cloth rather than moving as one
 
@@ -480,11 +485,18 @@ public static class GarmentFit
 
 			var whole = new List<int>();
 			foreach ( int r in parts ) whole.AddRange( rigid[r] );
-			FitRigid( whole, pts, move, gap0, away, fitted, Push, false );
+			bool wraps = FitRigid( whole, pts, move, gap0, away, fitted, Push, false );
 			if ( eyes != null && OnTheEyes( whole, pts, eyes ) )
 			{
 				PutOnTheEyes( whole, pts, fitted, eyes );
 				PushOut( whole, fitted, gap0, away, Push, false );
+			}
+			else if ( wraps && eyes != null && eyes.Length == 2 )
+			{
+				var solidTris = new List<int>();
+				foreach ( int r in parts )
+					if ( pieceTris.TryGetValue( piece[rigid[r][0]], out var mine ) ) solidTris.AddRange( mine );
+				Bulge( whole, solidTris, fitted, gap0, away, other, hidden, 0.5f * (eyes[0].Body.Z + eyes[1].Body.Z) );
 			}
 			foreach ( int i in whole ) isSolid[i] = true;
 		}
@@ -1586,7 +1598,8 @@ public static class GarmentFit
 	delegate bool PushTest( Vec3 p, float oldGap, Vec3 outward, out Vec3 push );
 
 	/// <param name="keepGaps">Also restore the gap each vertex had over the skin, the way cloth does. For loose pieces like hair cards.</param>
-	static void FitRigid( List<int> idx, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, Vec3[] fitted, PushTest push, bool keepGaps )
+	/// <returns>Whether the piece goes all the way round the body, and so was scaled with it.</returns>
+	static bool FitRigid( List<int> idx, Vec3[] pts, Vec3[] move, float[] gap0, Vec3[] away, Vec3[] fitted, PushTest push, bool keepGaps )
 	{
 		// Trust the vertices that actually rest on the body. The far end of a sword says
 		// nothing about how the back under it moved.
@@ -1645,6 +1658,7 @@ public static class GarmentFit
 		}
 
 		PushOut( idx, fitted, gap0, away, push, keepGaps );
+		return wraps;
 	}
 
 	const float EyewearHeight = 0.08f * Units.Metre;   // a solid across both eyes no taller than this is eyewear, not a helmet
@@ -1686,6 +1700,149 @@ public static class GarmentFit
 		Vec3 want = bodyMid + (made - stockMid) * ratio;
 		var shift = new Vec3( 0, want.Y - now.Y, want.Z - now.Z );
 		foreach ( int i in idx ) fitted[i] += shift;
+	}
+
+	/// <summary>
+	/// A hat is fitted as a whole and kept out of the skin by its vertices, so where this head
+	/// is shaped differently from the stock one (a rounder crown) the skin can still come up
+	/// through the middle of its big flat triangles. The cloth passes that catch that don't run
+	/// on solids, and the stock skin mapped onto this body is no help on a head of another
+	/// shape. So this goes over the body's own skin under the solid: around every vertex of it
+	/// that is out through the solid, or closer under it than <see cref="SolidClear"/>, the
+	/// solid bulges out over it. Everything within <see cref="BulgeReach"/> moves, the outer
+	/// surface and the lining under it alike, less and less towards the edge. Lifting only the
+	/// triangles over the skin pushed the outer surface through the lining. The rest of the
+	/// solid keeps its fit.
+	///
+	/// Only the top of the head counts, the skin above the eyes. Lower down, what comes through
+	/// a solid is a part that sticks out on its own (an ear through the cup of a pair of
+	/// headphones, a cheek under a visor), and a bulge over it bends a hard shape out of true.
+	/// </summary>
+	/// <param name="above">How high up the skin has to be to count: the eyes.</param>
+	static void Bulge( List<int> idx, List<int> tris, Vec3[] fitted, float[] gap0, Vec3[] away, TriMesh body, float hidden, float above )
+	{
+		// Only the part of the solid that shows has skin to cover. What was deep under the stock
+		// skin (the bottom of a cap, closed across the head) was never meant to cover anything.
+		var shown = new List<int>();
+		for ( int t = 0; t < tris.Count; t += 3 )
+		{
+			if ( gap0[tris[t]] < -hidden || gap0[tris[t + 1]] < -hidden || gap0[tris[t + 2]] < -hidden ) continue;
+			shown.Add( tris[t] ); shown.Add( tris[t + 1] ); shown.Add( tris[t + 2] );
+		}
+		if ( shown.Count == 0 ) return;
+		var shownTris = shown.ToArray();
+
+		var lo = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		var hi = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+		foreach ( int i in shownTris )
+		{
+			lo = new Vec3( MathF.Min( lo.X, fitted[i].X ), MathF.Min( lo.Y, fitted[i].Y ), MathF.Min( lo.Z, fitted[i].Z ) );
+			hi = new Vec3( MathF.Max( hi.X, fitted[i].X ), MathF.Max( hi.Y, fitted[i].Y ), MathF.Max( hi.Z, fitted[i].Z ) );
+		}
+		lo -= new Vec3( SolidPoke, SolidPoke, SolidPoke );
+		hi += new Vec3( SolidPoke, SolidPoke, SolidPoke );
+		lo = new Vec3( lo.X, lo.Y, MathF.Max( lo.Z, above ) );
+
+		// The skin near the solid, and which way is out of it at each vertex.
+		var outward = new Dictionary<int, Vec3>();
+		for ( int t = 0; t < body.TriCount; t++ )
+		{
+			for ( int k = 0; k < 3; k++ )
+			{
+				int v = body.Tris[t * 3 + k];
+				Vec3 p = body.Verts[v];
+				if ( p.X < lo.X || p.Y < lo.Y || p.Z < lo.Z || p.X > hi.X || p.Y > hi.Y || p.Z > hi.Z ) continue;
+				outward[v] = (outward.TryGetValue( v, out var sum ) ? sum : Vec3.Zero) + body.TriNormals[t];
+			}
+		}
+
+		// An ear or a brow pokes out of the head on its own, with the body's far side right under
+		// it. Which way is out of it says nothing about where a hat over it should go.
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		var skin = new List<(Vec3 At, Vec3 Out)>();
+		foreach ( var (v, sum) in outward )
+		{
+			float length = sum.Length();
+			if ( length < 1e-12f ) continue;
+			Vec3 n = sum / length;
+			body.Crossings( body.Verts[v], -n, ThinPart, hits );
+			if ( hits.Count == 0 ) skin.Add( (body.Verts[v], n) );
+		}
+		if ( skin.Count == 0 ) return;
+
+		var sites = new List<(Vec3 At, Vec3 Out, float Need)>();
+		var lift = new Vec3[idx.Count];
+		var start = new Vec3[idx.Count];
+		for ( int k = 0; k < idx.Count; k++ ) start[k] = fitted[idx[k]];
+		for ( int pass = 0; pass < BulgePasses; pass++ )
+		{
+			var surface = new TriMesh( fitted, shownTris );
+			sites.Clear();
+			foreach ( var (at, n) in skin )
+			{
+				// How far under the solid the skin is: under its outermost layer straight above it,
+				// or, if there is none, its nearest one straight below, the skin having come
+				// through. Skin through a layer with another one over it (the pad of a headphone,
+				// the lining of a hat) doesn't show.
+				float clear;
+				int tri;
+				surface.Crossings( at, n, GapCap, hits );
+				if ( hits.Count > 0 )
+				{
+					clear = hits[^1].T;
+					tri = hits[^1].Tri;
+					if ( clear >= SolidClear ) continue;
+				}
+				else
+				{
+					surface.Crossings( at, -n, SolidPoke, hits );
+					if ( hits.Count == 0 ) continue;
+					clear = -hits[0].T;
+					tri = hits[0].Tri;
+				}
+
+				// Skin that faces another way than the solid sits off the head there is in a crease
+				// (where an ear meets the head), and the solid only has to bridge it. A solid made to
+				// sit closer to the stock skin there (a rim sunk into the head) can sit as close to
+				// this one.
+				int a = shownTris[tri * 3], b = shownTris[tri * 3 + 1], c = shownTris[tri * 3 + 2];
+				Vec3 spot = at + n * clear;
+				Barycentric( spot, fitted[a], fitted[b], fitted[c], out float u, out float bv, out float bw );
+				Vec3 off = away[a] * u + away[b] * bv + away[c] * bw;
+				if ( Vec3.Dot( off, n ) < 0.5f * off.Length() ) continue;
+				float need = MathF.Min( SolidClear, gap0[a] * u + gap0[b] * bv + gap0[c] * bw ) - clear;
+				if ( need > 1e-4f * Units.Metre ) sites.Add( (spot, n, need) );
+			}
+			if ( sites.Count == 0 ) break;
+
+			// Each vertex takes the biggest of the bulges it is in reach of, and goes its own way
+			// out of the skin. Moved all the way the skin under the bump faces, the parts of the
+			// solid off to its side went into the skin next to it. Only the side of the solid
+			// facing the same way as the skin goes along, not a brim or a far side within reach.
+			// Skin that a bulge doesn't clear would have it grow pass after pass, so no vertex
+			// goes further from its fit than the most any skin can ask for.
+			for ( int k = 0; k < idx.Count; k++ )
+			{
+				int i = idx[k];
+				var best = Vec3.Zero;
+				foreach ( var (spot, n, need) in sites )
+				{
+					float x = (fitted[i] - spot).Length() / BulgeReach;
+					if ( x >= 1 ) continue;
+					float facing = Math.Clamp( Vec3.Dot( away[i], n ), 0, 1 );
+					Vec3 p = away[i] * (need * facing * (1 - x * x * (3 - 2 * x)));
+					if ( p.LengthSquared() > best.LengthSquared() ) best = p;
+				}
+				lift[k] = best;
+			}
+			for ( int k = 0; k < idx.Count; k++ )
+			{
+				Vec3 total = fitted[idx[k]] + lift[k] - start[k];
+				float length = total.Length();
+				if ( length > SolidClear + SolidPoke ) total *= (SolidClear + SolidPoke) / length;
+				fitted[idx[k]] = start[k] + total;
+			}
+		}
 	}
 
 	static void PushOut( List<int> idx, Vec3[] fitted, float[] gap0, Vec3[] away, PushTest push, bool keepGaps )
