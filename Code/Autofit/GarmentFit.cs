@@ -286,10 +286,12 @@ public static class GarmentFit
 	/// <param name="onSkin"><see cref="BodyMap.OnSkin"/>: where each stock vertex lies on this body's skin for paint on it, the face lined up by its features. Without it paint goes by <paramref name="skinMove"/>.</param>
 	/// <param name="paintOut">If given, set for the vertices of paint on the skin (a tattoo, makeup, brows). They go back to the body's rest pose with the skin under them, see <see cref="Repose.OntoSkin"/>.</param>
 	/// <param name="features">The face's features on the stock body and on this one (<see cref="Repose.Features"/>). Lashes go by the lines round the eyes.</param>
+	/// <param name="beardOut">If given, set for the vertices of a beard, which grows from the face, in pieces to be taken back to the body each as a whole (all but its long locks), see <see cref="Repose.SkinUnder"/>.</param>
 	/// <param name="trunk">This body's trunk in the stock pose and in its rest pose (<see cref="Repose.Trunk"/>). Cloth on its lower part is as far up it, as a share of it, in the rest pose as in the stock pose.</param>
-	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null, Trunk trunk = null, List<(string Name, Vec3 Stock, Vec3 Body)> features = null )
+	public static Vec3[] Fit( Vec3[] verts, int[] tris, int[] boneIndex, float[] boneWeight, TriMesh old, TriMesh other, Vec3[] skinMove, SkinByBone byBone, bool[] skinFound = null, bool clearSkin = false, Vec3[] givenMove = null, TriMesh under = null, bool[] solidOut = null, (Vec3 Stock, Vec3 Body)[] eyes = null, int[] stiff = null, Vec3[] landmarked = null, (Vec3 Stock, Vec3 Body)[] face = null, float[] thickness = null, bool[] clothOut = null, Neck neck = null, Vec3[] onSkin = null, bool[] paintOut = null, Trunk trunk = null, List<(string Name, Vec3 Stock, Vec3 Body)> features = null, bool[] beardOut = null )
 	{
 		float hidden = clearSkin ? ClearDepth : Hidden;
+		if ( beardOut != null ) Array.Clear( beardOut );
 		var weld = MeshTools.Weld( verts, out int n );
 		var firstOf = new int[n];
 		for ( int i = verts.Length - 1; i >= 0; i-- )
@@ -604,6 +606,24 @@ public static class GarmentFit
 			// moved as a whole (a lock's move) it kept the stock face's size on a smaller face,
 			// with no room left under it.
 			bool beard = Beard( loose, pts, old, eyes );
+			if ( beard && beardOut != null )
+			{
+				// Its pieces that go back to the body whole: all but the long locks, which hang
+				// down over the chest and bend with it (a wizard's beard, its strands 30 cm long,
+				// stood 6 cm off the chest when they went back whole).
+				var low = new Dictionary<int, Vec3>();
+				var high = new Dictionary<int, Vec3>();
+				foreach ( int i in loose )
+				{
+					int k = piece[i];
+					var p = pts[i];
+					low[k] = low.TryGetValue( k, out var l ) ? new Vec3( MathF.Min( l.X, p.X ), MathF.Min( l.Y, p.Y ), MathF.Min( l.Z, p.Z ) ) : p;
+					high[k] = high.TryGetValue( k, out var h ) ? new Vec3( MathF.Max( h.X, p.X ), MathF.Max( h.Y, p.Y ), MathF.Max( h.Z, p.Z ) ) : p;
+				}
+				var whole = new bool[n];
+				foreach ( int i in loose ) whole[i] = (high[piece[i]] - low[piece[i]]).Length() <= LooseLength;
+				for ( int i = 0; i < verts.Length; i++ ) beardOut[i] = whole[weld[i]];
+			}
 			if ( beard && givenMove == null && face != null && face.Length == 4 )
 				FaceWarp( loose, pts, move, old, other, face );
 			else if ( landmarked != null && givenMove == null && !beard )
@@ -614,10 +634,7 @@ public static class GarmentFit
 			{
 				// Back onto the skin after the heap was evened out: averaged with the cards round
 				// it, and pushed off with them, a card's root came away from the skin again.
-				// Whatever the turn put under the skin is pushed out, vertex by vertex.
-				OntoTheSkin( loose, pts, fitted, gap0, piece, old, other );
-				foreach ( int i in loose )
-					if ( Push( fitted[i], wanted[i], away[i], out var p ) ) fitted[i] += p;
+				OntoTheSkin( loose, pts, fitted, gap0, piece, pieceTris, old, other, wanted, away, Push );
 			}
 		}
 
@@ -1481,7 +1498,63 @@ public static class GarmentFit
 	/// on vertex by vertex, and a piece that doesn't grow from the skin (a lock of a braid, a
 	/// bead on it) moves with the cards round it.
 	/// </summary>
-	static void OntoTheSkin( List<int> idx, Vec3[] pts, Vec3[] fitted, float[] gap0, int[] piece, TriMesh stock, TriMesh body )
+	static void OntoTheSkin( List<int> idx, Vec3[] pts, Vec3[] fitted, float[] gap0, int[] piece, Dictionary<int, List<int>> pieceTris, TriMesh stock, TriMesh body, float[] wanted, Vec3[] away, PushTest push )
+	{
+		var (cards, lies) = PutOnTheSkin( idx, pts, fitted, gap0, piece, stock, body );
+		PushOutCards( cards, lies, pieceTris, fitted, wanted, away, push );
+	}
+
+	/// <summary>
+	/// Whatever the turn onto the skin put under it comes out. Vertex by vertex, so a card lying
+	/// along the skin bends over it and its root stays where it was put; but a card standing up
+	/// from the skin had its sunk vertices pushed along it, past the ones above them, and folded
+	/// at its root (a hundred triangles turned over on Aurora's decorated beard). A card that
+	/// would turn any of its triangles over comes out whole instead, by the most any vertex of it
+	/// needs. Pushed out whole, every card stood off the jaw 3-7 mm where it had been put at 2.
+	/// </summary>
+	static void PushOutCards( Dictionary<int, List<int>> cards, HashSet<int> lies, Dictionary<int, List<int>> pieceTris, Vec3[] fitted, float[] wanted, Vec3[] away, PushTest push )
+	{
+		var before = new List<Vec3>();
+		foreach ( var (card, members) in cards )
+		{
+			before.Clear();
+			foreach ( int i in members ) before.Add( fitted[i] );
+			bool moved = false;
+			foreach ( int i in members )
+				if ( push( fitted[i], wanted[i], away[i], out var p ) ) { fitted[i] += p; moved = true; }
+			if ( !moved || lies.Contains( card ) || !pieceTris.TryGetValue( card, out var tris ) || !TurnsOver( tris, members, before, fitted ) ) continue;
+
+			for ( int k = 0; k < members.Count; k++ ) fitted[members[k]] = before[k];
+			// Twice: the push off one part of the skin can put another part of the card under it.
+			for ( int round = 0; round < 2; round++ )
+			{
+				var most = Vec3.Zero;
+				foreach ( int i in members )
+					if ( push( fitted[i], wanted[i], away[i], out var p ) && p.LengthSquared() > most.LengthSquared() ) most = p;
+				if ( most.LengthSquared() < 1e-12f ) break;
+				foreach ( int i in members ) fitted[i] += most;
+			}
+		}
+	}
+
+	// Whether any of a piece's triangles faces the other way now than before (members[k] was at before[k]).
+	static bool TurnsOver( List<int> tris, List<int> members, List<Vec3> before, Vec3[] now )
+	{
+		var was = new Dictionary<int, Vec3>( members.Count );
+		for ( int k = 0; k < members.Count; k++ ) was[members[k]] = before[k];
+		for ( int t = 0; t + 2 < tris.Count; t += 3 )
+		{
+			int a = tris[t], b = tris[t + 1], c = tris[t + 2];
+			if ( !was.TryGetValue( a, out var a0 ) || !was.TryGetValue( b, out var b0 ) || !was.TryGetValue( c, out var c0 ) ) continue;
+			var n0 = Vec3.Cross( b0 - a0, c0 - a0 );
+			var n1 = Vec3.Cross( now[b] - now[a], now[c] - now[a] );
+			if ( n0.LengthSquared() > 1e-14f && Vec3.Dot( n0, n1 ) < 0 ) return true;
+		}
+		return false;
+	}
+
+	/// <summary>The moves of <see cref="OntoTheSkin"/>. Returns the beard's pieces, and the ones of them lying on the skin all over.</summary>
+	static (Dictionary<int, List<int>> Cards, HashSet<int> Lies) PutOnTheSkin( List<int> idx, Vec3[] pts, Vec3[] fitted, float[] gap0, int[] piece, TriMesh stock, TriMesh body )
 	{
 		var cards = new Dictionary<int, List<int>>();
 		var rootOf = new Dictionary<int, int>();
@@ -1591,7 +1664,7 @@ public static class GarmentFit
 				fitted[i] = to;
 				grown.Add( i );
 			}
-		if ( grown.Count == 0 ) return;
+		if ( grown.Count == 0 ) return (cards, lies);
 
 		// A piece that doesn't grow from the skin is carried along whole by what the cards round
 		// it did, so the pieces of a braid stay together: the moves of the card vertices near
@@ -1616,6 +1689,7 @@ public static class GarmentFit
 			var by = total > 1e-6f ? sum / total : moved[nearest];
 			foreach ( int i in members ) fitted[i] += by;
 		}
+		return (cards, lies);
 	}
 
 	const float RootGrows = 0.01f * Units.Metre;    // a card whose root is this far off the stock skin or closer grows from it
