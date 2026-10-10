@@ -90,6 +90,13 @@ public sealed class Repose
 	/// </summary>
 	public List<(string Name, Vec3 Stock, Vec3 Body)> Features = new();
 
+	/// <summary>
+	/// The ears found on both bodies (<see cref="FaceMarks.Ears"/>), on the stock body and on this
+	/// one, in the stock pose. What is worn on an ear goes by them. Kept apart from <see cref="Features"/>,
+	/// which paint on the face goes by.
+	/// </summary>
+	public List<(string Name, Vec3 Stock, Vec3 Body)> Ears = new();
+
 	const float BrowLength = 1.4f;     // a citizen's brows are as long as this many times its eye's width
 	const float BrowHeight = 0.7f;     // as tall as this share of it
 	const float BrowInward = 0.1f;     // and their middle is this share of it in from the eye's
@@ -460,6 +467,10 @@ public sealed class Repose
 			var theirs = FaceMarks.Find( body, result.Positions, reposedMesh, result.Eyes[l].Body, result.Eyes[1 - l].Body );
 			foreach ( var (name, at) in ours )
 				if ( theirs.TryGetValue( name, out var there ) ) result.Features.Add( (name, at, there) );
+			var earsOurs = FaceMarks.Ears( stockMesh, result.Eyes[l].Stock, result.Eyes[1 - l].Stock );
+			var earsTheirs = FaceMarks.Ears( reposedMesh, result.Eyes[l].Body, result.Eyes[1 - l].Body );
+			foreach ( var (name, at) in earsOurs )
+				if ( earsTheirs.TryGetValue( name, out var there ) ) result.Ears.Add( (name, at, there) );
 			// Brows go onto the brows a face has of its own: the brow line, from its inner end to
 			// its outer one and from its lower edge to its upper one. A face without them (the
 			// citizen's, whose brows are garments) wears them over its lids, where its brow
@@ -1806,6 +1817,9 @@ public sealed class Neck
 	/// sides are the ears, and a balaclava taken in to the head there had them come through it.
 	/// </summary>
 	public float ZoneIn( Vec3 skin ) => Zone( skin, 0, true );
+
+	/// <summary>How far round the neck's axis a point is, in radians from straight ahead, -pi..pi.</summary>
+	public float Around( Vec3 p ) => MathF.Atan2( p.Y - axisY, p.X - axisX );
 
 	float Zone( Vec3 skin, float over, bool toSkull = false )
 	{
