@@ -180,3 +180,18 @@ WorkshopPage .search-status
 	margin: 4px 0 16px 0;
 	min-height: 18px;
 }
+
+// The sort buttons on one line each: at the menu's padding the panel is too narrow for "Newest"
+// and the last letter wrapped under the word.
+WorkshopPage .buttongroup
+{
+    font-size: 16px;
+    gap: 2px;
+
+    > *
+    {
+        white-space: nowrap;
+        flex-shrink: 0;
+        padding: 8px 12px;
+    }
+}
