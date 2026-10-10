@@ -952,6 +952,7 @@ public static class ClothingFitter
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
+		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
