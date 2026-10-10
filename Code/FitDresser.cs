@@ -36,6 +36,20 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	/// <summary>Refit garments to the body when they are put on. Off: everything is worn as is, for comparison.</summary>
 	[Property] public bool FitAtRuntime { get; set; } = true;
 
+	public enum BodySex
+	{
+		/// <summary>A woman on the human female model or a body fitted with the female clothing, else a man.</summary>
+		Auto,
+		Man,
+		Woman,
+	}
+
+	/// <summary>
+	/// Man or woman, for the default underwear a human or a body with its own proportions wears
+	/// (a woman gets a bra too). Auto goes by the model, which can't tell a slim boy from a girl.
+	/// </summary>
+	[Property] public BodySex Sex { get; set; } = BodySex.Auto;
+
 	public enum ClothingVersion
 	{
 		/// <summary>Whichever stock skeleton the body's is closest to.</summary>
@@ -543,17 +557,6 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			var humanSkin = worn.Select( x => x.Clothing ).FirstOrDefault( x => x.HasHumanSkin && SamePath( x.HumanSkinModel, BodyTarget.Model.ResourcePath ) );
 			BodyTarget.BodyGroups = humanSkin?.HumanSkinBodyGroups ?? BodyTarget.Model.Parts.DefaultMask;
 			BodyTarget.MaterialGroup = humanSkin?.HumanSkinMaterialGroup ?? "default";
-
-			// As the stock dresser does, a human is never naked: white pants unless the legs are
-			// hidden or other underwear is worn, and on a woman a white bra unless the chest is
-			// hidden or she wears one. Without them the humans stood in bare skin.
-			bool female = humanSkin?.HumanSkinTags?.Has( "female" ) == true
-				|| (BodyTarget.Model.ResourcePath ?? "").Contains( "female", StringComparison.OrdinalIgnoreCase );
-			var hidden = worn.Select( x => x.Clothing.HideBody ).DefaultIfEmpty().Aggregate( ( a, b ) => a | b );
-			if ( !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Legs ) && !worn.Any( x => x.Clothing.Category is Sandbox.Clothing.ClothingCategory.Underwear or Sandbox.Clothing.ClothingCategory.Underpants ) )
-				WearByDefault( worn, DefaultPants );
-			if ( female && !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Chest ) && !worn.Any( x => x.Clothing.Category == Sandbox.Clothing.ClothingCategory.Bra ) )
-				WearByDefault( worn, DefaultBra );
 		}
 
 		BodyTarget.SetMaterialOverride( skin, "skin" );
@@ -569,6 +572,20 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			_ => FitAtRuntime ? await ClothingFitter.KindOfAsync( BodyTarget.Model ) : ClothingFitter.BodyKind.Citizen,
 		};
 		if ( Overtaken() ) return;
+
+		// As the stock dresser does for a human, a human or a body with proportions of its own
+		// (Aurora, Akira) is never naked: white pants unless the legs are hidden or other underwear
+		// is worn, and on a woman a white bra unless the chest is hidden or she wears one. Without
+		// them the humans stood in bare skin. Woman or man as the body's skeleton is.
+		if ( IsHumanBody( BodyTarget.Model ) || ownProportions )
+		{
+			var hidden = worn.Select( x => x.Clothing.HideBody ).DefaultIfEmpty().Aggregate( ( a, b ) => a | b );
+			if ( !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Legs ) && !worn.Any( x => x.Clothing.Category is Sandbox.Clothing.ClothingCategory.Underwear or Sandbox.Clothing.ClothingCategory.Underpants ) )
+				WearByDefault( worn, DefaultPants );
+			bool woman = Sex == BodySex.Woman || Sex == BodySex.Auto && ((BodyTarget.Model.ResourcePath ?? "").Contains( "female", StringComparison.OrdinalIgnoreCase ) || !IsHumanBody( BodyTarget.Model ) && bodyKind == ClothingFitter.BodyKind.HumanFemale);
+			if ( woman && !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Chest ) && !worn.Any( x => x.Clothing.Category == Sandbox.Clothing.ClothingCategory.Bra ) )
+				WearByDefault( worn, DefaultBra );
+		}
 
 		// Which model of each garment to wear.
 		var models = new List<(ClothingContainer.ClothingEntry Entry, string StockPath, ClothingFitter.BodyKind MadeFor)>();

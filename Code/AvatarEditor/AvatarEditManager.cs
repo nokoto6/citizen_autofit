@@ -26,13 +26,13 @@ public sealed partial class AvatarEditManager : Component
 		Akira,
 	}
 
-	static readonly (BodyKind Kind, string Title, string Model, FitDresser.ClothingVersion Version)[] Bodies =
+	static readonly (BodyKind Kind, string Title, string Model, FitDresser.ClothingVersion Version, FitDresser.BodySex Sex)[] Bodies =
 	[
-		(BodyKind.Citizen, "Citizen", "models/citizen/citizen.vmdl", FitDresser.ClothingVersion.Citizen),
-		(BodyKind.HumanMale, "Human", "models/citizen_human/citizen_human_male.vmdl", FitDresser.ClothingVersion.HumanMale),
-		(BodyKind.HumanFemale, "Human F", "models/citizen_human/citizen_human_female.vmdl", FitDresser.ClothingVersion.HumanFemale),
-		(BodyKind.Aurora, "Aurora", "models/aurora/aurora.vmdl", FitDresser.ClothingVersion.Auto),
-		(BodyKind.Akira, "Akira", "models/akira/akira.vmdl", FitDresser.ClothingVersion.Auto),
+		(BodyKind.Citizen, "Citizen", "models/citizen/citizen.vmdl", FitDresser.ClothingVersion.Citizen, FitDresser.BodySex.Auto),
+		(BodyKind.HumanMale, "Human", "models/citizen_human/citizen_human_male.vmdl", FitDresser.ClothingVersion.HumanMale, FitDresser.BodySex.Man),
+		(BodyKind.HumanFemale, "Human F", "models/citizen_human/citizen_human_female.vmdl", FitDresser.ClothingVersion.HumanFemale, FitDresser.BodySex.Woman),
+		(BodyKind.Aurora, "Aurora", "models/aurora/aurora.vmdl", FitDresser.ClothingVersion.Auto, FitDresser.BodySex.Woman),
+		(BodyKind.Akira, "Akira", "models/akira/akira.vmdl", FitDresser.ClothingVersion.Auto, FitDresser.BodySex.Man),
 	];
 
 	public static IEnumerable<(BodyKind Kind, string Title)> BodyChoices => Bodies.Select( x => (x.Kind, x.Title) );
@@ -129,7 +129,7 @@ public sealed partial class AvatarEditManager : Component
 		body = StartBody;
 		toon = StartToon;
 		Container.PrefersHuman = IsHuman;
-		foreach ( var (kind, title, model, version) in Bodies )
+		foreach ( var (kind, title, model, version, sex) in Bodies )
 		{
 			// At the scene's middle, where the backdrops are built round the body.
 			var go = new GameObject( false, title );
@@ -143,6 +143,7 @@ public sealed partial class AvatarEditManager : Component
 			dresser.BodyTarget = renderer;
 			dresser.ApplyOnStart = false;
 			dresser.Version = version;
+			dresser.Sex = sex;
 			// The stock bodies wear what was made for them as made. They still need the fitter for
 			// hair under a hat and, on the humans, for what only comes in a citizen version (the
 			// tattoos, makeup and brows, made before there were humans).
