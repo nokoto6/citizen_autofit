@@ -405,6 +405,92 @@ public static class FaceMarks
 		return marks;
 	}
 
+	const int EarAcross = 48;          // pixels from one eye to the other, seen from the side
+	const float EarBehind = 0.3f;      // an ear is looked for from this many times the eyes' distance behind them
+	const float EarBack = 2.8f;        // to this far
+	const float EarAbove = 0.8f;       // and from this far above them
+	const float EarBelow = 1.6f;       // to this far below
+	const float EarOut = 2.5f;         // rays start this far out to the side of the eyes' middle
+	const float EarThick = 0.3f;       // an ear is no thicker than this, through it from side to side
+	const float EarGap = 0.01f;        // and stands at least this far off the head behind it
+	const int MinEar = 12;             // pixels an ear has at least
+
+	/// <summary>
+	/// Each ear, seen from its side: "earL" and "earR" (the left one on the +Y side), the middle
+	/// of what of the ear stands off the head, on its outside; how far it reaches, after ".top",
+	/// ".bottom", ".front" and ".back"; and after ".canal" the skin in the middle of it where the
+	/// ear goes into the head, behind the flap if the flap is there. An ear is the flap of skin a
+	/// ray from the side goes into and out of again before it meets the head behind it (or meets
+	/// nothing more): a human's rim round the bowl, an anime ear standing out of the side of the
+	/// head. The bowl itself, grown into the head, sits inside what the flap reaches.
+	/// </summary>
+	/// <param name="left">The front of the eye on the +Y side.</param>
+	/// <param name="right">The front of the other eye.</param>
+	public static Dictionary<string, Vec3> Ears( TriMesh mesh, Vec3 left, Vec3 right )
+	{
+		var marks = new Dictionary<string, Vec3>();
+		float apart = (left - right).Length();
+		if ( apart < 1e-4f * Units.Metre || mesh.TriCount == 0 ) return marks;
+		Vec3 middle = 0.5f * (left + right);
+		float pixel = apart / EarAcross;
+		int width = (int)((EarBack - EarBehind) * EarAcross) + 1, height = (int)((EarAbove + EarBelow) * EarAcross) + 1;
+		float x0 = middle.X - EarBehind * apart, z0 = middle.Z + EarAbove * apart;
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		foreach ( var (side, name) in new[] { (1f, "earL"), (-1f, "earR") } )
+		{
+			var flap = new bool[width * height];
+			var outside = new float[width * height];
+			float start = middle.Y + side * EarOut * apart;
+			for ( int j = 0; j < height; j++ )
+				for ( int i = 0; i < width; i++ )
+				{
+					mesh.Crossings( new Vec3( x0 - i * pixel, start, z0 - j * pixel ), new Vec3( 0, -side, 0 ), 2f * EarOut * apart, hits );
+					if ( hits.Count < 2 || hits[0].Leaving || !hits[1].Leaving ) continue;
+					if ( hits[1].T - hits[0].T > EarThick * apart ) continue;
+					if ( hits.Count > 2 && hits[2].T - hits[1].T < EarGap * apart ) continue;
+					flap[j * width + i] = true;
+					outside[j * width + i] = start - side * hits[0].T;
+				}
+
+			// The biggest patch of flap.
+			HashSet<int> ear = null;
+			var seen = new HashSet<int>();
+			for ( int p = 0; p < flap.Length; p++ )
+			{
+				if ( !flap[p] || seen.Contains( p ) ) continue;
+				var patch = Fill( ( i, j ) => i >= 0 && j >= 0 && i < width && j < height && flap[j * width + i], p % width, p / width, width, ( _, _ ) => true );
+				seen.UnionWith( patch );
+				if ( ear == null || patch.Count > ear.Count ) ear = patch;
+			}
+			if ( ear == null || ear.Count < MinEar ) continue;
+			int iFront = int.MaxValue, iBack = int.MinValue, jTop = int.MaxValue, jBottom = int.MinValue;
+			float y = 0;
+			foreach ( int p in ear )
+			{
+				int i = p % width, j = p / width;
+				iFront = Math.Min( iFront, i ); iBack = Math.Max( iBack, i );
+				jTop = Math.Min( jTop, j ); jBottom = Math.Max( jBottom, j );
+				y += outside[p];
+			}
+			y /= ear.Count;
+			float xm = x0 - 0.5f * (iFront + iBack) * pixel, zm = z0 - 0.5f * (jTop + jBottom) * pixel;
+			marks[name] = new Vec3( xm, y, zm );
+			marks[name + ".top"] = new Vec3( xm, y, z0 - jTop * pixel );
+			marks[name + ".bottom"] = new Vec3( xm, y, z0 - jBottom * pixel );
+			marks[name + ".front"] = new Vec3( x0 - iFront * pixel, y, zm );
+			marks[name + ".back"] = new Vec3( x0 - iBack * pixel, y, zm );
+
+			// The bowl in the middle of it, where the ear goes into the head: the skin a ray
+			// through its middle meets once past the flap, if the flap is there.
+			mesh.Crossings( new Vec3( xm, start, zm ), new Vec3( 0, -side, 0 ), 2f * EarOut * apart, hits );
+			int k = 0;
+			while ( k < hits.Count && hits[k].Leaving ) k++;
+			if ( k + 2 < hits.Count && hits[k + 1].Leaving && hits[k + 1].T - hits[k].T <= EarThick * apart && hits[k + 2].T - hits[k + 1].T >= EarGap * apart ) k += 2;
+			if ( k < hits.Count ) marks[name + ".canal"] = new Vec3( xm, start - side * hits[k].T, zm );
+		}
+		return marks;
+	}
+
 	// The pixel nearest to (i, j) that passes the test, within a square of the given reach.
 	static bool Nearest( Func<int, int, bool> test, int i, int j, int reach, out int bi, out int bj )
 	{
