@@ -1464,7 +1464,8 @@ public sealed class Repose
 	/// <param name="ownBones">The garment's own bone slots. A solid piece gets one set of weights for the whole of it, so it stays rigid: the skin's where it sits on the skin (a button on a shirt moves with the cloth round it), its own where it doesn't.</param>
 	/// <param name="skip">Stock bones whose weights don't count (the eyes: what an eye bone drives is the eye, not skin anything rests on).</param>
 	/// <param name="cloth">The vertices fitted as cloth (<see cref="GarmentFit.Fit"/>), or null. Cloth lying on cloth under it is as far off the skin as the innermost layer, see <see cref="OffSkin"/>.</param>
-	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip, bool[] cloth = null )
+	/// <param name="beard">The vertices of a beard (<see cref="GarmentFit.Fit"/>'s beardOut), or null. Each piece of it (a card, a bead, a braid) goes back like a solid piece, whole.</param>
+	public static (int[] Bones, float[] Weights) SkinUnder( Vec3[] fitted, int[] tris, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] ownBones, float[] ownWeights, bool[] solid, bool[] skip, bool[] cloth = null, bool[] beard = null )
 	{
 		var weld = MeshTools.Weld( fitted, out int n );
 		var first = new int[n];
@@ -1495,7 +1496,7 @@ public sealed class Repose
 				float d = body.Nearest( fitted[v], out var q, out int tri );
 				if ( layers != null && cloth[v] ) d = OffSkin( fitted[v], q, d, layers, hits );
 				skinShare = Math.Clamp( (SkinFar - d) / (SkinFar - SkinNear), 0f, 1f );
-				fixedRow[r] = d <= SkinNear || (solid != null && solid[v]);   // on the skin: exactly the skin's way back, not evened out
+				fixedRow[r] = d <= SkinNear || Whole( v );   // on the skin: exactly the skin's way back, not evened out
 				if ( tri >= 0 && skinShare > 0 )
 				{
 					int a = body.Tris[tri * 3], b = body.Tris[tri * 3 + 1], c = body.Tris[tri * 3 + 2];
@@ -1545,20 +1546,24 @@ public sealed class Repose
 		var grid = new float[n * k2];
 		foreach ( var (r, col, w) in cells ) grid[r * k2 + col] += w;
 
-		// A solid piece is one thing: every vertex of it gets the piece's mean weights.
+		// A solid piece is one thing: every vertex of it gets the piece's mean weights. So is a
+		// piece of a beard. Pressed onto the skin, each vertex of a card took the skin's weights
+		// right under it, and where those changed across it (the jaw going into the neck under a
+		// chin) the rest pose sheared it: 6 mm beads and the cards on the side of the jaw came
+		// back turned inside out, 2 cm braids folded.
 		var edges = MeshTools.Edges( tris, weld );
-		if ( solid != null )
+		if ( solid != null || beard != null )
 		{
 			var piece = new int[n];
 			for ( int r = 0; r < n; r++ ) piece[r] = r;
 			int Root( int x ) { while ( piece[x] != x ) { piece[x] = piece[piece[x]]; x = piece[x]; } return x; }
 			foreach ( var (a, b) in edges )
-				if ( solid[first[a]] && solid[first[b]] ) { int ra = Root( a ), rb = Root( b ); if ( ra != rb ) piece[ra] = rb; }
+				if ( Together( first[a], first[b] ) ) { int ra = Root( a ), rb = Root( b ); if ( ra != rb ) piece[ra] = rb; }
 			var sum = new Dictionary<int, float[]>();
 			var members = new Dictionary<int, int>();
 			for ( int r = 0; r < n; r++ )
 			{
-				if ( !solid[first[r]] ) continue;
+				if ( !Whole( first[r] ) ) continue;
 				int root = Root( r );
 				if ( !sum.TryGetValue( root, out var total ) ) { sum[root] = total = new float[k2]; members[root] = 0; }
 				for ( int c = 0; c < k2; c++ ) total[c] += grid[r * k2 + c];
@@ -1566,7 +1571,7 @@ public sealed class Repose
 			}
 			for ( int r = 0; r < n; r++ )
 			{
-				if ( !solid[first[r]] ) continue;
+				if ( !Whole( first[r] ) ) continue;
 				int root = Root( r );
 				for ( int c = 0; c < k2; c++ ) grid[r * k2 + c] = sum[root][c] / members[root];
 			}
@@ -1612,6 +1617,9 @@ public sealed class Repose
 		}
 
 		return (bones, weights);
+
+		bool Whole( int v ) => (solid != null && solid[v]) || (beard != null && beard[v]);
+		bool Together( int a, int b ) => (solid != null && solid[a] && solid[b]) || (beard != null && beard[a] && beard[b]);
 	}
 
 	const float SkinNear = 0.03f * Units.Metre;   // cloth this close to the skin goes back with it
