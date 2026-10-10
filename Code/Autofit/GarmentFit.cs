@@ -174,6 +174,7 @@ public static class GarmentFit
 	const float Contact = 0.03f * Units.Metre;   // a garment this close to the skin counts as resting on it
 	const float CoverReach = 0.02f * Units.Metre; // a skin vertex further out of the cloth than this is a bad match, not a bump
 	const float CoverTurn = 0.5f;                 // so is skin whose outward direction turned further than this (cosine: 60 degrees)
+	const float Lowered = 0.002f * Units.Metre;  // cloth taken further down a short neck than this was lowered (see Neck)
 	const float Hidden = 0.005f * Units.Metre;   // further under the stock skin than this was never meant to be seen
 	const float ClearGap = 0.004f * Units.Metre;  // what cloth that used to hide the skin is held above it once the skin shows
 	const float ClearDepth = 0.015f * Units.Metre; // how far under the skin such cloth may have dipped (a crease) and still be lifted
@@ -702,6 +703,7 @@ public static class GarmentFit
 		// Cloth over the neck goes no further up this body's neck than it went up the stock
 		// body's (see Neck): on a shorter neck, the top of a collar comes down with it. Not hair:
 		// it grows where the scalp is.
+		bool[] lowered = null;
 		if ( neck != null && givenMove == null && !hair && cloth.Count > 0 )
 		{
 			var drop = new Vec3[n];
@@ -715,6 +717,8 @@ public static class GarmentFit
 			// Each vertex works its drop out on its own. Evened out over its neighbours, the cloth
 			// comes down in one piece.
 			MeshTools.Relax( drop, all, edges, 2, 0.5f );
+			lowered = new bool[n];
+			for ( int i = 0; i < n; i++ ) lowered[i] = drop[i].Z < -Lowered;
 			foreach ( var (_, idx) in cloth )
 				foreach ( int i in idx )
 				{
@@ -728,7 +732,7 @@ public static class GarmentFit
 			foreach ( var (_, idx) in cloth )
 				foreach ( int i in idx )
 				{
-					float w = neck.ZoneIn( skinAt[i] );
+					float w = neck.ZoneIn( skinAt[i] + drop[i] );
 					if ( w > 0 ) inward[i] = w * neck.TakeIn( fitted[i], gap0[i], other, neckHits );
 				}
 			MeshTools.Relax( inward, all, edges, 2, 0.5f );
@@ -822,9 +826,10 @@ public static class GarmentFit
 		}
 		TakeBack( pts, fitted, beforeLifts, clothTris, heldOff );
 
-		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness, heldOff );
-		Untangle( pts, fitted, tris, weld, edges, piece, cloth, heldOff );
+		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness, heldOff, givenMove == null ? neck : null );
+		Untangle( pts, fitted, tris, weld, edges, piece, cloth, heldOff, lowered );
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried, takeIn );
+		if ( !hair ) KeepUnder( fitted, clothTris, Layers( pts, clothTris, cloth, gap0, away, isSolid, buried ) );
 		if ( !hair ) Fringe( pts, fitted, members, pieceTris );
 		if ( under != null )
 		{
@@ -1136,6 +1141,68 @@ public static class GarmentFit
 				fitted[i] = pts[i] + shift;
 				isSolid[i] = true;
 			}
+		}
+	}
+
+	const float KeepDepth = 0.5f;   // cloth made under other cloth stays at least this share of as far under it as it was made
+
+	/// <summary>
+	/// Cloth made under other cloth of the garment, straight out from the skin (a lining under its
+	/// shell, the inside of a collar under its outside, the side of a jacket under its sleeve),
+	/// with the spot of the cloth over it, so that it can be kept under it (KeepUnder), pressed
+	/// back in where it came out through it. Each vertex is fitted on
+	/// its own, and lifting cloth over the skin (CoverSkin) lifts the cloth nearest the skin,
+	/// the lining, and not the shell over it: the puffer jacket's lining came out through the
+	/// shell along its zip and up the inside of its collar on Aurora and Akira, and showed as
+	/// black patches. Pressed in to half as deep under it as it was made, it is hidden by what
+	/// was made over it, edges included: just under it, the facing behind the zip of the
+	/// puffer's left front still showed along the zip and in a crease down from the collar.
+	/// </summary>
+	static List<(int Vertex, int Tri, float[] Bary, float Side, float Depth)> Layers( Vec3[] pts, List<int> clothTris, List<(int Root, List<int> Idx)> cloth, float[] gap0, Vec3[] away, bool[] isSolid, bool[] buried )
+	{
+		var under = new List<(int Vertex, int Tri, float[] Bary, float Side, float Depth)>();
+		if ( clothTris.Count == 0 ) return under;
+		var made = new TriMesh( pts, clothTris.ToArray() );
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+
+		foreach ( var (_, idx) in cloth )
+			foreach ( int i in idx )
+			{
+				if ( isSolid[i] || buried[i] || gap0[i] < 0 ) continue;
+				made.Crossings( pts[i] + away[i] * LayerSeam, away[i], LayerReach, hits );
+				foreach ( var (along, _, t) in hits )
+				{
+					int a = clothTris[t * 3], b = clothTris[t * 3 + 1], c = clothTris[t * 3 + 2];
+					if ( a == i || b == i || c == i ) continue;
+					// Which side of that triangle is out, as made: the side away from this vertex.
+					float side = Vec3.Dot( Vec3.Cross( pts[b] - pts[a], pts[c] - pts[a] ), away[i] ) >= 0 ? 1f : -1f;
+					under.Add( (i, t, Bary( pts[i] + away[i] * (LayerSeam + along), made, t ), side, MathF.Max( LayerSlack, KeepDepth * (LayerSeam + along) ) ) );
+					break;
+				}
+			}
+		return under;
+	}
+
+	/// <summary>Presses cloth made under other cloth (see Layers) back under it, at least KeepDepth as deep as it was made.</summary>
+	static void KeepUnder( Vec3[] fitted, List<int> clothTris, List<(int Vertex, int Tri, float[] Bary, float Side, float Depth)> under )
+	{
+		for ( int pass = 0; pass < 3; pass++ )
+		{
+			int pressed = 0;
+			foreach ( var (i, t, bw, side, depth) in under )
+			{
+				int a = clothTris[t * 3], b = clothTris[t * 3 + 1], c = clothTris[t * 3 + 2];
+				var normal = Vec3.Cross( fitted[b] - fitted[a], fitted[c] - fitted[a] );
+				float length = normal.Length();
+				if ( length < 1e-12f ) continue;
+				normal *= side / length;
+				var over = fitted[a] * bw[0] + fitted[b] * bw[1] + fitted[c] * bw[2];
+				float through = Vec3.Dot( fitted[i] - over, normal ) + depth;
+				if ( through <= 0 || through > LayerReach ) continue;
+				fitted[i] -= normal * through;
+				pressed++;
+			}
+			if ( pressed == 0 ) break;
 		}
 	}
 
@@ -2529,7 +2596,7 @@ public static class GarmentFit
 	/// the new one, and the triangle above it is lifted until it is.
 	/// </summary>
 	/// <param name="thickness">Per stock vertex, how many times as thick the body is there (<see cref="BodyMap.Thickness"/>), or null. Cloth over a slimmer body was taken in, and keeps the skin covered from that much closer.</param>
-	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin, float[] thickness, bool[] heldOff )
+	static void CoverSkin( Vec3[] pts, Vec3[] fitted, bool[] buried, List<int> clothTris, TriMesh old, Vec3[] skinMove, bool[] skinFound, bool clearSkin, float[] thickness, bool[] heldOff, Neck neck )
 	{
 		if ( clothTris.Count == 0 ) return;
 		var cloth = new TriMesh( pts, clothTris.ToArray() );
@@ -2549,6 +2616,7 @@ public static class GarmentFit
 
 		// Skin vertices with cloth right above them, and how far above.
 		var under = new List<(int Skin, int Tri, float U, float V, float W, float Gap)>();
+		var layerHits = new List<(float T, bool Leaving, int Tri)>();
 		for ( int v = 0; v < old.Verts.Length; v++ )
 		{
 			if ( skinFound != null && !skinFound[v] ) continue;   // where this vertex went is a guess
@@ -2563,6 +2631,11 @@ public static class GarmentFit
 			// faced back and down. Holding the cloth off it the way it was held off the stock ear
 			// pushed a collar's corner out sideways into a horn.
 			if ( Vec3.Dot( outBefore[v], outAfter[v] ) < CoverTurn ) continue;
+
+			// Cloth over a short neck was lowered and taken in round it (see Neck): it is no longer
+			// over the skin it was over, and held as far off as it was, a collar stood out round
+			// Aurora's neck as a funnel again and went back up towards her head.
+			if ( neck != null && neck.Clearance( old.Verts[v] ) < 1f ) continue;
 
 			float distance = cloth.Nearest( old.Verts[v], out var above, out int tri );
 			if ( tri < 0 || distance > GapCap ) continue;
@@ -2581,6 +2654,22 @@ public static class GarmentFit
 			if ( buried[a] || buried[b] || buried[c] ) continue;
 			Barycentric( above, pts[a], pts[b], pts[c], out float bu, out float bv, out float bw );
 			under.Add( (v, tri, bu, bv, bw, gap) );
+
+			// And the cloth made over that, each layer at its own height: lifted alone, the
+			// nearest layer (a lining) went out through the shell over it.
+			if ( gap <= 0 ) continue;
+			float scale = gap / MathF.Max( Vec3.Dot( above - old.Verts[v], outBefore[v] ), 1e-6f );
+			cloth.Crossings( old.Verts[v] + outBefore[v] * (Vec3.Dot( above - old.Verts[v], outBefore[v] ) + LayerSeam), outBefore[v], GapCap, layerHits );
+			float first = Vec3.Dot( above - old.Verts[v], outBefore[v] ) + LayerSeam;
+			foreach ( var (along, _, outer) in layerHits )
+			{
+				if ( outer == tri ) continue;
+				int oa = clothTris[outer * 3], ob = clothTris[outer * 3 + 1], oc = clothTris[outer * 3 + 2];
+				if ( buried[oa] || buried[ob] || buried[oc] ) continue;
+				var at = old.Verts[v] + outBefore[v] * (first + along);
+				Barycentric( at, pts[oa], pts[ob], pts[oc], out float ou, out float ov, out float ow );
+				under.Add( (v, outer, ou, ov, ow, (first + along) * scale) );
+			}
 		}
 
 		var unlifted = MeshTools.Copy( fitted );
@@ -2619,9 +2708,12 @@ public static class GarmentFit
 	/// face over its hollows and creases (a crumpled mask over the eyes and the mouth of a face
 	/// whose features are set elsewhere) neighbouring vertices go by bits of skin that moved
 	/// apart: the cloth's own folds crossed and showed their insides. Whatever the fit left
-	/// turned over on the head is evened out with the cloth round it until it isn't.
+	/// turned over on the head is evened out with the cloth round it until it isn't. Not cloth
+	/// lowered down a short neck (see Neck): a collar squeezed into a third of its height turns
+	/// its quilting over on purpose, and evened out with the jacket under it, it went back up
+	/// Aurora's neck by 6 mm.
 	/// </summary>
-	static void Untangle( Vec3[] pts, Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, int[] piece, List<(int Root, List<int> Idx)> cloth, bool[] heldOff )
+	static void Untangle( Vec3[] pts, Vec3[] fitted, int[] tris, int[] weld, List<(int A, int B)> edges, int[] piece, List<(int Root, List<int> Idx)> cloth, bool[] heldOff, bool[] lowered )
 	{
 		if ( cloth.Count == 0 || heldOff == null ) return;
 		var inCloth = new HashSet<int>();
@@ -2630,7 +2722,7 @@ public static class GarmentFit
 		for ( int t = 0; t < skip.Length; t++ )
 		{
 			int a = weld[tris[t * 3]], b = weld[tris[t * 3 + 1]], c = weld[tris[t * 3 + 2]];
-			skip[t] = !inCloth.Contains( piece[a] ) || !AnyOn( heldOff, a, b, c );
+			skip[t] = !inCloth.Contains( piece[a] ) || !AnyOn( heldOff, a, b, c ) || AnyOn( lowered, a, b, c );
 		}
 		var shift = new Vec3[pts.Length];
 		foreach ( var (_, idx) in cloth )
