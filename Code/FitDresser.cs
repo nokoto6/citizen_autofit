@@ -192,6 +192,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		BodyTarget.BodyGroups = BodyTarget.Model?.Parts.DefaultMask ?? 0;
 		BodyTarget.SetMaterialOverride( null, "skin" );
 		BodyTarget.SetMaterialOverride( null, "eyes" );
+		ApplyHeel( 0f );
 	}
 
 	/// <summary>
@@ -521,6 +522,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		var container = BuildContainer();
 		ownProportions = ClothingFitter.OwnProportions( BodyTarget.Model );
 		ApplyHeight( UseLocalAvatar ? container.Height : Height );
+		ApplyHeel( container.Clothing.Select( x => x.Clothing?.HeelHeight ?? 0f ).DefaultIfEmpty( 0f ).Max() );
 		skinTint = UseLocalAvatar ? container.Tint : Tint;
 		skinAge = UseLocalAvatar ? container.Age : Age;
 		ApplySkin();
@@ -604,14 +606,19 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		// over it. Hair isn't something to lie on, and it lies over a chain itself.
 		var others = models.Where( x => !IsHair( x.Entry.Clothing ) ).Select( x => (x.Entry, Worn: (x.StockPath, x.MadeFor, LosesSkin( x.StockPath, x.MadeFor, bodyKind ))) ).ToList();
 
+		// Trouser legs go over the shoes, as the stock clothing is made: let out wherever a shoe
+		// would come through them. The shoes are fitted as they are worn, then the trousers over them.
+		var shoes = others.Where( x => IsFootwear( x.Entry.Clothing ) ).Select( x => x.Worn ).ToList();
+
 		// Ask for everything up front so the garments are fitted side by side.
 		var wearing = new List<(Clothing Item, bool WithoutSkin, Task<bool> Fitted)>();
 		foreach ( var (entry, stockPath, madeFor) in models )
 		{
 			bool withoutSkin = LosesSkin( stockPath, madeFor, bodyKind );
 			string under = IsHair( entry.Clothing ) && madeFor == hat.MadeFor ? hat.StockPath : null;
-			var over = IsHair( entry.Clothing ) ? null : others.Where( x => x.Entry != entry ).Select( x => x.Worn ).ToList();
-			wearing.Add( (entry.Clothing, withoutSkin, WearAsync( entry, stockPath, madeFor, withoutSkin, skin, eyes, Overtaken, under, over )) );
+			bool overShoes = shoes.Count > 0 && IsLegwear( entry.Clothing );
+			var over = IsHair( entry.Clothing ) ? null : overShoes ? shoes : others.Where( x => x.Entry != entry ).Select( x => x.Worn ).ToList();
+			wearing.Add( (entry.Clothing, withoutSkin, WearAsync( entry, stockPath, madeFor, withoutSkin, skin, eyes, Overtaken, under, over, overShoes )) );
 		}
 
 		int fittedCount = 0, stockCount = 0;
@@ -911,6 +918,27 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// Whether the body is built with proportions of its own (see ClothingFitter.OwnProportions).
 	bool ownProportions;
 
+	// Heels, same as the stock dresser: the highest Clothing.HeelHeight of what is worn goes to
+	// the graph's scale_heel. At 1 the stock graph's heel layer makes each shin longer by about a
+	// fifth (64 of the citizen's 318 mm, 79 of the human's 393) and lifts the body by as much
+	// (60 mm, 73 mm), so the foot stays on the ground while the leg above it rises; the shoe was
+	// made standing on its heel with the foot hidden in it. A body with proportions of its own
+	// ignores the bone moves, so the graph would only lift its pelvis and it would float; it gets
+	// the same longer shins from Stretch instead, and the lift that keeps its feet down.
+	void ApplyHeel( float height )
+	{
+		if ( !BodyTarget.IsValid() ) return;
+		BodyTarget.Set( "scale_heel", ownProportions ? 0f : height );
+		heel = ownProportions ? height : 0f;
+	}
+
+	// How much longer the shins get at a heel of 1, as a share of their length: the stock
+	// graph's heel layer, the same share on the citizen and on the humans.
+	const float HeelShin = 0.2f;
+
+	// Heel height for a body with proportions of its own.
+	float heel;
+
 	/// <summary>
 	/// The scale an older Height put on the body's object. Kept only so a scene saved with it
 	/// gets its body back to the size it was.
@@ -966,7 +994,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	// it hangs off the pelvis (and is lifted with it to keep the feet on the ground).
 	Model stretchModel;
 	float[] stretchTwice, lengthTwice;
-	bool[] underPelvis, alongSpine, spineBone, clavicle;
+	bool[] underPelvis, alongSpine, spineBone, clavicle, onShin, shinBone;
 	float[] thickShare;
 	int[] feet;
 	Transform[] animated, stretchedPose;
@@ -981,7 +1009,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		if ( !body.IsValid() || !body.SceneModel.IsValid() || body.Model is null ) return;
 		float broad = (1f + (stretch - 1f) * (stretch > 1f ? TallShoulders : ShortShoulders))
 			* (1f + ShoulderWidth.Clamp( 0f, 1f ) * ShoulderRange);
-		if ( stretch == 1f && broad == 1f )
+		float shin = 1f + heel * HeelShin;
+		if ( stretch == 1f && broad == 1f && shin == 1f )
 		{
 			Unstretch();
 			return;
@@ -989,7 +1018,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 		var bones = body.Model.Bones.AllBones;
 		// After a hotload the tables can be missing ones added since they were made.
-		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || alongSpine?.Length != bones.Count || spineBone?.Length != bones.Count || clavicle?.Length != bones.Count || lengthTwice?.Length != bones.Count || feet is null )
+		if ( stretchModel != body.Model || underPelvis?.Length != bones.Count || thickShare?.Length != bones.Count || alongSpine?.Length != bones.Count || spineBone?.Length != bones.Count || clavicle?.Length != bones.Count || lengthTwice?.Length != bones.Count || onShin?.Length != bones.Count || feet is null )
 			MakeStretch( body.Model );
 
 		float even = 1f + (stretch - 1f) * EvenShare;
@@ -1018,6 +1047,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			else offset *= grow;
 			// The shoulder joint moves out along the collarbone.
 			if ( clavicle[parent.Index] ) offset.x *= broad;
+			// A heel: the ankle further down the shin, and what hangs off the shin with it.
+			if ( onShin[i] ) offset *= shin;
 			stretchedPose[i] = stretchedPose[parent.Index].ToWorld( new Transform( offset, local.Rotation ) );
 		}
 
@@ -1038,6 +1069,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			float along = 1f + ((spineBone[i] ? torso : limbs) - 1f) * (lengthTwice[i] - 1f);
 			float across = 1f + (along - 1f) * thickShare[i];
 			if ( clavicle[i] ) along *= broad;
+			// The shin and its twist bones are skinned to all of it, so they stretch along.
+			if ( shinBone[i] ) along *= shin;
 			pose.Scale = new Vector3( along, across, across ) * even;
 			so.SetBoneOverride( i, pose );
 		}
@@ -1063,6 +1096,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		alongSpine = new bool[bones.Count];
 		spineBone = new bool[bones.Count];
 		clavicle = new bool[bones.Count];
+		onShin = new bool[bones.Count];
+		shinBone = new bool[bones.Count];
 		animated = new Transform[bones.Count];
 		stretchedPose = new Transform[bones.Count];
 		var feetList = new List<int>();
@@ -1095,6 +1130,8 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			underPelvis[i] = name == "pelvis" || (bone.Parent is not null && underPelvis[bone.Parent.Index]);
 			spineBone[i] = name.StartsWith( "spine_" );
 			clavicle[i] = name.StartsWith( "clavicle_" );
+			onShin[i] = parent.StartsWith( "leg_lower_" );
+			shinBone[i] = name.StartsWith( "leg_lower_" );
 			thickShare[i] = spineBone[i] ? TorsoThickShare : ThickShare;
 			if ( name.StartsWith( "ankle_" ) ) feetList.Add( i );
 		}
@@ -1103,7 +1140,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
-	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, bool withoutSkin, Material skin, Material eyes, Func<bool> overtaken, string under = null, IReadOnlyList<(string Path, ClothingFitter.BodyKind MadeFor, bool WithoutSkin)> over = null )
+	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, bool withoutSkin, Material skin, Material eyes, Func<bool> overtaken, string under = null, IReadOnlyList<(string Path, ClothingFitter.BodyKind MadeFor, bool WithoutSkin)> over = null, bool overShoes = false )
 	{
 		var item = entry.Clothing;
 		SkinnedModelRenderer renderer = null;
@@ -1153,7 +1190,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			ToonRenderer( renderer );
 		}
 
-		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under, over ) : null;
+		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under, over, overShoes ) : null;
 		if ( overtaken() )
 			return false;
 
@@ -1226,6 +1263,13 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		return slots.HasFlag( Sandbox.Clothing.Slots.HeadTop ) && !slots.HasFlag( Sandbox.Clothing.Slots.HeadBottom ) && !item.HideBody.HasFlag( Sandbox.Clothing.BodyGroups.Head );
 	}
 	static bool IsHair( Clothing item ) => item.IsValid() && item.Category.ToString().StartsWith( "Hair" );
+
+	// Shoes and boots: on the feet and no higher. Trousers, a long skirt or a dress: down the
+	// shins and not on the feet (one that is, like Santa's trousers, can't be worn with shoes).
+	const Sandbox.Clothing.Slots Feet = Sandbox.Clothing.Slots.LeftFoot | Sandbox.Clothing.Slots.RightFoot;
+	const Sandbox.Clothing.Slots Shins = Sandbox.Clothing.Slots.LeftShin | Sandbox.Clothing.Slots.RightShin;
+	static bool IsFootwear( Clothing item ) => item.IsValid() && ((item.SlotsUnder | item.SlotsOver) & Feet) != 0 && ((item.SlotsUnder | item.SlotsOver) & Shins) == 0;
+	static bool IsLegwear( Clothing item ) => item.IsValid() && item.Category != Sandbox.Clothing.ClothingCategory.Shorts && ((item.SlotsUnder | item.SlotsOver) & Shins) != 0 && ((item.SlotsUnder | item.SlotsOver) & Feet) == 0;
 
 	const string BrowsGroup = "Brows";
 
