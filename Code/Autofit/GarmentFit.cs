@@ -780,7 +780,8 @@ public static class GarmentFit
 
 		CoverSkin( pts, fitted, buried, clothTris, old, skinMove, skinFound, clearSkin, thickness, heldOff );
 		Untangle( pts, fitted, tris, weld, edges, piece, cloth, heldOff );
-		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried );
+		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried, takeIn );
+		if ( !hair ) Fringe( pts, fitted, members, pieceTris );
 		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
 		if ( !hair ) Beads( pts, fitted, members, isSolid );
@@ -1101,7 +1102,7 @@ public static class GarmentFit
 	/// on it and keeps its own fit past the reach. Which of two pieces is the outer one is told
 	/// by the skin, not by their normals: a lined waistcoat has them pointing both ways.
 	/// </summary>
-	static void Carry( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh body, bool[] buried )
+	static void Carry( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, bool[] isSolid, float[] gap0, Vec3[] away, TriMesh body, bool[] buried, float[] takeIn )
 	{
 		var roots = new List<int>();
 		foreach ( var (root, idx) in members )
@@ -1146,6 +1147,10 @@ public static class GarmentFit
 				// further than to just under it.
 				float carriedGap = body.SignedGap( carried, out _ );
 				float sunk = body.SignedGap( fitted[i], out _ ) - carriedGap;
+				// A solid (a button) isn't taken in with the cloth over a slimmer body, so its own fit
+				// stands off by what the cloth was taken in: by that much less. Held at its own fit,
+				// a button on a vest open over Aurora's front stood 1-3 cm off the placket.
+				if ( isSolid[i] ) sunk -= MathF.Max( takeIn[i], 0 );
 				if ( apart < 0 )
 					sunk = MathF.Min( sunk, body.SignedGap( Blend( fitted, tris, onTri * 3, bw ), out _ ) - LayerSlack - carriedGap );
 				if ( sunk > 0 ) carried += away[i] * sunk;
@@ -1202,6 +1207,160 @@ public static class GarmentFit
 			}
 		}
 	}
+
+	/// <summary>
+	/// A piece too small to be a layer (a card of fraying threads along a denim vest's edges, a
+	/// loose thread) hangs from the piece it was made on. Fitted on its own, every card took the
+	/// move of the skin nearest it and was pushed off the body by itself, while the edge it hangs
+	/// from was taken in with the rest of the cloth: along the front of a vest open over a narrow
+	/// body the threads hung up to 2 cm out in the air and fanned apart. So a piece made touching
+	/// a layer goes with the spots of that layer under it, as a whole: carried vertex by vertex
+	/// like <see cref="Carry"/>'s passengers, a card on a shoulder whose cloth was squeezed in
+	/// came out twice as long and stood up from it like a fin.
+	/// </summary>
+	static void Fringe( Vec3[] pts, Vec3[] fitted, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, Func<int, bool> isLayer = null )
+	{
+		var layers = new List<int>();
+		foreach ( var (root, idx) in members )
+			if ( pieceTris.ContainsKey( root ) && idx.Count >= LayerMinVerts && (isLayer == null || isLayer( root )) ) layers.Add( root );
+		if ( layers.Count == 0 ) return;
+		var made = new Dictionary<int, TriMesh>();
+		foreach ( int layer in layers ) made[layer] = new TriMesh( pts, pieceTris[layer].ToArray() );
+
+		// How much a layer grew, by its area.
+		var growth = new Dictionary<int, float>();
+		float Growth( int layer )
+		{
+			if ( growth.TryGetValue( layer, out float g ) ) return g;
+			var tris = pieceTris[layer];
+			double before = 0, after = 0;
+			for ( int t = 0; t < tris.Count; t += 3 )
+			{
+				before += Vec3.Cross( pts[tris[t + 1]] - pts[tris[t]], pts[tris[t + 2]] - pts[tris[t]] ).Length();
+				after += Vec3.Cross( fitted[tris[t + 1]] - fitted[tris[t]], fitted[tris[t + 2]] - fitted[tris[t]] ).Length();
+			}
+			return growth[layer] = before > 1e-12 ? Math.Clamp( (float)Math.Sqrt( after / before ), 0.5f, 2f ) : 1f;
+		}
+
+		var moved = new Dictionary<int, Vec3>();
+		foreach ( var (root, idx) in members )
+		{
+			if ( idx.Count >= LayerMinVerts ) continue;
+
+			// The layer it hangs from: the nearest one to any of its vertices.
+			float best = FringeReach;
+			int on = -1;
+			foreach ( int i in idx )
+				foreach ( int layer in layers )
+				{
+					float d = made[layer].Nearest( pts[i], out _, out int tri );
+					if ( tri < 0 || d >= best ) continue;
+					best = d; on = layer;
+				}
+			if ( on < 0 ) continue;
+
+			// The spots of that layer nearest its vertices, and which way the cloth faces there.
+			var tris = pieceTris[on];
+			Vec3 was = Vec3.Zero, now = Vec3.Zero;
+			var spots = new List<(Vec3 From, Vec3 To, Vec3 Up0, Vec3 Up1)>();
+			foreach ( int i in idx )
+			{
+				made[on].Nearest( pts[i], out var q, out int tri );
+				if ( tri < 0 ) continue;
+				var bw = Bary( q, made[on], tri );
+				int a = tris[tri * 3], b = tris[tri * 3 + 1], c = tris[tri * 3 + 2];
+				var up0 = Vec3.Cross( pts[b] - pts[a], pts[c] - pts[a] );
+				var up1 = Vec3.Cross( fitted[b] - fitted[a], fitted[c] - fitted[a] );
+				if ( up0.Length() < 1e-12f || up1.Length() < 1e-12f ) continue;
+				var to = Blend( fitted, tris, tri * 3, bw );
+				spots.Add( (q, to, up0 / up0.Length(), up1 / up1.Length()) );
+				was += q;
+				now += to;
+			}
+			if ( spots.Count == 0 ) continue;
+			was /= spots.Count;
+			now /= spots.Count;
+
+			// It keeps its shape: it goes where those spots went, turned as the cloth there turned
+			// (the best turn of the spots and of the cloth's facing, as threads along an edge lie
+			// on a line), and grown as the whole layer grew, not as the cloth under it stretched.
+			float length = 0;
+			foreach ( int i in idx ) length = MathF.Max( length, (pts[i] - was).Length() );
+			var h = new float[9];
+			foreach ( var (from, to, up0, up1) in spots )
+			{
+				Cross( h, to - now, from - was );
+				Cross( h, up1 * length, up0 * length );
+			}
+			var turn = Rotation( h );
+			float grow = Growth( on );
+			foreach ( int i in idx )
+			{
+				var d = pts[i] - was;
+				if ( turn != null ) d = new Vec3( turn[0] * d.X + turn[1] * d.Y + turn[2] * d.Z, turn[3] * d.X + turn[4] * d.Y + turn[5] * d.Z, turn[6] * d.X + turn[7] * d.Y + turn[8] * d.Z );
+				moved[i] = now + d * grow;
+			}
+		}
+		foreach ( var (i, p) in moved ) fitted[i] = p;
+	}
+
+	/// <summary>
+	/// The same again when the fit goes back to the body's rest pose: each vertex goes back by
+	/// the skin under it, and a card hanging off the cloth out over a belly took other weights
+	/// than the edge it hangs from (its own skin, not evened out along the cloth), so the threads
+	/// came off the edge and apart a second time, 3 mm on average, up to 2 cm. Here they go with
+	/// their cloth from the fit in the stock pose to the rest pose. Only off cloth (hair has none),
+	/// and not paint: brows lie on the skin, each hair of them where the skin under it went.
+	/// </summary>
+	/// <param name="stockFit">The garment as fitted, in the stock pose.</param>
+	/// <param name="rest">The garment in the body's rest pose. Changed in place, and returned.</param>
+	/// <param name="cloth">The vertices fitted as cloth (see <see cref="Fit"/>).</param>
+	/// <param name="paint">The vertices painted on the skin (see <see cref="Fit"/>), or null.</param>
+	public static Vec3[] Fringe( Vec3[] stockFit, Vec3[] rest, int[] tris, bool[] cloth, bool[] paint )
+	{
+		var weld = MeshTools.Weld( stockFit, out int n );
+		var first = new int[n];
+		for ( int i = stockFit.Length - 1; i >= 0; i-- ) first[weld[i]] = i;
+		var pts = new Vec3[n];
+		var fitted = new Vec3[n];
+		for ( int i = 0; i < n; i++ ) { pts[i] = stockFit[first[i]]; fitted[i] = rest[first[i]]; }
+
+		var piece = Islands( n, MeshTools.Edges( tris, weld ) );
+		var members = new Dictionary<int, List<int>>();
+		var pieceTris = new Dictionary<int, List<int>>();
+		var used = new bool[n];
+		foreach ( int v in tris ) used[weld[v]] = true;
+		for ( int i = 0; i < n; i++ )
+		{
+			if ( !used[i] || (paint != null && paint[first[i]]) ) continue;
+			if ( !members.TryGetValue( piece[i], out var list ) ) members[piece[i]] = list = new List<int>();
+			list.Add( i );
+		}
+		var seen = new HashSet<(int, int, int)>();
+		for ( int t = 0; t < tris.Length; t += 3 )
+		{
+			int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
+			if ( a == b || b == c || a == c || !seen.Add( Sorted( a, b, c ) ) ) continue;
+			if ( !pieceTris.TryGetValue( piece[a], out var list ) ) pieceTris[piece[a]] = list = new List<int>();
+			list.Add( a ); list.Add( b ); list.Add( c );
+		}
+
+		var before = MeshTools.Copy( fitted );
+		Fringe( pts, fitted, members, pieceTris, root => cloth[first[root]] );
+		for ( int i = 0; i < rest.Length; i++ )
+			if ( (fitted[weld[i]] - before[weld[i]]).LengthSquared() > 0 ) rest[i] = fitted[weld[i]];
+		return rest;
+	}
+
+	// Adds q times p transposed to a cross covariance (row-major).
+	static void Cross( float[] h, Vec3 q, Vec3 p )
+	{
+		h[0] += q.X * p.X; h[1] += q.X * p.Y; h[2] += q.X * p.Z;
+		h[3] += q.Y * p.X; h[4] += q.Y * p.Y; h[5] += q.Y * p.Z;
+		h[6] += q.Z * p.X; h[7] += q.Z * p.Y; h[8] += q.Z * p.Z;
+	}
+
+	const float FringeReach = 0.005f * Units.Metre;   // a small piece whose root is this close to a layer hangs from it
 
 	// Barycentric weights of a point on a triangle of a mesh.
 	static float[] Bary( Vec3 q, TriMesh mesh, int tri )
