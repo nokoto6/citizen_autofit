@@ -76,6 +76,7 @@ public sealed class Repose
 	// The body in the stock pose and proportions, with its skin weights as stock bones and
 	// without the eyes: how cloth lying on its skin goes back to its rest pose (RestOf).
 	TriMesh skinMesh;
+	internal TriMesh SkinMesh => skinMesh;
 	int[] skinBones;
 	float[] skinWeights;
 
@@ -1614,6 +1615,337 @@ public sealed class Repose
 		return (bones, weights);
 	}
 
+	/// <summary>
+	/// The weights cloth is animated by: the skin's under it (<see cref="SkinUnder"/>), but
+	/// between two parts of the body (an arm and the trunk, the head and the neck) split between
+	/// them as the garment itself splits them. The skin under cloth in an armpit is the arm's in
+	/// the stock pose: the wind breaker's side under Aurora's arm took nine tenths of the arm
+	/// where the jacket gives it two fifths, swung out with the arm when it came down, and her
+	/// side showed through. Only the split between the parts is the garment's; within a part
+	/// the bones are the skin's, so a twist bone or a body's own spine still has its say. The
+	/// rest pose is not changed by this: cloth comes back to it by the skin's weights.
+	/// </summary>
+	/// <param name="fitted">The cloth in the stock pose and proportions, fitted.</param>
+	/// <param name="cloth">The vertices fitted as cloth.</param>
+	/// <param name="body">The body in the stock pose (as for <see cref="SkinUnder"/>), with its weights as stock bones.</param>
+	/// <param name="ownHead">From <see cref="Neck.OwnHead"/>: how much of the head's say is the garment's over a short neck.</param>
+	public static (int[] Bones, float[] Weights) ForAnimation( Vec3[] fitted, bool[] cloth, bool[] solid, TriMesh body, int[] bodyBones, float[] bodyWeights, int[] skinBones, float[] skinWeights, int[] ownBones, float[] ownWeights, SkinnedGeometry stock, (float[] Share, bool[] Bones) ownHead = default )
+	{
+		var bones = new int[skinBones.Length];
+		var weights = new float[skinWeights.Length];
+		Array.Copy( skinBones, bones, bones.Length );
+		Array.Copy( skinWeights, weights, weights.Length );
+		if ( cloth == null ) return (bones, weights);
+
+		var part = Parts( stock );
+		int parts = HeadPart + 1;
+
+		// The body's skin by part: each triangle goes to the part with most of its weight.
+		var partTris = new List<int>[parts];
+		for ( int k = 0; k < parts; k++ ) partTris[k] = new List<int>();
+		var share = new float[parts];
+		for ( int t = 0; t < body.TriCount; t++ )
+		{
+			Array.Clear( share );
+			for ( int c = 0; c < 3; c++ )
+			{
+				int v = body.Tris[t * 3 + c];
+				for ( int j = 0; j < 4; j++ )
+					if ( bodyBones[v * 4 + j] >= 0 ) share[part[bodyBones[v * 4 + j]]] += bodyWeights[v * 4 + j];
+			}
+			int best = 0;
+			for ( int k = 1; k < parts; k++ ) if ( share[k] > share[best] ) best = k;
+			partTris[best].AddRange( new[] { body.Tris[t * 3], body.Tris[t * 3 + 1], body.Tris[t * 3 + 2] } );
+		}
+		var partMesh = new TriMesh[parts];
+		for ( int k = 0; k < parts; k++ ) if ( partTris[k].Count > 0 ) partMesh[k] = new TriMesh( body.Verts, partTris[k].ToArray() );
+
+		var mine = new float[parts];
+		var theirs = new float[parts];
+		var blend = new Dictionary<int, float>();
+		for ( int v = 0; v < fitted.Length; v++ )
+		{
+			if ( !cloth[v] || (solid != null && solid[v]) ) continue;
+			Array.Clear( mine ); Array.Clear( theirs );
+			float own = 0, skin = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				if ( ownBones[v * 4 + j] >= 0 ) { mine[part[ownBones[v * 4 + j]]] += ownWeights[v * 4 + j]; own += ownWeights[v * 4 + j]; }
+				if ( skinBones[v * 4 + j] >= 0 ) { theirs[part[skinBones[v * 4 + j]]] += skinWeights[v * 4 + j]; skin += skinWeights[v * 4 + j]; }
+			}
+			if ( own <= 0 || skin <= 0 ) continue;
+
+			// The part the skin under it belongs to, and how near the other parts' skin is.
+			float near = body.Nearest( fitted[v], out _, out int tri );
+			if ( tri < 0 ) continue;
+			int under = 0;
+			for ( int k = 1; k < parts; k++ ) if ( theirs[k] > theirs[under] ) under = k;
+			var take = new float[parts];
+			bool any = false;
+			for ( int k = 0; k < parts; k++ )
+			{
+				if ( k == under || partMesh[k] == null || mine[k] < OwnPart * own || mine[under] < OwnPart * own ) continue;
+				float d = partMesh[k].Nearest( fitted[v], out _, out _ );
+				take[k] = Math.Clamp( (near + Between - d) / Between, 0f, 1f );
+				any |= take[k] > 0;
+			}
+			if ( ownHead.Share != null && ownHead.Share[v] > 0 && under != HeadPart ) { take[HeadPart] = MathF.Max( take[HeadPart], ownHead.Share[v] ); any = true; }
+			if ( !any ) continue;
+
+			// The share of each part: the garment's where it is between them, the skin's elsewhere.
+			var want = new float[parts];
+			float moved = 0;
+			for ( int k = 0; k < parts; k++ )
+			{
+				if ( take[k] <= 0 ) continue;
+				want[k] = theirs[k] / skin + (mine[k] / own - theirs[k] / skin) * take[k];
+				moved += want[k] - theirs[k] / skin;
+			}
+			// What they gain or lose comes from or goes to the part under it.
+			want[under] = theirs[under] / skin - moved;
+			if ( want[under] < 0 ) continue;
+			for ( int k = 0; k < parts; k++ ) if ( take[k] <= 0 && k != under ) want[k] = theirs[k] / skin;
+
+			// Within a part the skin's bones in their shares, or the garment's where the skin had none of it.
+			blend.Clear();
+			for ( int k = 0; k < parts; k++ )
+			{
+				if ( want[k] <= 0 ) continue;
+				bool fromSkin = theirs[k] > 1e-4f;
+				float total = fromSkin ? theirs[k] : mine[k];
+				for ( int j = 0; j < 4; j++ )
+				{
+					int bone = fromSkin ? skinBones[v * 4 + j] : ownBones[v * 4 + j];
+					if ( bone < 0 || part[bone] != k ) continue;
+					float w = (fromSkin ? skinWeights[v * 4 + j] : ownWeights[v * 4 + j]) / total * want[k];
+					blend[bone] = blend.TryGetValue( bone, out float sum ) ? sum + w : w;
+				}
+			}
+			// The four that count most, the way skinning would.
+			for ( int slot = 0; slot < 4; slot++ )
+			{
+				int top = -1;
+				float most = 0;
+				foreach ( var (bone, w) in blend ) if ( w > most ) { most = w; top = bone; }
+				bones[v * 4 + slot] = top;
+				weights[v * 4 + slot] = most;
+				if ( top >= 0 ) blend.Remove( top );
+			}
+		}
+		return (bones, weights);
+	}
+
+	/// <summary>
+	/// Holds cloth out over the body with its arms down, as they hang standing. Skinning moves
+	/// the side of a chest out where the arm comes down against it, and the cloth over it,
+	/// turned partly with the arm, doesn't go out as far: Aurora's and Akira's sides showed
+	/// through jackets under the arms. Each bit of cloth is posed by the weights it is animated
+	/// by, and where the skin of its own part of the body (the trunk under a jacket's side,
+	/// not the arm pressed against it) comes up to it, it is moved out in the rest pose by as
+	/// much as it has to go out in the pose. Not on the stock body itself: its clothes are as made.
+	/// Skin of a part the cloth hardly goes with (an arm against a jacket's side) is hidden by
+	/// the cloth over that part (its sleeve), and is left alone.
+	/// </summary>
+	/// <param name="rest">The garment in the body's rest pose (<see cref="ToBodyRest"/>).</param>
+	/// <param name="bones">Its weights as stock bones, as it will be animated (<see cref="ForAnimation"/>).</param>
+	public Vec3[] CoverInPose( Vec3[] rest, int[] tris, bool[] cloth, bool[] solid, int[] bones, float[] weights, SkinnedGeometry stock )
+	{
+		if ( cloth == null || Moved < 0.001f * Units.Metre ) return rest;
+		int root = Array.IndexOf( stockParents, -1 );
+		if ( root < 0 ) return rest;
+		var forward = Quat.Rotate( carry[root], new Vec3( 1, 0, 0 ) );
+		var up = Quat.Rotate( carry[root], new Vec3( 0, 0, 1 ) );
+		var across = Vec3.Cross( up, forward );
+
+		// Each arm turned about the forward axis at its shoulder till it hangs ArmsHang under level.
+		int count = stock.BoneNames.Length;
+		var turn = new float[count][];
+		var joint = new Vec3[count];
+		foreach ( var (upper, lower, side) in new[] { ("arm_upper_L", "arm_lower_L", 1f), ("arm_upper_R", "arm_lower_R", -1f) } )
+		{
+			int a = Array.IndexOf( stock.BoneNames, upper ), b = Array.IndexOf( stock.BoneNames, lower );
+			if ( a < 0 || b < 0 ) return rest;
+			var arm = RestPositions[b] - RestPositions[a];
+			arm -= forward * Vec3.Dot( arm, forward );
+			if ( arm.Length() < 1e-4f * Units.Metre ) return rest;
+			arm /= arm.Length();
+			var hang = across * (side * MathF.Cos( ArmsHang )) - up * MathF.Sin( ArmsHang );
+			float angle = MathF.Atan2( Vec3.Dot( Vec3.Cross( arm, hang ), forward ), Vec3.Dot( arm, hang ) );
+			var q = new[] { forward.X * MathF.Sin( angle / 2 ), forward.Y * MathF.Sin( angle / 2 ), forward.Z * MathF.Sin( angle / 2 ), MathF.Cos( angle / 2 ) };
+			for ( int s = 0; s < count; s++ )
+				for ( int p = s; p >= 0; p = stockParents[p] )
+					if ( p == a ) { turn[s] = q; joint[s] = RestPositions[a]; break; }
+		}
+
+		// Posed by its weights; and how a move in the pose is made in the rest pose.
+		Vec3 Pose( Vec3 p, int[] slots, float[] w, int v )
+		{
+			var sum = Vec3.Zero;
+			float total = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = slots[v * 4 + j];
+				if ( bone < 0 || w[v * 4 + j] <= 0 ) continue;
+				sum += (turn[bone] != null ? Quat.Rotate( turn[bone], p - joint[bone] ) + joint[bone] : p) * w[v * 4 + j];
+				total += w[v * 4 + j];
+			}
+			return total > 0 ? sum / total : p;
+		}
+		Vec3 Back( Vec3 move, int v )
+		{
+			// The move turned back by the mean of the turns the vertex makes: they are a few
+			// degrees apart at most where it matters, so that is near enough the inverse.
+			var sum = Vec3.Zero;
+			float total = 0;
+			for ( int j = 0; j < 4; j++ )
+			{
+				int bone = bones[v * 4 + j];
+				if ( bone < 0 || weights[v * 4 + j] <= 0 ) continue;
+				sum += (turn[bone] != null ? Quat.Rotate( Quat.Inverse( turn[bone] ), move ) : move) * weights[v * 4 + j];
+				total += weights[v * 4 + j];
+			}
+			return total > 0 ? sum / total : move;
+		}
+
+		var bodyPosed = new Vec3[bodyRest.Length];
+		for ( int v = 0; v < bodyRest.Length; v++ ) bodyPosed[v] = Pose( bodyRest[v], skinBones, skinWeights, v );
+		var posedMesh = new TriMesh( bodyPosed, bodyIndices );
+		var restMesh = new TriMesh( bodyRest, bodyIndices );
+		var part = Parts( stock );
+		var share = new float[HeadPart + 1];
+		void Shares( int[] slots, float[] w, int v0, int v1, int v2 )
+		{
+			Array.Clear( share );
+			float total = 0;
+			foreach ( int v in new[] { v0, v1, v2 } )
+				for ( int j = 0; j < 4; j++ )
+					if ( slots[v * 4 + j] >= 0 ) { share[part[slots[v * 4 + j]]] += w[v * 4 + j]; total += w[v * 4 + j]; }
+			if ( total > 0 ) for ( int k = 0; k < share.Length; k++ ) share[k] /= total;
+		}
+		int PartOf( int[] slots, float[] w, int v0, int v1, int v2 )
+		{
+			Shares( slots, w, v0, v1, v2 );
+			int best = 0;
+			for ( int k = 1; k < share.Length; k++ ) if ( share[k] > share[best] ) best = k;
+			return best;
+		}
+		var clothShare = new float[HeadPart + 1];
+
+		var result = MeshTools.Copy( rest );
+		var posed = new Vec3[rest.Length];
+		int[] clothTris = null;
+		var layerHits = new List<(float T, bool Leaving, int Tri)>();
+		var lift = new Dictionary<int, Vec3>();
+		for ( int pass = 0; pass < CoverPasses; pass++ )
+		{
+			for ( int v = 0; v < rest.Length; v++ ) posed[v] = Pose( result[v], bones, weights, v );
+			lift.Clear();
+			for ( int t = 0; t + 2 < tris.Length; t += 3 )
+			{
+				int a = tris[t], b = tris[t + 1], c = tris[t + 2];
+				if ( !cloth[a] || !cloth[b] || !cloth[c] || (solid != null && (solid[a] || solid[b] || solid[c])) ) continue;
+				Shares( bones, weights, a, b, c );
+				Array.Copy( share, clothShare, share.Length );
+				foreach ( var bw in CoverSamples )
+				{
+					var at = posed[a] * bw[0] + posed[b] * bw[1] + posed[c] * bw[2];
+					float d = posedMesh.Nearest( at, out var near, out int tri );
+					if ( tri < 0 || d > CoverDeep ) continue;
+					bool inside = posedMesh.Inside( at );
+					if ( !inside && d > CoverClear ) continue;
+					// Kept as far out as in the rest pose, up to CoverClear: cloth made tight on the
+					// skin stays tight where the arms don't change it (a boot, a stocking).
+					var was = result[a] * bw[0] + result[b] * bw[1] + result[c] * bw[2];
+					float restGap = restMesh.Nearest( was, out _, out _ );
+					if ( restMesh.Inside( was ) ) continue;
+					float keep = MathF.Min( restGap, CoverClear );
+					int ta = bodyIndices[tri * 3], tb = bodyIndices[tri * 3 + 1], tc = bodyIndices[tri * 3 + 2];
+					if ( clothShare[PartOf( skinBones, skinWeights, ta, tb, tc )] < OwnSkin ) continue;
+					var outward = inside ? near - at : at - near;
+					float length = outward.Length();
+					if ( length < 1e-6f * Units.Metre ) continue;
+					float need = (inside ? d : -d) + keep;
+					if ( need <= 0 ) continue;
+					var push = outward / length * (need / (bw[0] * bw[0] + bw[1] * bw[1] + bw[2] * bw[2]));
+					for ( int k = 0; k < 3; k++ )
+					{
+						int vi = k == 0 ? a : k == 1 ? b : c;
+						var mineV = push * bw[k];
+						if ( !lift.TryGetValue( vi, out var have ) || mineV.LengthSquared() > have.LengthSquared() ) lift[vi] = mineV;
+					}
+				}
+			}
+			if ( lift.Count == 0 ) break;
+
+			// Cloth over cloth that goes out goes out with it, or the lining comes out through the shell.
+			var moves = new Dictionary<int, Vec3>();
+			foreach ( var (vi, push) in lift ) moves[vi] = Back( push, vi );
+			var now = new TriMesh( result, clothTris ??= ClothTris( tris, cloth, solid ) );
+			foreach ( int vi in new List<int>( moves.Keys ) )
+			{
+				var move = moves[vi];
+				float length = move.Length();
+				if ( length < 1e-6f * Units.Metre ) continue;
+				now.Crossings( result[vi], move / length, LayerOver, layerHits );
+				foreach ( var (_, _, t) in layerHits )
+				{
+					int a = clothTris[t * 3], b = clothTris[t * 3 + 1], c = clothTris[t * 3 + 2];
+					if ( a == vi || b == vi || c == vi ) continue;
+					foreach ( int o in new[] { a, b, c } )
+						if ( !moves.TryGetValue( o, out var have ) || have.LengthSquared() < move.LengthSquared() ) moves[o] = move;
+				}
+			}
+			foreach ( var (vi, move) in moves ) result[vi] += move;
+		}
+
+		// Split vertices of one spot go together.
+		var weld = MeshTools.Weld( rest, out int n );
+		var sum = new Vec3[n];
+		var many = new int[n];
+		for ( int v = 0; v < rest.Length; v++ ) { sum[weld[v]] += result[v] - rest[v]; many[weld[v]]++; }
+		for ( int v = 0; v < rest.Length; v++ ) result[v] = rest[v] + sum[weld[v]] / many[weld[v]];
+		return result;
+	}
+
+	static int[] ClothTris( int[] tris, bool[] cloth, bool[] solid )
+	{
+		var list = new List<int>();
+		for ( int t = 0; t + 2 < tris.Length; t += 3 )
+			if ( cloth[tris[t]] && cloth[tris[t + 1]] && cloth[tris[t + 2]] && (solid == null || !(solid[tris[t]] || solid[tris[t + 1]] || solid[tris[t + 2]])) )
+				list.AddRange( new[] { tris[t], tris[t + 1], tris[t + 2] } );
+		return list.ToArray();
+	}
+
+	// The part of the body each stock bone is in: 0 the trunk, then each limb from its root down, the head last (HeadPart).
+	static int[] Parts( SkinnedGeometry stock )
+	{
+		string[] roots = { "arm_upper_L", "arm_upper_R", "leg_upper_L", "leg_upper_R", "head" };
+		var part = new int[stock.BoneNames.Length];
+		for ( int b = 0; b < part.Length; b++ )
+			for ( int p = b; p >= 0; p = stock.BoneParents[p] )
+			{
+				int k = Array.IndexOf( roots, stock.BoneNames[p] );
+				if ( k >= 0 ) { part[b] = k + 1; break; }
+			}
+		return part;
+	}
+
+	const float ArmsHang = 85f * MathF.PI / 180f;   // how far under level the arms hang in the pose cloth is held out over
+	const float CoverClear = 0.003f * Units.Metre;  // what cloth keeps over the skin of its own part there
+	const float CoverDeep = 0.03f * Units.Metre;   // cloth further into the skin than this in the pose is a misfit, not skin coming through
+	const int CoverPasses = 4;
+	const float LayerOver = 0.03f * Units.Metre;    // cloth this far over cloth that goes out is a layer over it
+	const float OwnSkin = 0.2f;                     // skin is cloth's own when the cloth goes at least this much with that part of the body
+	static readonly float[][] CoverSamples =
+	{
+		new[] { 1 / 3f, 1 / 3f, 1 / 3f }, new[] { 0.5f, 0.5f, 0f }, new[] { 0f, 0.5f, 0.5f }, new[] { 0.5f, 0f, 0.5f },
+		new[] { 1f, 0f, 0f }, new[] { 0f, 1f, 0f }, new[] { 0f, 0f, 1f },
+	};
+
+	const int HeadPart = 5;
+	const float Between = 0.04f * Units.Metre;   // cloth whose skin is this much nearer than another part's lies between the two
+	const float OwnPart = 0.05f;                 // and the garment counts as splitting it between them when it gives each at least this share
+
 	const float SkinNear = 0.03f * Units.Metre;   // cloth this close to the skin goes back with it
 	const float SkinFar = 0.06f * Units.Metre;    // and this far off, by its own weights
 	const int SmoothPasses = 3;
@@ -1704,6 +2036,8 @@ public sealed class Neck
 	const float Beside = 0.3f, Behind = 0.7f;    // and where the head begins from 107 to 134 degrees round on, past the ears (minus the cosines)
 	const float MaxDrop = 0.05f * Units.Metre;  // cloth is lowered by no more than this down the body's neck in its rest pose
 	const float MinClear = 0.003f * Units.Metre; // a collar taken in round the neck stays this far off it
+	const float SkullRoom = 0.015f * Units.Metre; // behind, the neck is shared out up to this far under where the head begins: room for the head to tip back
+	const float MinSlim = 0.4f;                  // a neck thinner than this share of the stock one takes in its collar no further
 	const float MaxMove = 0.15f * Units.Metre;  // and moved no further than this in the stock pose, where a neck can be twice as long (the citizen's for Akira's)
 
 	readonly Repose pose;
@@ -1711,14 +2045,16 @@ public sealed class Neck
 	readonly float reach, core;             // Reach and Core for the stock neck's thickness
 	readonly float weight;                  // how much of the way down to its share cloth is lowered
 	readonly float shorter;                 // how much shorter this neck is than the stock one, 0..1 (see Borrowed and Short)
+	readonly float slim;                    // how thick this neck is for the stock one's, up to 1
 	readonly float collar, chin, nape, skull;    // heights on the stock body; skull NaN when it wasn't found
 	readonly float restCollar, restChin, restSkull;  // heights on the body in its rest pose, along its up
 	readonly Vec3 up;
 
-	Neck( Repose pose, float axisX, float axisY, float scale, float weight, float shorter, float collar, float chin, float nape, float skull, float restCollar, float restChin, float restSkull, Vec3 up )
+	Neck( Repose pose, float axisX, float axisY, float scale, float weight, float shorter, float slim, float collar, float chin, float nape, float skull, float restCollar, float restChin, float restSkull, Vec3 up )
 	{
 		this.weight = weight;
 		this.shorter = shorter;
+		this.slim = slim;
 		this.skull = skull;
 		this.restSkull = restSkull;
 		this.pose = pose;
@@ -1770,7 +2106,7 @@ public sealed class Neck
 		float shorter = Math.Clamp( (Borrowed - (restChin - restCollar) / (stockChin - collar)) / (Borrowed - Short), 0f, 1f );
 		float weight = borrowed ? shorter : 1f;
 		if ( weight <= 0 ) return null;
-		if ( float.IsNaN( stockSkull ) || float.IsNaN( restSkull ) || stockSkull - collar < 0.02f * Units.Metre || restSkull - restCollar < 0.02f * Units.Metre ) stockSkull = restSkull = float.NaN;
+		if ( float.IsNaN( stockSkull ) || float.IsNaN( restSkull ) || stockSkull - SkullRoom - collar < 0.02f * Units.Metre || restSkull - SkullRoom - restCollar < 0.02f * Units.Metre ) stockSkull = restSkull = float.NaN;
 
 		// How thick the stock neck is: from its axis out to its skin halfway up it, where it is
 		// thinnest. Sideways a ray can slip out through the seam between a head and a body made
@@ -1786,7 +2122,21 @@ public sealed class Neck
 			if ( hits.Count > 0 ) thick = MathF.Min( thick, hits[0].T );
 		}
 		float scale = thick < float.MaxValue ? MathF.Max( 1f, thick / Thick ) : 1f;
-		return new Neck( pose, axisX, axisY, scale, weight, shorter, collar, stockChin, napeHeight, stockSkull, restCollar, restChin, restSkull, up );
+
+		// And this body's, the same way in the stock pose: a collar stands off a thinner neck by less.
+		float slim = 1f;
+		if ( pose.SkinMesh != null && thick < float.MaxValue )
+		{
+			float theirs = float.MaxValue;
+			for ( int k = 0; k < 8; k++ )
+			{
+				float angle = k * MathF.PI / 4;
+				pose.SkinMesh.Crossings( middle, new Vec3( MathF.Cos( angle ), MathF.Sin( angle ), 0 ), 0.5f * Units.Metre, hits );
+				if ( hits.Count > 0 && hits[0].Leaving ) theirs = MathF.Min( theirs, hits[0].T );
+			}
+			if ( theirs < float.MaxValue ) slim = Math.Clamp( theirs / thick, MinSlim, 1f );
+		}
+		return new Neck( pose, axisX, axisY, scale, weight, shorter, slim, collar, stockChin, napeHeight, stockSkull, restCollar, restChin, restSkull, up );
 	}
 
 	/// <summary>How much a garment point whose closest stock skin is <paramref name="skin"/> is over the neck. 0..1.</summary>
@@ -1816,6 +2166,29 @@ public sealed class Neck
 		return weight * across * top * bottom;
 	}
 
+	/// <summary>
+	/// How much of the head's say in each garment vertex is the garment's own rather than the
+	/// skin's under it (see <see cref="Repose.SkinUnder"/>), and which of the stock bones are the
+	/// head. A collar over a short neck goes to the neck's skin, which this body may give to its
+	/// neck bone right up to the skull where the stock body gives it to the head: Aurora's skin
+	/// gave the puffer jacket's collar a fifth of the head, the jacket gives it two thirds. Turned
+	/// with the neck, the collar stayed put when she looked up, and the back of her head came
+	/// down over it: its top went from 3 mm under where her skull begins to 14 mm over it with
+	/// her head tipped back 35 degrees. Null on a neck as long as the stock one.
+	/// </summary>
+	/// <param name="made">The garment as made, on the stock body.</param>
+	public (float[] Share, bool[] Bones) OwnHead( Vec3[] made, SkinnedGeometry stock )
+	{
+		int head = Array.IndexOf( stock.BoneNames, "head" );
+		if ( shorter <= 0 || head < 0 ) return default;
+		var bones = new bool[stock.BoneNames.Length];
+		for ( int b = 0; b < bones.Length; b++ )
+			for ( int p = b; p >= 0 && !bones[b]; p = stock.BoneParents[p] ) bones[b] = p == head;
+		var share = new float[made.Length];
+		for ( int v = 0; v < made.Length; v++ ) share[v] = shorter * Zone( made[v] );
+		return (share, bones);
+	}
+
 	// How far round from the front the stock skin is: 0 under the chin, 1 from FaceSide on.
 	float Round( Vec3 skin )
 	{
@@ -1841,7 +2214,7 @@ public sealed class Neck
 		float target = restCollar + (stockPoint.Z - collar) / (chin - collar) * (restChin - restCollar);
 		if ( !float.IsNaN( skull ) )
 		{
-			float behind = restCollar + (stockPoint.Z - collar) / (skull - collar) * (restSkull - restCollar);
+			float behind = restCollar + (stockPoint.Z - collar) / (skull - SkullRoom - collar) * (restSkull - SkullRoom - restCollar);
 			if ( behind < target ) target += (behind - target) * Round( skin ) * shorter;
 		}
 		var rise = new Vec3( 0, 0, 1 );
@@ -1864,6 +2237,9 @@ public sealed class Neck
 		return Math.Clamp( drop, -MaxMove, 0f );
 	}
 
+	/// <summary>How much of its gap to the stock skin <paramref name="skin"/> cloth keeps over this neck: less over a thinner one.</summary>
+	public float Clearance( Vec3 skin ) => 1 + (slim - 1) * shorter * ZoneIn( skin );
+
 	/// <summary>
 	/// How far to move a point in the stock pose in towards the neck for it to stand no further
 	/// off this body's neck than <paramref name="clearance"/>, the cloth's gap to the stock skin.
@@ -1882,7 +2258,7 @@ public sealed class Neck
 		body.Crossings( new Vec3( axisX, axisY, fitted.Z ), away, r, hits );
 		// The neck is what the ray leaves first from the axis; from outside it, it is something else.
 		if ( hits.Count == 0 || !hits[0].Leaving ) return Vec3.Zero;
-		float want = hits[0].T + MathF.Max( clearance, MinClear );
+		float want = hits[0].T + MathF.Max( clearance * (1 + (slim - 1) * shorter), MinClear );
 		return want < r ? away * ((want - r) * shorter) : Vec3.Zero;
 	}
 }

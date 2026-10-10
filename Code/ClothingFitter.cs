@@ -949,9 +949,12 @@ public static class ClothingFitter
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
 		// the body's, each bit of cloth the way the skin under it came in.
 		var (backBones, backWeights) = Repose.SkinUnder( positions, garment.Indices, target.Mesh, target.BodyBones, target.BodyWeights, bones, garment.BoneWeight, solid, target.Pivots, fittedAsCloth );
+		var ownHead = target.Pose.Neck?.OwnHead( garment.Positions, reference.Geo ) ?? default;
+		var (animBones, animWeights) = Repose.ForAnimation( positions, fittedAsCloth, solid, target.Mesh, target.BodyBones, target.BodyWeights, backBones, backWeights, bones, garment.BoneWeight, reference.Geo, ownHead );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
+		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
@@ -1059,8 +1062,9 @@ public static class ClothingFitter
 
 		// The cloth is worn with the skin's weights under it (SkinUnder): the body then moves
 		// it exactly as it moves that skin, and neither comes through the other when a knee
-		// or an elbow bends. By its own weights, cloth made for a body with twist and helper
-		// bones is turned by bones this body never animates. Those weights may name stock
+		// or an elbow bends. Between two parts of the body (an armpit) it is split between
+		// them as the garment splits it (ForAnimation). By its own weights, cloth made for a
+		// body with twist and helper bones is turned by bones this body never animates. Those weights may name stock
 		// bones the garment never had, which join its skeleton here. A vertex on a bone of
 		// the garment's own (a hat's jiggle bone) keeps its own weights.
 		int OutBone( int s )
@@ -1105,9 +1109,9 @@ public static class ClothingFitter
 				}
 				else
 				{
-					int sb = backBones[v * 4 + j];
+					int sb = animBones[v * 4 + j];
 					wornBones[v * 4 + j] = sb >= 0 && target.Pose.BodyHas[sb] ? OutBone( sb ) : -1;
-					wornWeights[v * 4 + j] = sb >= 0 ? backWeights[v * 4 + j] : 0;
+					wornWeights[v * 4 + j] = sb >= 0 ? animWeights[v * 4 + j] : 0;
 				}
 			}
 		}
