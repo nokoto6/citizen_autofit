@@ -169,6 +169,9 @@ public static class ClothingFitter
 	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under, without the outer layers of their fur
 	static readonly Dictionary<string, Layer> layers = new();   // fitted garments in the body's rest pose, for others to be laid over
 	static readonly Dictionary<string, bool> proportioned = new();   // per body, whether it is built with proportions of its own
+	static readonly Dictionary<string, Task<MadeFor.Sitting[]>> sittings = new();   // per garment model, how it sits as made on each stock body
+	static readonly string[] KindNames = { "citizen", "human male", "human female" };
+	static readonly HashSet<string> toldOff = new();   // garment models said in the log to have been made on another body than their field says
 	static int generation;
 
 	// Models taken out of use, held on to for a while. A model let go of right away can be
@@ -202,6 +205,7 @@ public static class ClothingFitter
 		shapes.Clear();
 		layers.Clear();
 		proportioned.Clear();
+		sittings.Clear();
 		atlasCache.Clear();
 		pending.Clear();
 		failed.Clear();
@@ -449,6 +453,62 @@ public static class ClothingFitter
 	{
 		if ( model.Bones.GetBone( from ) is null || model.Bones.GetBone( to ) is null ) return 0;
 		return model.GetBoneTransform( from ).Position.Distance( model.GetBoneTransform( to ).Position );
+	}
+
+	/// <summary>
+	/// Which stock body a garment's model was made on. The clothing resource says it by the
+	/// field the model is in (<paramref name="field"/>), and a workshop item can have that wrong:
+	/// a vest modelled on the human in the citizen's field, a hat made on the human male in the
+	/// female's. Fitted from the wrong body, the garment comes out offset and sized for a body it
+	/// was never on. The model's shape and skeleton tell, see <see cref="MadeFor.Pick"/>; the field
+	/// stands unless they clearly say otherwise. Worked out on a worker thread the first time a
+	/// model is asked about. Call it from the main thread.
+	/// </summary>
+	public static async Task<BodyKind> MadeForAsync( string garmentPath, BodyKind field )
+	{
+		if ( string.IsNullOrEmpty( garmentPath ) ) return field;
+		string path = Normalize( garmentPath );
+		if ( !sittings.TryGetValue( path, out var job ) || !Usable( job ) )
+			sittings[path] = job = Sit( path );
+
+		MadeFor.Sitting[] on = null;
+		try
+		{
+			on = await job;
+		}
+		catch ( TaskCanceledException )
+		{
+		}
+		catch ( Exception e )
+		{
+			await GameTask.MainThread();
+			if ( toldOff.Add( path ) ) Log.Warning( $"ClothingFitter: couldn't tell what {NameOf( path )} was made on, going by its field. {Describe( e )}" );
+		}
+		await GameTask.MainThread();
+		if ( on is null ) return field;
+
+		var kind = (BodyKind)MadeFor.Pick( on, (int)field );
+		if ( kind != field && toldOff.Add( $"{path}|{field}" ) )
+			Log.Info( $"ClothingFitter: {NameOf( path )} is in the {KindNames[(int)field]}'s field but was made on the {KindNames[(int)kind]} ({MadeFor.Describe( on, KindNames )})" );
+		return kind;
+
+		// How it sits as made on each of the stock bodies, null if one of them isn't there.
+		static async Task<MadeFor.Sitting[]> Sit( string path )
+		{
+			var on = new Reference[references.Length];
+			for ( int k = 0; k < on.Length; k++ )
+			{
+				on[k] = await ReferenceAsync( (BodyKind)k );
+				await GameTask.MainThread();
+				if ( on[k] is null ) return null;
+			}
+			var file = ReadCompiled( path );
+			return await OnWorker( () =>
+			{
+				var garment = CompiledModel.Read( file );
+				return on.Select( reference => MadeFor.Measure( garment, reference.Geo, reference.Mesh ) ).ToArray();
+			} );
+		}
 	}
 
 	/// <summary>
