@@ -116,6 +116,10 @@ workshop player models, each with a Fit Dresser.
   it: the fitted model gets the original's bodies and joints, its swinging bones placed where
   their vertices went. Ones run by an animation graph, which a model built at runtime can't
   carry, get the original's graph borrowed.
+- **Chains over clothes.** A garment of links or beads and what hangs from them keeps the room
+  it was made with over the skin, a pendant stays on the piece it hangs from, and once the rest
+  of the outfit is fitted it is laid over the garments it was made to go over (`Layers`), so a
+  chain stays on top of a shirt that stands out over a bigger bust.
 - **Any compiled clothing model that is mounted**, including models with several meshes and
   materials and with compressed vertex and index buffers. The fitter reads `.vmdl_c` files
   itself, because the engine doesn't hand out skin weights.

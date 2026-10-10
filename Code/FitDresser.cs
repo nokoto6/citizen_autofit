@@ -600,13 +600,18 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 				models[i] = (entry, same, hat.MadeFor);
 		}
 
+		// What else is worn, for a garment that hangs on whatever is under it (a chain) to be laid
+		// over it. Hair isn't something to lie on, and it lies over a chain itself.
+		var others = models.Where( x => !IsHair( x.Entry.Clothing ) ).Select( x => (x.Entry, Worn: (x.StockPath, x.MadeFor, LosesSkin( x.StockPath, x.MadeFor, bodyKind ))) ).ToList();
+
 		// Ask for everything up front so the garments are fitted side by side.
 		var wearing = new List<(Clothing Item, bool WithoutSkin, Task<bool> Fitted)>();
 		foreach ( var (entry, stockPath, madeFor) in models )
 		{
 			bool withoutSkin = LosesSkin( stockPath, madeFor, bodyKind );
 			string under = IsHair( entry.Clothing ) && madeFor == hat.MadeFor ? hat.StockPath : null;
-			wearing.Add( (entry.Clothing, withoutSkin, WearAsync( entry, stockPath, madeFor, withoutSkin, skin, eyes, Overtaken, under )) );
+			var over = IsHair( entry.Clothing ) ? null : others.Where( x => x.Entry != entry ).Select( x => x.Worn ).ToList();
+			wearing.Add( (entry.Clothing, withoutSkin, WearAsync( entry, stockPath, madeFor, withoutSkin, skin, eyes, Overtaken, under, over )) );
 		}
 
 		int fittedCount = 0, stockCount = 0;
@@ -1098,7 +1103,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 	// Puts one garment on. It appears as soon as its roughest LOD has been fitted and gets
 	// swapped for a more detailed model each time another LOD is ready. True if it was fitted.
-	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, bool withoutSkin, Material skin, Material eyes, Func<bool> overtaken, string under = null )
+	async Task<bool> WearAsync( ClothingContainer.ClothingEntry entry, string stockPath, ClothingFitter.BodyKind madeFor, bool withoutSkin, Material skin, Material eyes, Func<bool> overtaken, string under = null, IReadOnlyList<(string Path, ClothingFitter.BodyKind MadeFor, bool WithoutSkin)> over = null )
 	{
 		var item = entry.Clothing;
 		SkinnedModelRenderer renderer = null;
@@ -1148,7 +1153,7 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			ToonRenderer( renderer );
 		}
 
-		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under ) : null;
+		Model fitted = FitAtRuntime ? await ClothingFitter.FitAsync( BodyTarget.Model, stockPath, madeFor, Show, withoutSkin, under, over ) : null;
 		if ( overtaken() )
 			return false;
 
