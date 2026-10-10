@@ -543,6 +543,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			var humanSkin = worn.Select( x => x.Clothing ).FirstOrDefault( x => x.HasHumanSkin && SamePath( x.HumanSkinModel, BodyTarget.Model.ResourcePath ) );
 			BodyTarget.BodyGroups = humanSkin?.HumanSkinBodyGroups ?? BodyTarget.Model.Parts.DefaultMask;
 			BodyTarget.MaterialGroup = humanSkin?.HumanSkinMaterialGroup ?? "default";
+
+			// As the stock dresser does, a human is never naked: white pants unless the legs are
+			// hidden or other underwear is worn, and on a woman a white bra unless the chest is
+			// hidden or she wears one. Without them the humans stood in bare skin.
+			bool female = humanSkin?.HumanSkinTags?.Has( "female" ) == true
+				|| (BodyTarget.Model.ResourcePath ?? "").Contains( "female", StringComparison.OrdinalIgnoreCase );
+			var hidden = worn.Select( x => x.Clothing.HideBody ).DefaultIfEmpty().Aggregate( ( a, b ) => a | b );
+			if ( !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Legs ) && !worn.Any( x => x.Clothing.Category is Sandbox.Clothing.ClothingCategory.Underwear or Sandbox.Clothing.ClothingCategory.Underpants ) )
+				WearByDefault( worn, DefaultPants );
+			if ( female && !hidden.HasFlag( Sandbox.Clothing.BodyGroups.Chest ) && !worn.Any( x => x.Clothing.Category == Sandbox.Clothing.ClothingCategory.Bra ) )
+				WearByDefault( worn, DefaultBra );
 		}
 
 		BodyTarget.SetMaterialOverride( skin, "skin" );
@@ -1293,6 +1304,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		var part = BodyTarget.Model?.Parts?.All?.FirstOrDefault( x => x.Name.Equals( name, StringComparison.OrdinalIgnoreCase ) );
 		if ( part?.Choices is { Count: > 1 } choices )
 			BodyTarget.SetBodyGroup( part.Name, choices.Count - 1 );
+	}
+
+	// The stock dresser's default underwear for humans (ClothingContainer.EnsureHumanUnderwear).
+	const string DefaultPants = "models/citizen_clothes/underwear/y_front_pants/y_front_pants_white.clothing";
+	const string DefaultBra = "models/citizen_clothes/underwear/bra/bra_white.clothing";
+
+	static void WearByDefault( List<ClothingContainer.ClothingEntry> worn, string path )
+	{
+		var item = ResourceLibrary.Get<Clothing>( path );
+		if ( item is null || worn.Any( x => !(x.Clothing?.CanBeWornWith( item ) ?? true) ) ) return;
+		worn.Add( new ClothingContainer.ClothingEntry( item ) );
 	}
 
 	static bool IsHumanBody( Model model ) => (model?.ResourcePath ?? "").Replace( '\\', '/' ).StartsWith( "models/citizen_human/", StringComparison.OrdinalIgnoreCase );
