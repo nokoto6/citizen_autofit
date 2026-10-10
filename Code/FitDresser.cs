@@ -589,6 +589,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 			models.Add( (entry, stockPath, madeFor) );
 		}
 
+		// The field a model is in says which body it was made for, and a workshop item can have
+		// it in the wrong one: a vest modelled on the human in the citizen's field. Fitted from
+		// the wrong body it comes out offset, so the model's own shape has the last word.
+		if ( FitAtRuntime )
+		{
+			var told = models.Select( x => ClothingFitter.MadeForAsync( x.StockPath, x.MadeFor ) ).ToList();
+			for ( int i = 0; i < models.Count; i++ )
+				models[i] = (models[i].Entry, models[i].StockPath, await told[i]);
+			if ( Overtaken() ) return;
+		}
+
 		// Hair goes under the hat, if there is one: fitted so that it doesn't come through it.
 		// The hat's shape is taken in the frame of the stock body it was made for, so the hair
 		// has to be the version made for that body too (under a citizen-only hat on a human, the
@@ -598,8 +609,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		{
 			var (entry, _, madeFor) = models[i];
 			if ( hat.StockPath is null || !IsHair( entry.Clothing ) || madeFor == hat.MadeFor ) continue;
-			if ( VersionFor( entry.Clothing, hat.MadeFor, worn ) is { } same )
-				models[i] = (entry, same, hat.MadeFor);
+			if ( VersionFor( entry.Clothing, hat.MadeFor, worn ) is not { } same ) continue;
+			var sameFor = FitAtRuntime ? await ClothingFitter.MadeForAsync( same, hat.MadeFor ) : hat.MadeFor;
+			if ( Overtaken() ) return;
+			models[i] = (entry, same, sameFor);
 		}
 
 		// What else is worn, for a garment that hangs on whatever is under it (a chain) to be laid
