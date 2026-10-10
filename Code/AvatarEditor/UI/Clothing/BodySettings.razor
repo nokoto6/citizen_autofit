@@ -99,6 +99,12 @@
                 <SliderControl class="simple" Value:bind="@Manager.JawStrength" Min="@(0f)" Max="@(1f)" Step="@(0.01f)" />
             </Content>
         </FormRow>
+
+        <FormRow Label="Eye spacing">
+            <Content>
+                <SliderControl class="simple" Value:bind="@Manager.EyeSpacing" Min="@(-1f)" Max="@(1f)" Step="@(0.01f)" />
+            </Content>
+        </FormRow>
     }
 
     @* The stock editor's eye and body sliders, on the citizen as there: the eye shader and the deform volumes are its own. *@

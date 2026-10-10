@@ -76,7 +76,18 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	public float JawStrength { get; set; } = 0f;
 
 	public const string JawMorph = "jaw_strong";
-	float jawSet = -1f;
+
+	/// <summary>
+	/// How far apart the eyes are set, 0 as built, 1 further apart and -1 closer together: the
+	/// body's own <see cref="EyesApartMorph"/> and <see cref="EyesCloserMorph"/> morphs, which Aurora
+	/// and Akira have. Bodies without them ignore this.
+	/// </summary>
+	[Property, Range( -1, 1 )]
+	public float EyeSpacing { get; set; } = 0f;
+
+	public const string EyesApartMorph = "eyes_apart", EyesCloserMorph = "eyes_closer";
+
+	float jawSet = -1f, eyesSet = float.NaN;
 	SceneModel jawOn;
 
 	/// <summary>
@@ -274,20 +285,29 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 	{
 		Live.Add( this );
 		Stretch();
-		ApplyJaw();
+		ApplyFaceShape();
 	}
 
 	// Set once per change (each set starts a blend from the animation's value), and again when
 	// the body's scene model is a new one.
-	void ApplyJaw()
+	void ApplyFaceShape()
 	{
 		var body = BodyTarget;
 		if ( !body.IsValid() || body.SceneModel is not { } so || !so.IsValid() ) return;
-		if ( jawSet == JawStrength && jawOn == so ) return;
+		if ( jawSet == JawStrength && eyesSet == EyeSpacing && jawOn == so ) return;
 		jawSet = JawStrength;
+		eyesSet = EyeSpacing;
 		jawOn = so;
-		if ( body.Model?.Morphs.Names.Contains( JawMorph ) == true )
+		var names = body.Model?.Morphs.Names;
+		if ( names is null ) return;
+		if ( names.Contains( JawMorph ) )
 			body.Morphs.Set( JawMorph, JawStrength );
+		// One morph each way: the slider's side picks which, the other stays at 0.
+		float eyes = EyeSpacing.Clamp( -1f, 1f );
+		if ( names.Contains( EyesApartMorph ) )
+			body.Morphs.Set( EyesApartMorph, MathF.Max( eyes, 0f ) );
+		if ( names.Contains( EyesCloserMorph ) )
+			body.Morphs.Set( EyesCloserMorph, MathF.Max( -eyes, 0f ) );
 	}
 
 	protected override void OnDestroy()
