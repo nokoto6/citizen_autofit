@@ -365,9 +365,12 @@ public static class ClothingFitter
 			if ( started != generation ) return null;
 			var reading = System.Diagnostics.Stopwatch.StartNew();
 			var atlases = ReadAtlases( levels );
-			// A garment with morphs (a beard) takes them off the body's face, see FaceMorphs.
+			// A garment with morphs (a beard) takes them off the body's face, see FaceMorphs. On a
+			// body whose face is shaped by morphs (a stronger jaw, the eyes further apart), so does
+			// any other garment the skin under it moves: a mask, glasses, a gaiter.
 			bool morphed = levels.Any( x => x.Morphs.Any( set => set.Morphs.Count > 0 ) );
-			var bodyAtlases = morphed ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
+			bool shaped = body.Geo.Morphs.Any( set => set.Morphs.Any( m => IsFaceShape( m.Name ) ) );
+			var bodyAtlases = morphed || shaped ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
 			double readingMs = reading.Elapsed.TotalMilliseconds;
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
@@ -379,12 +382,14 @@ public static class ClothingFitter
 
 			// A garment with morph targets (a beard) goes on once, finished. Every model swapped
 			// under a renderer that composites morphs is one more chance to hand the GPU a morph
-			// texture that has just been freed.
+			// texture that has just been freed. One that only takes the face's shape morphs off
+			// the skin is shown rough first, without them; the finished model has them.
 			bool preview = !morphed;
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases, simulated ) );
+				var faceAtlases = preview && i > 0 ? null : bodyAtlases;
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, faceAtlases, simulated ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
 				if ( i == 0 ) shapes[key] = (result.StockFit, level.SurfaceIndices());
@@ -882,19 +887,26 @@ public static class ClothingFitter
 		return atlases;
 	}
 
+	static bool IsFaceShape( string name ) => FitDresser.FaceShapeMorphs.Contains( name, StringComparer.OrdinalIgnoreCase );
+
 	/// <summary>
 	/// A garment with morphs (a beard, a mask, a cigar) takes the body's face morphs off the
 	/// skin under it, see <see cref="GarmentMorphs.TakeFromSkin"/>. Positions are the garment's
-	/// in the body's rest pose, the same space as the body's own morphs.
+	/// in the body's rest pose, the same space as the body's own morphs. A garment without
+	/// morphs of its own takes only the ones that shape the face for good (<see cref="FitDresser.FaceShapeMorphs"/>):
+	/// a mask that the jaw widens under has to widen with it, but one made without morphs
+	/// shouldn't start moving with the mouth.
 	/// </summary>
 	/// <param name="asMade">The garment's own morphs as made, to tell what they turn over on purpose.</param>
-	static void FaceMorphs( Vec3[] positions, SkinnedGeometry garment, bool[] solid, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade )
+	/// <param name="bent">Per vertex, whether it is on a solid object the fit bent to the body, see <see cref="GarmentMorphs.BentSolids"/>.</param>
+	static void FaceMorphs( Vec3[] positions, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade )
 	{
+		Func<string, bool> wanted = morphs.Count > 0 ? null : IsFaceShape;
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
 		{
 			if ( set.AtlasPath == null || !bodyAtlases.TryGetValue( set.AtlasPath, out var atlas ) ) continue;
-			foreach ( var (name, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height ) )
+			foreach ( var (name, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height, wanted ) )
 			{
 				if ( !skin.TryGetValue( name, out var morph ) )
 					skin[name] = morph = (new Vec3[body.Positions.Length], new Vec3[body.Positions.Length]);
@@ -909,7 +921,7 @@ public static class ClothingFitter
 
 		var meant = new Dictionary<string, bool[]>();
 		foreach ( var (name, move) in asMade ) meant[name] = GarmentMorphs.TurnedOver( garment.Positions, garment.Indices, move );
-		GarmentMorphs.TakeFromSkin( positions, garment.Indices, solid, body.Positions, body.Indices, skin, morphs, Seen, meant );
+		GarmentMorphs.TakeFromSkin( positions, garment.Indices, solid, body.Positions, body.Indices, skin, morphs, Seen, meant, IsFaceShape, bent );
 	}
 
 	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
@@ -991,8 +1003,9 @@ public static class ClothingFitter
 				Shading.TurnInPlace( frames, move );
 				Shading.TurnInPlace( frames, turn );
 			}
-			if ( body != null && bodyAtlases != null ) FaceMorphs( positions, garment, solid, body, bodyAtlases, morphs, asMade );
 		}
+		if ( body != null && bodyAtlases != null )
+			FaceMorphs( positions, garment, solid, GarmentMorphs.BentSolids( garment.Positions, stockFit, garment.Indices, solid ), body, bodyAtlases, morphs, asMade );
 
 		// The garment's bones in the body's rest pose.
 		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][] };

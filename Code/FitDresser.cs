@@ -87,8 +87,17 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 
 	public const string EyesApartMorph = "eyes_apart", EyesCloserMorph = "eyes_closer";
 
+	/// <summary>
+	/// The body's morphs that shape the face for good, the ones the sliders above set. A garment
+	/// fitted at runtime takes them off the skin under it (see <see cref="ClothingFitter"/>), and
+	/// is given the same weights as the body.
+	/// </summary>
+	public static readonly string[] FaceShapeMorphs = [JawMorph, EyesApartMorph, EyesCloserMorph];
+
 	float jawSet = -1f, eyesSet = float.NaN;
-	SceneModel jawOn;
+
+	// Per renderer, the scene model and the model the face shape was last set on.
+	readonly Dictionary<SkinnedModelRenderer, (SceneModel On, Model Model)> faceShaped = new();
 
 	/// <summary>
 	/// Skin tone, same as the stock Dresser's tint: 0 to 1 across the skin shader's range of
@@ -173,7 +182,10 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		{
 			if ( !child.Tags.Has( ClothingTag ) ) continue;
 			foreach ( var renderer in child.Components.GetAll<SkinnedModelRenderer>() )
+			{
 				ClothingFitter.Retire( renderer.Model );
+				faceShaped.Remove( renderer );
+			}
 			child.Destroy();
 		}
 
@@ -288,26 +300,47 @@ public sealed partial class FitDresser : Component, Component.ExecuteInEditor
 		ApplyFaceShape();
 	}
 
-	// Set once per change (each set starts a blend from the animation's value), and again when
-	// the body's scene model is a new one.
+	// Set once per change (each set starts a blend from the animation's value), and again on a
+	// renderer whose scene model or model is a new one. The body and every garment on it get the
+	// same weights: a garment fitted to this body carries the face's shape morphs, taken off the
+	// skin under it, and a mask whose jaw stays put while the body's widens has the skin come
+	// through it. The weights are set on each garment rather than left to the bone merge.
 	void ApplyFaceShape()
 	{
 		var body = BodyTarget;
-		if ( !body.IsValid() || body.SceneModel is not { } so || !so.IsValid() ) return;
-		if ( jawSet == JawStrength && eyesSet == EyeSpacing && jawOn == so ) return;
-		jawSet = JawStrength;
-		eyesSet = EyeSpacing;
-		jawOn = so;
-		var names = body.Model?.Morphs.Names;
+		if ( !body.IsValid() ) return;
+		if ( jawSet != JawStrength || eyesSet != EyeSpacing )
+		{
+			jawSet = JawStrength;
+			eyesSet = EyeSpacing;
+			faceShaped.Clear();
+		}
+
+		SetFaceShape( body );
+		foreach ( var child in body.GameObject.Children )
+		{
+			if ( !child.Tags.Has( ClothingTag ) ) continue;
+			foreach ( var renderer in child.Components.GetAll<SkinnedModelRenderer>() )
+				SetFaceShape( renderer );
+		}
+	}
+
+	void SetFaceShape( SkinnedModelRenderer renderer )
+	{
+		if ( renderer.SceneModel is not { } so || !so.IsValid() ) return;
+		var model = renderer.Model;
+		if ( faceShaped.TryGetValue( renderer, out var done ) && done.On == so && done.Model == model ) return;
+		faceShaped[renderer] = (so, model);
+		var names = model?.Morphs.Names;
 		if ( names is null ) return;
 		if ( names.Contains( JawMorph ) )
-			body.Morphs.Set( JawMorph, JawStrength );
+			renderer.Morphs.Set( JawMorph, JawStrength );
 		// One morph each way: the slider's side picks which, the other stays at 0.
 		float eyes = EyeSpacing.Clamp( -1f, 1f );
 		if ( names.Contains( EyesApartMorph ) )
-			body.Morphs.Set( EyesApartMorph, MathF.Max( eyes, 0f ) );
+			renderer.Morphs.Set( EyesApartMorph, MathF.Max( eyes, 0f ) );
 		if ( names.Contains( EyesCloserMorph ) )
-			body.Morphs.Set( EyesCloserMorph, MathF.Max( -eyes, 0f ) );
+			renderer.Morphs.Set( EyesCloserMorph, MathF.Max( -eyes, 0f ) );
 	}
 
 	protected override void OnDestroy()
