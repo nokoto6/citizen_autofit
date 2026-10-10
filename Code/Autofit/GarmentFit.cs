@@ -403,6 +403,8 @@ public static class GarmentFit
 		// it, and the bump looks that much bigger.
 		var wanted = MeshTools.Copy( gap0 );
 		var takeIn = new float[n];
+		var roomy = new Vec3[n];
+		Array.Copy( move, roomy, n );
 		if ( givenMove == null ) TakeUpRoom( verts, tris, pts, move, gap0, away, wanted, slimmer, takeIn );
 
 		var fitted = new Vec3[n];
@@ -522,6 +524,22 @@ public static class GarmentFit
 			int key = SolidOf( r );
 			if ( !solids.TryGetValue( key, out var parts ) ) solids[key] = parts = new List<int>();
 			parts.Add( r );
+		}
+
+		// A garment of bits of cloth no bigger than a bead and solid objects (a chain of links with
+		// a pendant) isn't cut to the body: it hangs on it, over whatever is worn under
+		// it, and the room it was made with is room for those clothes. It keeps all of it, and a
+		// bust that grows pushes it out instead of filling that room. Taken in like cloth, the
+		// swag chain's links went from 21 mm off the human's skin to 11-15 on Aurora and into
+		// her shirt, and its pendant, held back by the room, came apart from the block it hangs from.
+		bool heap = false;
+		foreach ( var parts in solids.Values ) heap |= parts.Count > LoosePieces;
+		if ( givenMove == null && !heap && OnlySmallCloth( members, firstOf, boneIndex, boneWeight, pts ) )
+		{
+			Array.Copy( roomy, move, n );
+			Array.Copy( gap0, wanted, n );
+			Array.Clear( takeIn );
+			for ( int i = 0; i < n; i++ ) fitted[i] = pts[i] + move[i];
 		}
 
 		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
@@ -3299,6 +3317,25 @@ public static class GarmentFit
 			if ( key != first ) return false;
 		}
 		return true;
+	}
+
+	// Whether there are pieces that aren't rigid and all of them are no bigger than a bead.
+	static bool OnlySmallCloth( Dictionary<int, List<int>> members, int[] firstOf, int[] boneIndex, float[] boneWeight, Vec3[] pts )
+	{
+		bool small = false;
+		foreach ( var idx in members.Values )
+		{
+			if ( IsRigid( idx, firstOf, boneIndex, boneWeight ) ) continue;
+			Vec3 lo = pts[idx[0]], hi = pts[idx[0]];
+			foreach ( int i in idx )
+			{
+				lo = new Vec3( MathF.Min( lo.X, pts[i].X ), MathF.Min( lo.Y, pts[i].Y ), MathF.Min( lo.Z, pts[i].Z ) );
+				hi = new Vec3( MathF.Max( hi.X, pts[i].X ), MathF.Max( hi.Y, pts[i].Y ), MathF.Max( hi.Z, pts[i].Z ) );
+			}
+			if ( (hi - lo).Length() > BeadSize ) return false;
+			small = true;
+		}
+		return small;
 	}
 
 	static string WeightKey( int vertex, int[] boneIndex, float[] boneWeight )

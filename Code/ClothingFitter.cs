@@ -70,6 +70,14 @@ public static class ClothingFitter
 		public SkinnedGeometry Geo;
 		public BodyKind Kind;
 		public Dictionary<BodyKind, Task<Mapped>> Maps = new();
+		TriMesh rest;
+
+		// The body in its own rest pose, where the garments are worn and laid over each other.
+		// Made on first use; fits run side by side, so locked on the body.
+		public TriMesh Rest()
+		{
+			lock ( this ) return rest ??= new TriMesh( Geo.Positions, Geo.Indices );
+		}
 	}
 
 	// One LOD level of a garment as a worker hands it back, for the main thread to make meshes of.
@@ -93,6 +101,24 @@ public static class ClothingFitter
 		public List<Vec3> OutPositions = new();
 		public List<float[]> OutRotations = new();
 		public List<bool> Own = new();   // a bone of the garment's own (a jiggle bone), which the body doesn't have
+
+		// The garment in the body's rest pose and the triangles it is worn with, for others to be
+		// laid over, and whether it lies over the others itself (see Layers.Loose).
+		public Vec3[] Rest;
+		public int[] Cloth;
+		public bool Loose;
+	}
+
+	// A fitted garment as others are laid over it: its detailed level, worn. How far off the
+	// stock skin it was made is only worked out once something is to be laid over it.
+	sealed class Layer
+	{
+		public Vec3[] Rest, Made;
+		public int[] Tris;
+		public TriMesh Skin;
+		public bool Loose;
+		Task<Layers.Under> under;
+		public Task<Layers.Under> UnderAsync() => under ??= OnWorker( () => new Layers.Under { Mesh = new TriMesh( Rest, Tris ), Depth = Layers.Depth( Made, Skin ) } );
 	}
 
 	// One draw call's worth of a fitted garment: what goes into one mesh.
@@ -141,6 +167,7 @@ public static class ClothingFitter
 	static readonly HashSet<string> failed = new();
 	static readonly Dictionary<string, bool> skinned = new();   // per garment, whether it draws part of itself with the body's skin
 	static readonly Dictionary<string, (Vec3[] Positions, int[] Indices)> shapes = new();   // fitted garments in the stock pose, for others to be fitted under, without the outer layers of their fur
+	static readonly Dictionary<string, Layer> layers = new();   // fitted garments in the body's rest pose, for others to be laid over
 	static readonly Dictionary<string, bool> proportioned = new();   // per body, whether it is built with proportions of its own
 	static int generation;
 
@@ -173,6 +200,7 @@ public static class ClothingFitter
 		bodies.Clear();
 		fitted.Clear();
 		shapes.Clear();
+		layers.Clear();
 		proportioned.Clear();
 		atlasCache.Clear();
 		pending.Clear();
@@ -203,11 +231,126 @@ public static class ClothingFitter
 	/// Another garment this one is worn under: hair under a hat. The hair is fitted so that it
 	/// doesn't come through the hat, on any body, the stock one included.
 	/// </param>
-	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null, bool withoutSkin = false, string under = null )
+	/// <param name="over">
+	/// The other garments worn with this one, each with the stock body it was made for and whether
+	/// it is worn without its copy of the skin. A garment that hangs on whatever is under it (a
+	/// chain, see <see cref="Layers.Loose"/>) is laid over the ones it was made to go over. Any
+	/// other garment ignores them. Not on the stock body the garment was made for, where it is
+	/// worn as made.
+	/// </param>
+	public static Task<Model> FitAsync( Model body, string garmentPath, BodyKind madeFor = BodyKind.Citizen, Action<Model> onRough = null, bool withoutSkin = false, string under = null, IReadOnlyList<(string Path, BodyKind MadeFor, bool WithoutSkin)> over = null )
 	{
 		if ( body is null || string.IsNullOrEmpty( garmentPath ) )
 			return Task.FromResult<Model>( null );
-		return FitAsync( Normalize( body.ResourcePath ), garmentPath, madeFor, onRough, withoutSkin, under );
+		string bodyPath = Normalize( body.ResourcePath );
+		if ( over is { Count: > 0 } && !(bodyPath == ReferencePaths[(int)madeFor] && under == null) )
+			return OverAsync( bodyPath, garmentPath, madeFor, onRough, withoutSkin, under, over );
+		return FitAsync( bodyPath, garmentPath, madeFor, onRough, withoutSkin, under );
+	}
+
+	// The garment fitted on its own, then, if it hangs on what is under it, fitted again laid
+	// over the others. Worn as fitted on its own meanwhile.
+	static Task<Model> OverAsync( string bodyPath, string garmentPath, BodyKind madeFor, Action<Model> onRough, bool withoutSkin, string under, IReadOnlyList<(string Path, BodyKind MadeFor, bool WithoutSkin)> over )
+	{
+		string alone = Key( bodyPath, garmentPath, withoutSkin, under );
+		string key = alone + "|over " + string.Join( ";", over.Select( x => $"{Normalize( x.Path )}{(x.WithoutSkin ? " no skin" : "")}" ).OrderBy( x => x, StringComparer.Ordinal ) );
+		if ( fitted.TryGetValue( key, out var cached ) && cached.IsValid() )
+			return Task.FromResult( cached );
+		if ( failed.Contains( key ) )
+			return Task.FromResult<Model>( null );
+
+		if ( !pending.TryGetValue( key, out var job ) || job.Task.IsCompleted )
+		{
+			pending[key] = job = new Job();
+			job.Task = Over( job );
+		}
+		if ( onRough != null && !job.Task.IsCompleted )
+		{
+			job.Watching.Add( onRough );
+			if ( job.Rough.IsValid() ) onRough( job.Rough );
+		}
+		return job.Task;
+
+		async Task<Model> Over( Job job )
+		{
+			int started = generation;
+			Model own = null;
+			try
+			{
+				own = await FitAsync( bodyPath, garmentPath, madeFor, model => { foreach ( var show in job.Watching ) show( model ); }, withoutSkin, under );
+				await GameTask.MainThread();
+				if ( started != generation || own is null || !layers.TryGetValue( alone, out var mine ) || !mine.Loose ) return own;
+
+				// Worn as fitted on its own while the others are fitted and it is laid over them.
+				foreach ( var show in job.Watching ) show( own );
+				job.Watching.Clear();
+				var unders = new List<Layers.Under>();
+				foreach ( var (path, kind, skinless) in over )
+				{
+					var layer = await LayerAsync( bodyPath, path, kind, skinless );
+					await GameTask.MainThread();
+					if ( started != generation ) return null;
+					if ( layer is null || layer.Loose ) continue;
+					unders.Add( await layer.UnderAsync() );
+					await GameTask.MainThread();
+				}
+				if ( unders.Count == 0 ) return own;
+				return await FitJob( bodyPath, garmentPath, madeFor, key, job, withoutSkin, under, unders ) ?? own;
+			}
+			catch ( TaskCanceledException )
+			{
+				return null;
+			}
+			catch ( Exception e )
+			{
+				await GameTask.MainThread();
+				Log.Warning( $"ClothingFitter: couldn't lay {garmentPath} over the rest of the outfit, wearing it as fitted on its own. {Describe( e )}" );
+				return own;
+			}
+			finally
+			{
+				if ( pending.TryGetValue( key, out var mine ) && mine == job )
+					pending.Remove( key );
+			}
+		}
+	}
+
+	static string Key( string bodyPath, string garmentPath, bool withoutSkin, string under ) =>
+		$"{bodyPath}|{Normalize( garmentPath )}{(withoutSkin ? "|no skin" : "")}{(under != null ? "|under " + Normalize( under ) : "")}";
+
+	// A garment as worn on a body, for another to be laid over it. On the stock body it was made
+	// for it is the garment as made; on any other it is fitted first. Null if it can't be had.
+	static async Task<Layer> LayerAsync( string bodyPath, string garmentPath, BodyKind madeFor, bool withoutSkin )
+	{
+		string key = Key( bodyPath, garmentPath, withoutSkin, null );
+		if ( layers.TryGetValue( key, out var known ) ) return known;
+		if ( bodyPath == ReferencePaths[(int)madeFor] )
+		{
+			var file = ReadCompiled( garmentPath );
+			var reference = await ReferenceAsync( madeFor );
+			if ( reference is null ) return null;
+			var made = await OnWorker( () =>
+			{
+				var geo = CompiledModel.Read( file );
+				GarmentFit.ToStockBind( geo, reference.Geo );
+				var tris = geo.SurfaceIndices();
+				if ( withoutSkin )
+				{
+					var copies = GarmentFit.SkinCopies( geo, IsSkin );
+					var keep = new List<int>();
+					for ( int d = 0; d < geo.Draws.Count; d++ )
+						if ( !copies[d] ) keep.AddRange( geo.Indices.Skip( geo.Draws[d].First ).Take( geo.Draws[d].Count ) );
+					tris = keep.ToArray();
+				}
+				return new Layer { Rest = geo.Positions, Made = geo.Positions, Tris = tris, Skin = reference.Mesh };
+			} );
+			await GameTask.MainThread();
+			return layers[key] = made;
+		}
+
+		await FitAsync( bodyPath, garmentPath, madeFor, null, withoutSkin, null );
+		await GameTask.MainThread();
+		return layers.TryGetValue( key, out var layer ) ? layer : null;
 	}
 
 	static Task<Model> FitAsync( string bodyPath, string garmentPath, BodyKind madeFor, Action<Model> onRough, bool withoutSkin, string under )
@@ -215,7 +358,7 @@ public static class ClothingFitter
 		if ( bodyPath == ReferencePaths[(int)madeFor] && under == null )
 			return Task.FromResult<Model>( null );
 
-		string key = $"{bodyPath}|{Normalize( garmentPath )}{(withoutSkin ? "|no skin" : "")}{(under != null ? "|under " + Normalize( under ) : "")}";
+		string key = Key( bodyPath, garmentPath, withoutSkin, under );
 		if ( fitted.TryGetValue( key, out var cached ) && cached.IsValid() )
 			return Task.FromResult( cached );
 		if ( failed.Contains( key ) )
@@ -328,7 +471,8 @@ public static class ClothingFitter
 		return await OnWorker( () => new TriMesh( shape.Positions, shape.Indices ) );
 	}
 
-	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin, string under )
+	/// <param name="over">The garments this one is laid over (see <see cref="Layers.Over"/>), worn on the body.</param>
+	static async Task<Model> FitJob( string bodyPath, string garmentPath, BodyKind madeFor, string key, Job job, bool withoutSkin, string under, List<Layers.Under> over = null )
 	{
 		int started = generation;
 		try
@@ -384,10 +528,14 @@ public static class ClothingFitter
 			for ( int i = levels.Count - 1; i >= 0; i-- )
 			{
 				var level = levels[i];
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body.Geo, bodyAtlases, simulated ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body, bodyAtlases, simulated, over ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
-				if ( i == 0 ) shapes[key] = (result.StockFit, level.SurfaceIndices());
+				if ( i == 0 )
+				{
+					shapes[key] = (result.StockFit, level.SurfaceIndices());
+					layers[key] = new Layer { Rest = result.Rest, Made = level.Positions, Tris = result.Cloth, Skin = reference.Mesh, Loose = result.Loose };
+				}
 
 				done.Insert( 0, result );
 				worker += result.Milliseconds;
@@ -417,7 +565,7 @@ public static class ClothingFitter
 				{
 					var level = levels[i];
 					var detailed = done[0];
-					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body.Geo, bodyAtlases, simulated ) );
+					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body, bodyAtlases, simulated, over ) );
 					if ( started != generation ) return null;
 					done[i] = result;
 					worker += result.Milliseconds;
@@ -923,8 +1071,10 @@ public static class ClothingFitter
 
 	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
 	/// <param name="simulated">The bones the engine moves by the garment's physics (see <see cref="Simulated"/>).</param>
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, SkinnedGeometry body = null, Dictionary<string, Atlas> bodyAtlases = null, HashSet<string> simulated = null )
+	/// <param name="over">Garments worn under this one, in the body's rest pose, for it to be laid over if it hangs on them (see <see cref="Layers.Over"/>).</param>
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, Body wearer = null, Dictionary<string, Atlas> bodyAtlases = null, HashSet<string> simulated = null, List<Layers.Under> over = null )
 	{
+		var body = wearer?.Geo;
 		var watch = System.Diagnostics.Stopwatch.StartNew();
 		var bones = GarmentFit.BonesOnBody( garment, reference.Geo );
 		// A garment's own copy of the skin is cut to lie right on the body. Left in the fit
@@ -953,6 +1103,11 @@ public static class ClothingFitter
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
 		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );
+
+		// A chain and what hangs from it lie on the body, or over the garments worn under them.
+		bool loose = Layers.Loose( garment.Positions, cloth, solid, fittedAsCloth );
+		if ( loose && wearer != null )
+			positions = Layers.Over( garment.Positions, positions, cloth, garment.BoneIndex, garment.BoneWeight, solid, Layers.Depth( garment.Positions, reference.Mesh ), wearer.Rest(), over, out _ );
 
 		var normals = garment.HasNormals ? Shading.Normals( garment.Positions, positions, garment.Indices, garment.Normals ) : Shading.Smooth( positions, garment.Indices );
 		var tangents = Shading.Tangents( positions, normals, garment.Uvs, garment.Indices, out var signs );
@@ -994,7 +1149,7 @@ public static class ClothingFitter
 		}
 
 		// The garment's bones in the body's rest pose.
-		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][] };
+		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][], Rest = positions, Cloth = cloth, Loose = loose };
 		var boneMap = GarmentFit.BoneMap( garment, reference.Geo );
 		var ownBone = new bool[garment.BoneNames.Length];
 		var swung = new bool[garment.BoneNames.Length];
