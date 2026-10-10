@@ -826,7 +826,11 @@ public static class GarmentFit
 		Untangle( pts, fitted, tris, weld, edges, piece, cloth, heldOff );
 		if ( !hair ) Carry( pts, fitted, members, pieceTris, isSolid, gap0, away, other, buried, takeIn );
 		if ( !hair ) Fringe( pts, fitted, members, pieceTris );
-		if ( under != null ) Tuck( fitted, tris, weld, edges, under, other );
+		if ( under != null )
+		{
+			Tuck( fitted, tris, weld, edges, under, other );
+			PressAtRim( fitted, under, other );
+		}
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
 		if ( !hair ) Beads( pts, fitted, members, isSolid );
 
@@ -2347,6 +2351,114 @@ public static class GarmentFit
 			for ( int i = 0; i < fitted.Length; i++ )
 				if ( covered[i] ) fitted[i] += push[i];
 		}
+	}
+
+	const float RimPress = 0.0015f * Units.Metre;  // how far off the skin hair along a hat's rim is pressed
+	const float RimBand = 0.02f * Units.Metre;     // hair this close to the rim, either side of it, is pressed all the way
+	const float RimFade = 0.015f * Units.Metre;    // and further out it goes back to its own shape over this much
+	const float RimContact = 0.025f * Units.Metre; // a hat this close over the skin is resting on the head
+	const float RimDeep = 0.025f * Units.Metre;    // hair further off the skin than this is left alone, it is in a lock of its own
+	const float RimSunk = 0.01f * Units.Metre;     // nor hair this far into the head: made there, or measured from the wrong side of an ear
+	const float RimClear = 0.0005f * Units.Metre;  // what pressed hair keeps between itself and a hat resting on it
+
+	/// <summary>
+	/// Hair along the line where a hat's rim meets the head is pressed onto the scalp. The tuck
+	/// takes back under the hat what came through it, which on a hat that sits tight leaves the
+	/// hair at its edge sunk into the head or pulled up, and a puffed out style stands off the
+	/// head just below the rim: either way there is a band of bare scalp between hat and hair.
+	/// A real hat squashes the hair along its edge flat, and so does this: in a band a few cm
+	/// wide on both sides of the rim, each bit of hair goes along the skin's normal to just off
+	/// the skin, all the way near the rim and less further away, back to the hair's own shape.
+	/// Hair standing out further than a lock lying on the head is left as it is.
+	/// </summary>
+	static void PressAtRim( Vec3[] fitted, TriMesh under, TriMesh body )
+	{
+		var skin = body.Skin();
+		var normal = new Vec3[skin.Verts.Length];
+		var used = new bool[skin.Verts.Length];
+		for ( int t = 0; t < skin.TriCount; t++ )
+			for ( int c = 0; c < 3; c++ )
+			{
+				int v = skin.Tris[t * 3 + c];
+				normal[v] += skin.TriNormals[t];
+				used[v] = true;
+			}
+
+		// Skin the hat rests on, near the hat: the rim is where that ends.
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		var near = new bool[skin.Verts.Length];
+		var on = new bool[skin.Verts.Length];
+		float reach = RimBand + RimFade + RimContact;
+		for ( int v = 0; v < skin.Verts.Length; v++ )
+		{
+			if ( !used[v] || under.Nearest( skin.Verts[v], out _, out _ ) > reach ) continue;
+			float length = normal[v].Length();
+			if ( length < 1e-12f ) continue;
+			near[v] = true;
+			on[v] = HatOver( skin.Verts[v], normal[v] / length, under, hits, out _ );
+		}
+		var rim = new List<Vec3>();
+		for ( int t = 0; t < skin.TriCount; t++ )
+			for ( int c = 0; c < 3; c++ )
+			{
+				int a = skin.Tris[t * 3 + c], b = skin.Tris[t * 3 + (c + 1) % 3];
+				if ( a < b && near[a] && near[b] && on[a] != on[b] ) rim.Add( (skin.Verts[a] + skin.Verts[b]) * 0.5f );
+			}
+		if ( rim.Count == 0 ) return;
+
+		float far = RimBand + RimFade;
+		for ( int i = 0; i < fitted.Length; i++ )
+		{
+			var p = fitted[i];
+			if ( skin.Nearest( p, out var at, out int tri ) > RimDeep || tri < 0 ) continue;
+			var n = skin.TriNormals[tri];
+			float area = n.Length();
+			if ( area < 1e-12f ) continue;
+			n /= area;
+			float gap = Vec3.Dot( p - at, n );
+			if ( gap > RimDeep || gap < -RimSunk ) continue;
+
+			float closest = float.MaxValue;
+			foreach ( var r in rim ) closest = MathF.Min( closest, (r - at).LengthSquared() );
+			closest = MathF.Sqrt( closest );
+			if ( closest >= far ) continue;
+
+			float w = 1f - Smooth( RimBand, far, closest );
+			w *= 1f - Smooth( 0.6f * RimDeep, RimDeep, gap );
+			w *= 1f - Smooth( 0.6f * RimSunk, RimSunk, -gap );
+			// Under a hat resting closer than that, hair is only brought up out of the head, to just
+			// under the hat, never pushed in: there it is out of sight, and what the tuck sank at the
+			// edge is what leaves the scalp bare between the rim and the hair below it.
+			float target = RimPress;
+			if ( HatOver( at, n, under, hits, out float hat ) && hat < RimPress + RimClear )
+			{
+				target = MathF.Max( 0, hat - RimClear );
+				if ( gap >= target ) continue;
+			}
+			// A part of the body standing off the skin between it and the hair (a brow of its own,
+			// an ear) stays under the hair: it is pressed onto that part instead.
+			if ( gap > target )
+			{
+				body.Crossings( at + n * RimClear, n, gap - RimClear, hits );
+				foreach ( var h in hits ) target = MathF.Max( target, h.T + RimClear + RimPress );
+				if ( target >= gap ) continue;
+			}
+			fitted[i] = p + n * ((target - gap) * w);
+		}
+	}
+
+	// Whether a hat rests on the skin at a point, and how far out along its normal it is.
+	static bool HatOver( Vec3 at, Vec3 n, TriMesh under, List<(float T, bool Leaving, int Tri)> hits, out float distance )
+	{
+		under.Crossings( at - n * TuckDepth, n, RimContact + TuckDepth, hits );
+		distance = hits.Count > 0 ? hits[0].T - TuckDepth : 0;
+		return hits.Count > 0;
+	}
+
+	static float Smooth( float from, float to, float x )
+	{
+		float t = Math.Clamp( (x - from) / (to - from), 0f, 1f );
+		return t * t * (3f - 2f * t);
 	}
 
 	// Points inside a triangle to test, its corners being tested on their own: the centre and
