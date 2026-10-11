@@ -1210,6 +1210,7 @@ public static class ClothingFitter
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
 		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo );
 		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );
+		positions = GarmentFit.KeepLinings( garment.Positions, positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
 
 		// A chain and what hangs from it lie on the body, or over the garments worn under them.
 		bool loose = Layers.Loose( garment.Positions, cloth, solid, fittedAsCloth );
