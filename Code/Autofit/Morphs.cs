@@ -235,7 +235,8 @@ public static class GarmentMorphs
 		if ( morphs.Count > 0 ) Settle( positions, tris, solid, surface, morphs, turnedAsMade, shapes, bent );
 	}
 
-	const float LashPatch = 0.004f * Units.Metre;   // the lid round a lash card's root that the card moves and turns with
+	const float LashPatch = 0.004f * Units.Metre;      // the lid round a lash card's root that the card moves and turns with
+	const float LashTogether = 0.012f * Units.Metre;   // and cards rooted this close turn alike
 	const float LidMargin = 0.016f * Units.Metre;   // how far round the lashes or the paint on the lids the skin is looked at
 	const float LidMaterial = 0.33f;                // a material with this share of the area of the one the lids are drawn with or more is skin there
 
@@ -304,15 +305,33 @@ public static class GarmentMorphs
 			patches.Add( (card, at, a, b, c, u, bv, bw, reach, points, faces) );
 		}
 
+		// Cards near each other turn alike: a small patch of a lid that a blink folds can turn
+		// another way than the one next to it, and the cards fanned out every which way.
+		var together = new List<(int Card, float Weight)>[patches.Count];
+		float sigma = LashTogether * 0.5f;
+		for ( int i = 0; i < patches.Count; i++ )
+		{
+			together[i] = new List<(int, float)>();
+			for ( int j = 0; j < patches.Count; j++ )
+			{
+				float d2 = (patches[j].At - patches[i].At).LengthSquared();
+				if ( d2 <= LashTogether * LashTogether ) together[i].Add( (j, MathF.Exp( -d2 / (2f * sigma * sigma) )) );
+			}
+		}
+
 		int n = positions.Length;
-		var h = new float[9];
+		var turns = new float[patches.Count][];
+		var sum = new float[9];
 		foreach ( var (name, (move, turn)) in skin )
 		{
-			Vec3[] cardMove = null, cardTurn = null;
-			bool any = false;
-			foreach ( var (card, at, a, b, c, u, bv, bw, reach, points, faces) in patches )
+			// Per card, how the patch of lid at its root turns: the sums of its points' products
+			// about where the patch is before and after (see GarmentFit.Rotation). A patch the
+			// morph doesn't move counts too, as not turning: next to it the cards turn less.
+			bool movesAny = false;
+			for ( int i = 0; i < patches.Count; i++ )
 			{
-				// The patch's move as a turn about the closest point and a shift of that point.
+				var (_, _, _, _, _, _, _, _, reach, points, faces) = patches[i];
+				turns[i] = null;
 				float total = 0;
 				Vec3 from = Vec3.Zero, to = Vec3.Zero;
 				bool moved = false;
@@ -323,10 +342,11 @@ public static class GarmentMorphs
 					to += (bodyPositions[k] + move[k]) * w;
 					moved |= move[k].LengthSquared() > 0;
 				}
-				if ( total <= 0 || !moved ) continue;
+				if ( total <= 0 ) continue;
+				movesAny |= moved;
 				from /= total;
 				to /= total;
-				Array.Clear( h );
+				var h = turns[i] = new float[9];
 				void Pair( Vec3 p, Vec3 q, float w )
 				{
 					h[0] += w * q.X * p.X; h[1] += w * q.X * p.Y; h[2] += w * q.X * p.Z;
@@ -337,18 +357,31 @@ public static class GarmentMorphs
 				Vec3 facing = Vec3.Zero, facingNow = Vec3.Zero;
 				foreach ( var (t, w) in faces )
 				{
-					int i = lidTris[t], j = lidTris[t + 1], l = lidTris[t + 2];
-					facing += Vec3.Cross( bodyPositions[j] - bodyPositions[i], bodyPositions[l] - bodyPositions[i] ) * w;
-					facingNow += Vec3.Cross( bodyPositions[j] + move[j] - bodyPositions[i] - move[i], bodyPositions[l] + move[l] - bodyPositions[i] - move[i] ) * w;
+					int a = lidTris[t], b = lidTris[t + 1], c = lidTris[t + 2];
+					facing += Vec3.Cross( bodyPositions[b] - bodyPositions[a], bodyPositions[c] - bodyPositions[a] ) * w;
+					facingNow += Vec3.Cross( bodyPositions[b] + move[b] - bodyPositions[a] - move[a], bodyPositions[c] + move[c] - bodyPositions[a] - move[a] ) * w;
 				}
 				float f0 = facing.Length(), f1 = facingNow.Length();
 				if ( f0 > 1e-12f && f1 > 1e-12f ) Pair( facing * (reach / f0), facingNow * (reach / f1), total );
-				var r = GarmentFit.Rotation( h );
-				Vec3 Turn( Vec3 x ) => r == null ? x : new Vec3( r[0] * x.X + r[1] * x.Y + r[2] * x.Z, r[3] * x.X + r[4] * x.Y + r[5] * x.Z, r[6] * x.X + r[7] * x.Y + r[8] * x.Z );
+			}
+			if ( !movesAny ) continue;
 
+			// Each card moves with the spot of lid at its root and turns as the lid round it and
+			// round the cards next to it does.
+			var cardMove = new Vec3[n];
+			var cardTurn = new Vec3[n];
+			bool any = false;
+			for ( int i = 0; i < patches.Count; i++ )
+			{
+				if ( turns[i] == null ) continue;
+				var (card, at, a, b, c, u, bv, bw, _, _, _) = patches[i];
+				Array.Clear( sum );
+				foreach ( var (j, w) in together[i] )
+					if ( turns[j] != null )
+						for ( int k = 0; k < 9; k++ ) sum[k] += turns[j][k] * w;
+				var r = GarmentFit.Rotation( sum );
+				Vec3 Turn( Vec3 x ) => r == null ? x : new Vec3( r[0] * x.X + r[1] * x.Y + r[2] * x.Z, r[3] * x.X + r[4] * x.Y + r[5] * x.Z, r[6] * x.X + r[7] * x.Y + r[8] * x.Z );
 				var shift = move[a] * u + move[b] * bv + move[c] * bw;
-				cardMove ??= new Vec3[n];
-				cardTurn ??= new Vec3[n];
 				foreach ( int v in card )
 				{
 					cardMove[v] = at + shift + Turn( positions[v] - at ) - positions[v];
@@ -356,7 +389,6 @@ public static class GarmentMorphs
 					if ( seen( cardMove[v], cardTurn[v] ) ) any = true;
 				}
 			}
-			if ( cardMove == null ) continue;
 			if ( !morphs.TryGetValue( name, out var mine ) )
 			{
 				if ( !any ) continue;
