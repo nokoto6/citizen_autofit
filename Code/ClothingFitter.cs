@@ -1144,10 +1144,11 @@ public static class ClothingFitter
 	/// <param name="lashRoots">If the garment is lashes, per vertex the root of its card (<see cref="GarmentFit.LashRoots"/>), else null. Lashes take every morph of the body card by card, see <see cref="GarmentMorphs.LashesFromSkin"/>.</param>
 	/// <param name="painted">Per vertex, whether the fit laid it on the skin as paint. In the morphs that move the lids paint takes the move of the spot it lies on, see <see cref="GarmentMorphs.PaintFromSkin"/>.</param>
 	/// <param name="target">The body as mapped, for where its lids are.</param>
-	static void FaceMorphs( Vec3[] positions, Vec3[] normals, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade, int[] lashRoots, bool[] painted, Mapped target )
+	/// <param name="reference">The stock body the garment was made for, to tell brows. Brows are paint too, but they aren't on the lids: on Aurora the lower edge of a pair lies over the top of her tall lid, and taken off the spot under each vertex the brow stretched by a blink. They keep the moves TakeFromSkin gives them.</param>
+	static void FaceMorphs( Vec3[] positions, Vec3[] normals, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade, int[] lashRoots, bool[] painted, Mapped target, Reference reference )
 	{
 		bool own = morphs.Count > 0;
-		bool paint = Array.IndexOf( painted, true ) >= 0;
+		bool paint = Array.IndexOf( painted, true ) >= 0 && !GarmentFit.IsBrows( garment.Positions, garment.Indices, reference.Mesh, target.Pose.Eyes.ToArray() );
 		Func<string, bool> wanted = own || lashRoots != null || paint ? null : IsFaceShape;
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
@@ -1282,7 +1283,7 @@ public static class ClothingFitter
 		}
 		var lashRoots = GarmentFit.LashRoots( garment.Positions, cloth, target.Pose.Features );
 		if ( body != null && bodyAtlases != null )
-			FaceMorphs( positions, normals, garment, solid, GarmentMorphs.BentSolids( garment.Positions, stockFit, garment.Indices, solid ), body, bodyAtlases, morphs, asMade, lashRoots, painted, target );
+			FaceMorphs( positions, normals, garment, solid, GarmentMorphs.BentSolids( garment.Positions, stockFit, garment.Indices, solid ), body, bodyAtlases, morphs, asMade, lashRoots, painted, target, reference );
 
 		// The garment's bones in the body's rest pose.
 		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][], Rest = positions, Cloth = cloth, Loose = loose };

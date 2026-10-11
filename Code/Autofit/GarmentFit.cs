@@ -1119,6 +1119,21 @@ public static class GarmentFit
 	static bool LikePaint( List<float> gaps ) =>
 		gaps.Count > 0 && (gaps[^1] <= PaintGap || (gaps[gaps.Count / 2] <= PaintGap && gaps[^1] <= PaintRelief));
 
+	/// <summary>Whether a garment as made is brows, see <see cref="Brows"/>.</summary>
+	/// <param name="old">The stock body.</param>
+	/// <param name="eyes">Where the eyes are, on the stock body and on this one.</param>
+	public static bool IsBrows( Vec3[] verts, int[] tris, TriMesh old, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		var weld = MeshTools.Weld( verts, out int n );
+		var pts = new Vec3[n];
+		var used = new bool[n];
+		var gap = new float[n];
+		for ( int i = 0; i < verts.Length; i++ ) pts[weld[i]] = verts[i];
+		foreach ( int v in tris ) used[weld[v]] = true;
+		for ( int i = 0; i < n; i++ ) if ( used[i] ) gap[i] = old.Nearest( pts[i], out _, out _ );
+		return Brows( used, pts, gap, old, eyes );
+	}
+
 	/// <summary>
 	/// Whether a garment is a pair of brows: cards that grow from the skin right over the eyes,
 	/// and the patch of skin they are drawn on. Hair isn't painted on the face and doesn't slide
