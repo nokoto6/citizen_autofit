@@ -1387,6 +1387,19 @@ public static class GarmentFit
 		return under;
 	}
 
+	// Area-weighted vertex normals of a welded mesh.
+	static Vec3[] Normals( Vec3[] pts, List<int> tris )
+	{
+		var normal = new Vec3[pts.Length];
+		for ( int t = 0; t < tris.Count; t += 3 )
+		{
+			int a = tris[t], b = tris[t + 1], c = tris[t + 2];
+			var area = Vec3.Cross( pts[b] - pts[a], pts[c] - pts[a] );
+			normal[a] += area; normal[b] += area; normal[c] += area;
+		}
+		return normal;
+	}
+
 	static int[] Identity( int n )
 	{
 		var result = new int[n];
@@ -1473,17 +1486,25 @@ public static class GarmentFit
 
 		var now = new Vec3[n];
 		for ( int v = 0; v < n; v++ ) now[v] = rest[first[v]];
+		var madeNormal = Normals( pts, clothTris );
 		var crossed = new List<(float T, bool Leaving, int Tri)>();
 		for ( int pass = 0; pass < 3; pass++ )
 		{
 			int pressed = 0;
 			var worn = new TriMesh( MeshTools.Copy( now ), clothTris.ToArray() );
+			var wornNormal = Normals( now, clothTris );
 			foreach ( var (v, t, bw, depth) in under )
 			{
 				int a = clothTris[t * 3], b = clothTris[t * 3 + 1], c = clothTris[t * 3 + 2];
 				var facing = Vec3.Cross( now[b] - now[a], now[c] - now[a] );
 				float length = facing.Length();
 				if ( length < 1e-12f ) continue;
+				// Only while the two are still back to back, the cloth over it facing away from
+				// it: turned past each other, the way behind it is the wrong way. A collar squeezed
+				// down Akira's short neck had its flap turned over, and the stand under it, pressed
+				// "behind" it, was pushed 2 cm up out of the collar.
+				var madeFacing = Vec3.Cross( pts[b] - pts[a], pts[c] - pts[a] );
+				if ( Vec3.Dot( madeFacing, madeNormal[v] ) < 0 && Vec3.Dot( facing, wornNormal[v] ) > 0 ) continue;
 				// As deep as it was made, less where the cloth over it was squeezed: a collar
 				// lowered down a short neck into a third of its height has no room for its lining
 				// that deep, pressed in it went out through the other side of the collar.
