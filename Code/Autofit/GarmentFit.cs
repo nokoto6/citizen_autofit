@@ -1197,6 +1197,7 @@ public static class GarmentFit
 	const float BackToBackTurn = 0.25f;  // cloth behind a lining faces the same way as it to within this (cosine: 75 degrees)
 	const float Squeezed = 0.6f;    // cloth shrunk to less than this share of its size, across, was squeezed (a collar lowered down a short neck), not just taken in
 	const float RimSpill = 0.25f;   // the edge of a lining is over the shell spot it is kept behind to within this share of that triangle off its side
+	const float LiningDeep = 0.015f * Units.Metre;   // a lining is kept at most this deep under the cloth over it: made deeper it hangs loose behind it rather than lying on it (a collar's stand under its flap), and pressed back that deep where the two had come closer, the stand of a vest's collar squeezed down Akira's short neck stuck up out of the collar
 	const float KeepDepth = 0.5f;   // cloth made under other cloth stays at least this share of as far under it as it was made
 
 	/// <summary>
@@ -1511,7 +1512,7 @@ public static class GarmentFit
 				float squeezed = MathF.Min( MathF.Sqrt( length / Vec3.Cross( pts[b] - pts[a], pts[c] - pts[a] ).Length() ) / Squeezed, 1f );
 				facing *= 1f / length;
 				var over = now[a] * bw[0] + now[b] * bw[1] + now[c] * bw[2];
-				float through = Vec3.Dot( now[v] - over, facing ) + MathF.Max( LayerSlack, depth * squeezed );
+				float through = Vec3.Dot( now[v] - over, facing ) + MathF.Max( LayerSlack, MathF.Min( depth, LiningDeep ) * squeezed );
 				if ( through <= 0 || through > LayerReach ) continue;
 				// Never through a third layer on the way: the inside of a hard hat has a band
 				// round the head under its shell, and the shell's inner face, pressed behind the
