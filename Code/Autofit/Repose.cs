@@ -1916,6 +1916,27 @@ public sealed class Repose
 						if ( !moves.TryGetValue( o, out var have ) || have.LengthSquared() < move.LengthSquared() ) moves[o] = move;
 				}
 			}
+			// Never turned far by it: held out at its rim and not along the lining it folds into,
+			// the bottom of a vest's armhole rolled over on Akira and showed its inside. Where a
+			// triangle would turn further than CoverTurn, its corners go out less.
+			for ( int round = 0; round < CoverUnturn; round++ )
+			{
+				bool turned = false;
+				for ( int t = 0; t < clothTris.Length; t += 3 )
+				{
+					int a = clothTris[t], b = clothTris[t + 1], c = clothTris[t + 2];
+					bool ma = moves.TryGetValue( a, out var va ), mb = moves.TryGetValue( b, out var vb ), mc = moves.TryGetValue( c, out var vc );
+					if ( !ma && !mb && !mc ) continue;
+					var before = Vec3.Cross( result[b] - result[a], result[c] - result[a] );
+					var after = Vec3.Cross( result[b] + vb - result[a] - va, result[c] + vc - result[a] - va );
+					if ( Vec3.Dot( before, after ) > CoverTurn * before.Length() * after.Length() ) continue;
+					if ( ma ) moves[a] = va * 0.5f;
+					if ( mb ) moves[b] = vb * 0.5f;
+					if ( mc ) moves[c] = vc * 0.5f;
+					turned = true;
+				}
+				if ( !turned ) break;
+			}
 			foreach ( var (vi, move) in moves ) result[vi] += move;
 		}
 
@@ -1955,6 +1976,8 @@ public sealed class Repose
 	const float CoverClear = 0.003f * Units.Metre;  // what cloth keeps over the skin of its own part there
 	const float CoverDeep = 0.03f * Units.Metre;   // cloth further into the skin than this in the pose is a misfit, not skin coming through
 	const int CoverPasses = 4;
+	const int CoverUnturn = 6;                        // rounds of easing a lift off where it would turn the cloth over
+	const float CoverTurn = 0.5f;                     // or turn it further than this (cosine: 60 degrees)
 	const float LayerOver = 0.03f * Units.Metre;    // cloth this far over cloth that goes out is a layer over it
 	const float OwnSkin = 0.2f;                     // skin is cloth's own when the cloth goes at least this much with that part of the body
 	static readonly float[][] CoverSamples =
