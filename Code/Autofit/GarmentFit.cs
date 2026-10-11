@@ -551,6 +551,7 @@ public static class GarmentFit
 		}
 
 		var middles = eyes != null && eyes.Length == 2 ? EyeMiddles( eyes, features ) : eyes;
+		var eyewear = new List<int>();      // vertices of the eyewear put onto the eyes, what a cord may hang from
 		var bends = new HashSet<int>();   // pieces that go the way of cloth after all
 		var loose = new List<int>();      // vertices of the cards in a heap: hair
 		bool hair = false;
@@ -595,6 +596,7 @@ public static class GarmentFit
 				var front = PutOnTheEyes( whole, pts, fitted, middles );
 				GoRound( whole, front, middles, fitted, gap0, away, other, PushSolid );
 				PushOut( whole, fitted, gap0, away, PushSolid, false );
+				eyewear.AddRange( whole );
 			}
 			else if ( onFace )
 			{
@@ -620,8 +622,8 @@ public static class GarmentFit
 			}
 			else if ( !wraps && ears != null && OnAnEar( whole, pts, ears, out var ear ) )
 			{
-				PutOnTheEar( whole, pts, fitted, gap0, other, ears, ear );
-				PushOut( whole, fitted, gap0, away, PushSolid, false );
+				var sunk = PutOnTheEar( whole, pts, fitted, gap0, piece, other, ears, ear );
+				PushOut( whole, fitted, gap0, away, PushSolid, false, sunk );
 			}
 			foreach ( int i in whole ) isSolid[i] = true;
 		}
@@ -878,6 +880,8 @@ public static class GarmentFit
 		}
 		if ( !hair ) Seams( pts, fitted, tris, weld, edges, piece );
 		if ( !hair ) Beads( pts, fitted, members, isSolid );
+
+		if ( eyewear.Count > 0 && givenMove == null ) HangFrom( eyewear, pts, move, fitted, gap0, members, edges, old, other );
 
 		var result = new Vec3[verts.Length];
 		for ( int i = 0; i < verts.Length; i++ ) result[i] = fitted[weld[i]];
@@ -4025,10 +4029,21 @@ public static class GarmentFit
 	/// man's, and an earpiece put on by her skull sat 6 mm off the bowl of her ear (2 mm on a
 	/// man's). What sits in or on the ear (the part of it within the ear's reach seen from the
 	/// side) keeps where it was on the ear, as a share of the ear's height and depth, and as far
-	/// out of the bowl in its middle; the solid goes along as it was fitted.
+	/// out of the bowl in its middle.
+	/// Something seated in the ear, reaching into its bowl (an earpiece, not an earring hanging
+	/// from the lobe), also turns the way this ear is turned from the stock one (<see
+	/// cref="FaceMarks.Ears"/>: the way the flap faces and its long way). A man's ear lies nearly
+	/// flat against the head and leans back, an anime ear stands out further at the back and the
+	/// top and points straight up, and its bowl is a third as deep: put on by the bowl alone, an
+	/// earpiece stood a centimetre off the side of Aurora's ear with its hook beside the ear's top.
+	/// So it goes into the ear the way the ear faces until each of its pieces that rested on the
+	/// ear rests on it again, the piece in the bowl sinking into the shallower bowl as far as the
+	/// back of the ear behind it.
 	/// </summary>
-	static void PutOnTheEar( List<int> idx, Vec3[] pts, Vec3[] fitted, float[] gap0, TriMesh body, List<(string Name, Vec3 Stock, Vec3 Body)> ears, string ear )
+	/// <returns>The vertices sunk into the ear on purpose, which aren't to be pushed back out.</returns>
+	static HashSet<int> PutOnTheEar( List<int> idx, Vec3[] pts, Vec3[] fitted, float[] gap0, int[] piece, TriMesh body, List<(string Name, Vec3 Stock, Vec3 Body)> ears, string ear )
 	{
+		var sunk = new HashSet<int>();
 		(Vec3 Stock, Vec3 Body) Mark( string name )
 		{
 			foreach ( var (n, s, b) in ears ) if ( n == name ) return (s, b);
@@ -4036,13 +4051,14 @@ public static class GarmentFit
 		}
 		var (middle, middleNow) = Mark( ear );
 		var (canal, canalNow) = Mark( ear + ".canal" );
-		if ( canal.Y == 0 && canalNow.Y == 0 ) (canal, canalNow) = (middle, middleNow);
+		bool bowl = canal.Y != 0 || canalNow.Y != 0;
+		if ( !bowl ) (canal, canalNow) = (middle, middleNow);
 		var (top, topNow) = Mark( ear + ".top" );
 		var (bottom, bottomNow) = Mark( ear + ".bottom" );
 		var (front, frontNow) = Mark( ear + ".front" );
 		var (back, backNow) = Mark( ear + ".back" );
 		float tall = top.Z - bottom.Z, deep = front.X - back.X;
-		if ( tall < 1e-4f * Units.Metre || deep < 1e-4f * Units.Metre ) return;
+		if ( tall < 1e-4f * Units.Metre || deep < 1e-4f * Units.Metre ) return sunk;
 		float taller = Math.Clamp( (topNow.Z - bottomNow.Z) / tall, EarLeast, EarMost );
 		float deeper = Math.Clamp( (frontNow.X - backNow.X) / deep, EarLeast, EarMost );
 
@@ -4052,23 +4068,366 @@ public static class GarmentFit
 			if ( pts[i].Z <= top.Z && pts[i].Z >= bottom.Z && pts[i].X <= front.X && pts[i].X >= back.X ) on.Add( i );
 		if ( on.Count == 0 ) on = idx;
 		var made = Centre( on, pts );
-		var off = made - middle;
-		var want = new Vec3( middleNow.X + off.X * deeper, canalNow.Y + made.Y - canal.Y, middleNow.Z + off.Z * taller );
-		var shift = want - Centre( on, fitted );
-		foreach ( int i in idx ) fitted[i] += shift;
-
-		// An ear standing out from the side of the head at another angle leaves it off the ear:
-		// in towards the head, until it comes as close to the skin as it was made to.
 		float made0 = float.MaxValue;
 		foreach ( int i in idx ) made0 = MathF.Min( made0, gap0[i] );
-		var inward = new Vec3( 0, ear == "earL" ? -1 : 1, 0 );
+
+		// Seated in the ear: some of it in the bowl, and the ear's turn found on both bodies.
+		int inBowl = -1;
+		float nearest = float.MaxValue;
+		foreach ( int i in idx )
+		{
+			float d = (pts[i] - canal).Length();
+			if ( d < nearest ) { nearest = d; inBowl = i; }
+		}
+		var (outward, outwardNow) = Mark( ear + ".out" );
+		var (up, upNow) = Mark( ear + ".up" );
+		bool seated = bowl && nearest <= EarSeat && outward.LengthSquared() > 0 && outwardNow.LengthSquared() > 0 && up.LengthSquared() > 0 && upNow.LengthSquared() > 0;
+		if ( !seated )
+		{
+			var off = made - middle;
+			var want = new Vec3( middleNow.X + off.X * deeper, canalNow.Y + made.Y - canal.Y, middleNow.Z + off.Z * taller );
+			var shift = want - Centre( on, fitted );
+			foreach ( int i in idx ) fitted[i] += shift;
+
+			// An ear standing out from the side of the head at another angle leaves it off the ear:
+			// in towards the head, until it comes as close to the skin as it was made to.
+			var inward = new Vec3( 0, ear == "earL" ? -1 : 1, 0 );
+			for ( int round = 0; round < EarSteps; round++ )
+			{
+				float now = float.MaxValue;
+				foreach ( int i in idx ) now = MathF.Min( now, body.SignedGap( fitted[i], out _ ) );
+				if ( now - made0 < EarSettle ) break;
+				foreach ( int i in idx ) fitted[i] += inward * (now - made0);
+			}
+			return sunk;
+		}
+
+		// Each ear's axes: up its long way, across it and out of it. On them the piece keeps its
+		// place on the ear as a share of the ear's height and depth, and its turn.
+		var (u0, v0, n0) = EarAxes( up - middle, outward - middle );
+		var (u1, v1, n1) = EarAxes( upNow - middleNow, outwardNow - middleNow );
+		var from = made - canal;
+		var at = canalNow + u1 * (Vec3.Dot( from, u0 ) * taller) + v1 * (Vec3.Dot( from, v0 ) * deeper) + n1 * Vec3.Dot( from, n0 );
+		foreach ( int i in idx )
+		{
+			var d = pts[i] - made;
+			fitted[i] = at + u1 * Vec3.Dot( d, u0 ) + v1 * Vec3.Dot( d, v0 ) + n1 * Vec3.Dot( d, n0 );
+		}
+
+		// How deep the piece in the bowl may go: to just short of the back of the ear behind the
+		// bowl (a flap standing off the head), or of the head.
+		int bowlPiece = piece[inBowl];
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		body.Crossings( canalNow + n1 * EarSeat, -n1, EarItem, hits );
+		float floor = float.MaxValue;
+		foreach ( var hit in hits )
+			if ( hit.Leaving ) { floor = hit.T - EarSeat - EarSettle; break; }
+
+		// Each piece that rested on the ear as made, and how close it came.
+		var rested = new Dictionary<int, float>();
+		foreach ( int i in idx )
+			if ( gap0[i] < EarRest ) rested[piece[i]] = rested.TryGetValue( piece[i], out float g ) ? MathF.Min( g, gap0[i] ) : gap0[i];
+		if ( rested.Count == 0 ) rested[bowlPiece] = made0;
+		var gaps = new Dictionary<int, float>();
 		for ( int round = 0; round < EarSteps; round++ )
 		{
-			float now = float.MaxValue;
-			foreach ( int i in idx ) now = MathF.Min( now, body.SignedGap( fitted[i], out _ ) );
-			if ( now - made0 < EarSettle ) break;
-			foreach ( int i in idx ) fitted[i] += inward * (now - made0);
+			gaps.Clear();
+			float deepest = float.MaxValue;
+			foreach ( int i in idx )
+			{
+				if ( piece[i] == bowlPiece ) deepest = MathF.Min( deepest, Vec3.Dot( fitted[i] - canalNow, n1 ) );
+				if ( !rested.ContainsKey( piece[i] ) ) continue;
+				float g = body.SignedGap( fitted[i], out _ );
+				gaps[piece[i]] = gaps.TryGetValue( piece[i], out float have ) ? MathF.Min( have, g ) : g;
+			}
+			// In until every piece that rested rests again, the bowl's piece no deeper than its floor.
+			float step = float.MinValue;
+			foreach ( var (k, g) in gaps ) step = MathF.Max( step, g - rested[k] );
+			step = MathF.Min( step, deepest + floor );
+			if ( step < EarSettle ) break;
+			foreach ( int i in idx ) fitted[i] -= n1 * step;
 		}
+		foreach ( int i in idx )
+			if ( piece[i] == bowlPiece ) sunk.Add( i );
+		return sunk;
+	}
+
+	const float EarSeat = 0.005f * Units.Metre;    // something with a vertex this close to the bowl of the ear as made is seated in it
+	const float EarRest = 0.002f * Units.Metre;    // a piece of it this close to the skin as made rests on the ear
+
+	const float CordLength = 0.1f * Units.Metre;    // a piece of cloth longer than this along itself, hanging from eyewear by an end, is a cord
+	const float CordHold = 0.005f * Units.Metre;     // an end of it this close to the eyewear as made hangs from it
+	const float CordLink = 0.01f * Units.Metre;      // the cord is worked on as links this long
+	const float CordCarry = 0.1f * Units.Metre;      // this much of it from where it hangs goes with the eyewear to begin with, the rest with the skin under it
+	const float CordClear = 0.004f * Units.Metre;    // it keeps at least this far off the skin, or as far as it was made to if less
+	const float CordFall = 0.0005f * Units.Metre;    // how far each link not resting on the skin falls each round
+	const int CordRounds = 240;                      // rounds of letting it fall
+	const int CordSweeps = 4;                        // passes over the links' lengths each round
+	const int CordSettle = 30;                       // rounds of evening its links out at the end, without falling
+
+	/// <summary>
+	/// A cord hanging from a pair of glasses (the bead chain of reading glasses, a lanyard),
+	/// with what is threaded on it. Fitted as hair, by the skin under each bit of it, the cord
+	/// stayed where the stock skin had it while the glasses went down onto Aurora's eyes, 3 cm
+	/// lower: it came away from the hinges and its beads lay scattered over the lenses and the
+	/// cheeks. It is let hang instead: its ends go with the eyewear they hang from, and the rest
+	/// falls under its own weight, its links keeping their length, onto the head and the neck
+	/// and round them. A cord the artist laid down isn't quite where a cord would fall, and that
+	/// is how it was made: the fall on the stock body is worked out too, and the cord keeps how
+	/// far it was made off that, so on the stock body it stays as made. What is threaded on it
+	/// goes with the bit of cord it is on, turned with it.
+	/// </summary>
+	static void HangFrom( List<int> eyewear, Vec3[] pts, Vec3[] move, Vec3[] fitted, float[] gap0, Dictionary<int, List<int>> members, List<(int A, int B)> edges, TriMesh old, TriMesh other )
+	{
+		var frame = new HashSet<int>( eyewear );
+		var near = new Dictionary<int, List<int>>();
+		foreach ( var (a, b) in edges )
+		{
+			if ( !near.TryGetValue( a, out var la ) ) near[a] = la = new List<int>();
+			if ( !near.TryGetValue( b, out var lb ) ) near[b] = lb = new List<int>();
+			la.Add( b ); lb.Add( a );
+		}
+		var beads = new List<List<int>>();
+		foreach ( var (_, idx) in members )
+			if ( !frame.Contains( idx[0] ) && Size( idx, pts ) <= BeadSize ) beads.Add( idx );
+		var taken = new HashSet<int>();
+		foreach ( var (_, cord) in members )
+		{
+			if ( frame.Contains( cord[0] ) || Size( cord, pts ) <= BeadSize ) continue;
+			// Its ends: the furthest along it from anywhere, and the furthest from that.
+			var fromA = Along( cord, cord[0], pts, near );
+			int endA = Furthest( cord, fromA );
+			fromA = Along( cord, endA, pts, near );
+			int endB = Furthest( cord, fromA );
+			var fromB = Along( cord, endB, pts, near );
+			float length = fromA[endB];
+			if ( length < CordLength ) continue;
+			int holdA = Holder( pts[endA], eyewear, pts ), holdB = Holder( pts[endB], eyewear, pts );
+			if ( holdA < 0 && holdB < 0 ) continue;
+
+			// The links: the cord's vertices binned by how far along it they are.
+			int links = Math.Max( 2, (int)MathF.Round( length / CordLink ) + 1 );
+			var sum = new Vec3[links];
+			var moved = new Vec3[links];
+			var count = new int[links];
+			var t = new Dictionary<int, float>();
+			foreach ( int i in cord )
+			{
+				t[i] = Math.Clamp( 0.5f * (fromA[i] + length - fromB[i]) / length, 0f, 1f );
+				int k = (int)MathF.Round( t[i] * (links - 1) );
+				sum[k] += pts[i]; moved[k] += move[i]; count[k]++;
+			}
+			var made = new List<Vec3>();
+			var skin = new List<Vec3>();
+			var at = new List<float>();
+			for ( int k = 0; k < links; k++ )
+			{
+				if ( count[k] == 0 ) continue;
+				made.Add( sum[k] / count[k] ); skin.Add( moved[k] / count[k] ); at.Add( k / (float)(links - 1) );
+			}
+			int m = made.Count;
+			if ( m < 2 ) continue;
+
+			// Where it hangs from now: the end of the cord goes with the bit of eyewear it hangs from.
+			var stockPins = new Vec3?[m];
+			var pins = new Vec3?[m];
+			if ( holdA >= 0 ) { stockPins[0] = made[0]; pins[0] = made[0] + fitted[holdA] - pts[holdA]; }
+			if ( holdB >= 0 ) { stockPins[m - 1] = made[m - 1]; pins[m - 1] = made[m - 1] + fitted[holdB] - pts[holdB]; }
+
+			// To begin with, near where it hangs from it goes with the eyewear, further on with the skin.
+			var start = new Vec3[m];
+			for ( int k = 0; k < m; k++ )
+			{
+				float w = 0;
+				var carry = skin[k];
+				if ( pins[0] is Vec3 a0 ) { float wa = Smooth( 1f - at[k] * length / CordCarry ); if ( wa > w ) { w = wa; carry = a0 - made[0]; } }
+				if ( pins[m - 1] is Vec3 b0 ) { float wb = Smooth( 1f - (1f - at[k]) * length / CordCarry ); if ( wb > w ) { w = wb; carry = b0 - made[m - 1]; } }
+				start[k] = made[k] + carry * w + skin[k] * (1 - w);
+			}
+			var clear = new float[m];
+			for ( int k = 0; k < m; k++ ) clear[k] = Math.Clamp( old.SignedGap( made[k], out _ ), 0f, CordClear );
+			var fallen = Fall( made.ToArray(), made, stockPins, clear, old );
+			var hung = Fall( start, made, pins, clear, other );
+			var now = new Vec3[m];
+			for ( int k = 0; k < m; k++ ) now[k] = hung[k] + made[k] - fallen[k];
+			// What it was made off its fall, added on, stretches some links: they are evened out again.
+			now = Fall( now, made, pins, clear, other, 0f, CordSettle );
+
+			// The cord and what is threaded on it go with the link they are on.
+			foreach ( int i in cord ) fitted[i] = OnLink( pts[i], t[i], made, now, at );
+			taken.UnionWith( cord );
+			foreach ( var bead in beads )
+			{
+				if ( taken.Contains( bead[0] ) ) continue;
+				var middle = Centre( bead, pts );
+				float reach = MathF.Max( 0.5f * Size( bead, pts ), Touching ), best = float.MaxValue, place = 0;
+				foreach ( int i in cord )
+				{
+					float d = (pts[i] - middle).LengthSquared();
+					if ( d < best ) { best = d; place = t[i]; }
+				}
+				if ( best > reach * reach ) continue;
+				foreach ( int i in bead ) fitted[i] = OnLink( pts[i], place, made, now, at );
+				taken.UnionWith( bead );
+			}
+		}
+	}
+
+	static float Smooth( float x )
+	{
+		x = Math.Clamp( x, 0f, 1f );
+		return x * x * (3 - 2 * x);
+	}
+
+	// Corner to corner of what a set of points takes up.
+	static float Size( List<int> idx, Vec3[] pts )
+	{
+		Vec3 lo = pts[idx[0]], hi = pts[idx[0]];
+		foreach ( int i in idx )
+		{
+			lo = new Vec3( MathF.Min( lo.X, pts[i].X ), MathF.Min( lo.Y, pts[i].Y ), MathF.Min( lo.Z, pts[i].Z ) );
+			hi = new Vec3( MathF.Max( hi.X, pts[i].X ), MathF.Max( hi.Y, pts[i].Y ), MathF.Max( hi.Z, pts[i].Z ) );
+		}
+		return (hi - lo).Length();
+	}
+
+	// How far along the piece's edges each of its vertices is from one of them.
+	static Dictionary<int, float> Along( List<int> idx, int from, Vec3[] pts, Dictionary<int, List<int>> near )
+	{
+		var far = new Dictionary<int, float>();
+		foreach ( int i in idx ) far[i] = float.MaxValue;
+		far[from] = 0;
+		var done = new HashSet<int>();
+		var todo = new SortedSet<(float, int)> { (0f, from) };
+		while ( todo.Count > 0 )
+		{
+			var (d, i) = todo.Min;
+			todo.Remove( todo.Min );
+			if ( !done.Add( i ) || !near.TryGetValue( i, out var next ) ) continue;
+			foreach ( int j in next )
+			{
+				if ( !far.TryGetValue( j, out float have ) ) continue;
+				float e = d + (pts[j] - pts[i]).Length();
+				if ( e >= have ) continue;
+				far[j] = e;
+				todo.Add( (e, j) );
+			}
+		}
+		return far;
+	}
+
+	static int Furthest( List<int> idx, Dictionary<int, float> far )
+	{
+		int best = idx[0];
+		foreach ( int i in idx ) if ( far[i] != float.MaxValue && far[i] > far[best] ) best = i;
+		return best;
+	}
+
+	// The eyewear's vertex an end of a cord hangs from, -1 if none is close enough.
+	static int Holder( Vec3 end, List<int> eyewear, Vec3[] pts )
+	{
+		int best = -1;
+		float closest = CordHold * CordHold;
+		foreach ( int i in eyewear )
+		{
+			float d = (pts[i] - end).LengthSquared();
+			if ( d < closest ) { closest = d; best = i; }
+		}
+		return best;
+	}
+
+	/// <summary>
+	/// A cord's links falling under their weight from where they are: those that hang from
+	/// something stay there, the rest come down a little each round, their lengths are kept as
+	/// made, and none goes closer to the skin than its clearance. A link resting on the skin
+	/// doesn't slide down it on its own, the way a cord lying on a neck stays put.
+	/// </summary>
+	static Vec3[] Fall( Vec3[] start, List<Vec3> made, Vec3?[] pins, float[] clear, TriMesh body, float fall = CordFall, int rounds = CordRounds )
+	{
+		int m = start.Length;
+		var x = MeshTools.Copy( start );
+		var length = new float[m - 1];
+		for ( int k = 0; k + 1 < m; k++ ) length[k] = (made[k + 1] - made[k]).Length();
+		for ( int k = 0; k < m; k++ ) if ( pins[k] is Vec3 p ) x[k] = p;
+		var resting = new bool[m];
+		for ( int round = 0; round < rounds; round++ )
+		{
+			for ( int k = 0; k < m; k++ )
+				if ( pins[k] == null && !resting[k] ) x[k] = x[k] - Vec3.UnitZ * fall;
+			for ( int sweep = 0; sweep < CordSweeps; sweep++ )
+				for ( int pass = 0; pass < 2; pass++ )
+					for ( int j = 0; j + 1 < m; j++ )
+					{
+						int k = pass == 0 ? j : m - 2 - j;
+						var d = x[k + 1] - x[k];
+						float l = d.Length();
+						if ( l < 1e-9f ) continue;
+						float wa = pins[k] == null ? 1f : 0f, wb = pins[k + 1] == null ? 1f : 0f;
+						if ( wa + wb == 0 ) continue;
+						var fix = d * ((l - length[k]) / l / (wa + wb));
+						x[k] += fix * wa;
+						x[k + 1] -= fix * wb;
+					}
+			for ( int k = 0; k < m; k++ ) resting[k] = pins[k] == null && OffTheSkin( ref x[k], clear[k], body );
+		}
+		return x;
+	}
+
+	// Puts a point no closer to the skin than its clearance. Whether it touches the skin.
+	static bool OffTheSkin( ref Vec3 p, float clear, TriMesh body )
+	{
+		float gap = body.SignedGap( p, out var s );
+		if ( gap > clear + CordFall ) return false;
+		if ( gap < clear )
+		{
+			var d = p - s;
+			float l = d.Length();
+			if ( l > 1e-9f ) p = s + d * ((gap < 0 ? -clear : clear) / l);
+		}
+		return true;
+	}
+
+	// Which way a cord runs a share f of the way from b to c, with a before them and d after.
+	static Vec3 Running( Vec3 a, Vec3 b, Vec3 c, Vec3 d, float f )
+	{
+		Vec3 tb = c - a, tc = d - b;
+		if ( tb.LengthSquared() > 1e-12f ) tb /= tb.Length();
+		if ( tc.LengthSquared() > 1e-12f ) tc /= tc.Length();
+		return tb * (1 - f) + tc * f;
+	}
+
+	// Where a point on a cord, at a share of the way along it, goes when the cord's links go
+	// from where they were made to where they are now: with the bit of the cord there, turned
+	// the way that bit turned.
+	static Vec3 OnLink( Vec3 p, float along, List<Vec3> made, Vec3[] now, List<float> at )
+	{
+		int k = 0;
+		while ( k + 2 < at.Count && at[k + 1] < along ) k++;
+		float span = at[k + 1] - at[k];
+		float f = span > 1e-9f ? Math.Clamp( (along - at[k]) / span, 0f, 1f ) : 0f;
+		Vec3 a0 = made[k] + (made[k + 1] - made[k]) * f, a1 = now[k] + (now[k + 1] - now[k]) * f;
+		// The way the cord runs there, eased from link to link so it turns smoothly along it.
+		Vec3 t0 = Running( made[Math.Max( k - 1, 0 )], made[k], made[k + 1], made[Math.Min( k + 2, at.Count - 1 )], f );
+		Vec3 t1 = Running( now[Math.Max( k - 1, 0 )], now[k], now[k + 1], now[Math.Min( k + 2, at.Count - 1 )], f );
+		var off = p - a0;
+		if ( t0.LengthSquared() > 1e-12f && t1.LengthSquared() > 1e-12f )
+		{
+			t0 /= t0.Length(); t1 /= t1.Length();
+			var axis = Vec3.Cross( t0, t1 );
+			float c = Vec3.Dot( t0, t1 );
+			if ( c > -0.999f ) off = off * c + Vec3.Cross( axis, off ) + axis * (Vec3.Dot( axis, off ) / (1 + c));
+		}
+		return a1 + off;
+	}
+
+	// An ear's axes from a direction up its long way and one out of it: up, across it (to the
+	// front on the left ear, to the back on the right one) and out, at right angles.
+	static (Vec3 Up, Vec3 Across, Vec3 Out) EarAxes( Vec3 up, Vec3 outward )
+	{
+		var n = outward / outward.Length();
+		var u = up - n * Vec3.Dot( up, n );
+		u /= u.Length();
+		return (u, Vec3.Cross( n, u ), n);
 	}
 
 	const int EarSteps = 4;                          // rounds of moving something worn on an ear in to the head
@@ -4336,7 +4695,8 @@ public static class GarmentFit
 		}
 	}
 
-	static void PushOut( List<int> idx, Vec3[] fitted, float[] gap0, Vec3[] away, PushTest push, bool keepGaps )
+	/// <param name="skip">Vertices that are in the body on purpose: they go along with the shift but don't ask for one.</param>
+	static void PushOut( List<int> idx, Vec3[] fitted, float[] gap0, Vec3[] away, PushTest push, bool keepGaps, HashSet<int> skip = null )
 	{
 		// If it still digs in somewhere, shift the whole piece out. A solid object only has to
 		// stop going deeper than it used to. How far off the skin it floats is the fit's
@@ -4353,6 +4713,7 @@ public static class GarmentFit
 			wanted.Clear();
 			foreach ( int i in idx )
 			{
+				if ( skip != null && skip.Contains( i ) ) continue;
 				if ( !push( fitted[i], keepGaps ? gap0[i] : MathF.Min( gap0[i], 0 ), away[i], out var p ) ) continue;
 				float distance = p.Length();
 				wanted.Add( (p / distance, distance) );

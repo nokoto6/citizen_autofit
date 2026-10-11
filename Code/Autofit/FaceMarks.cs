@@ -414,12 +414,15 @@ public static class FaceMarks
 	const float EarThick = 0.3f;       // an ear is no thicker than this, through it from side to side
 	const float EarGap = 0.01f;        // and stands at least this far off the head behind it
 	const int MinEar = 12;             // pixels an ear has at least
+	const float EarAxis = 0.5f;        // the marks for which way an ear faces and points are this many times the eyes' distance off its middle
 
 	/// <summary>
 	/// Each ear, seen from its side: "earL" and "earR" (the left one on the +Y side), the middle
 	/// of what of the ear stands off the head, on its outside; how far it reaches, after ".top",
 	/// ".bottom", ".front" and ".back"; and after ".canal" the skin in the middle of it where the
-	/// ear goes into the head, behind the flap if the flap is there. An ear is the flap of skin a
+	/// ear goes into the head, behind the flap if the flap is there. After ".out" a point off the
+	/// middle the way the outside of the flap faces, and after ".up" one along its long way,
+	/// upwards: how the ear is turned on the head. An ear is the flap of skin a
 	/// ray from the side goes into and out of again before it meets the head behind it (or meets
 	/// nothing more): a human's rim round the bowl, an anime ear standing out of the side of the
 	/// head. The bowl itself, grown into the head, sits inside what the flap reaches.
@@ -487,6 +490,34 @@ public static class FaceMarks
 			while ( k < hits.Count && hits[k].Leaving ) k++;
 			if ( k + 2 < hits.Count && hits[k + 1].Leaving && hits[k + 1].T - hits[k].T <= EarThick * apart && hits[k + 2].T - hits[k + 1].T >= EarGap * apart ) k += 2;
 			if ( k < hits.Count ) marks[name + ".canal"] = new Vec3( xm, start - side * hits[k].T, zm );
+
+			// Which way the ear faces and how it is tilted: the plane through the outside of the
+			// flap, and the long way of it seen from the side. A man's ear lies nearly flat
+			// against the side of the head; an anime ear stands out of it with its top well out.
+			double sx = 0, sz = 0, sy = 0;
+			foreach ( int p in ear ) { sx += x0 - (p % width) * pixel; sz += z0 - (p / width) * pixel; sy += outside[p]; }
+			sx /= ear.Count; sz /= ear.Count; sy /= ear.Count;
+			double xx = 0, xz = 0, zz = 0, xy = 0, zy = 0;
+			foreach ( int p in ear )
+			{
+				double dx = x0 - (p % width) * pixel - sx, dz = z0 - (p / width) * pixel - sz, dy = outside[p] - sy;
+				xx += dx * dx; xz += dx * dz; zz += dz * dz; xy += dx * dy; zy += dz * dy;
+			}
+			double det = xx * zz - xz * xz;
+			if ( det <= 1e-12 ) continue;
+			// y = b x + c z over the flap: its outside faces (-b, 1, -c), turned to the ear's side.
+			double b = (zz * xy - xz * zy) / det, c = (xx * zy - xz * xy) / det;
+			var facing = new Vec3( (float)-b, 1f, (float)-c ) * side;
+			facing /= facing.Length();
+			// The long way: the larger axis of the flap's spread seen from the side, pointing up.
+			double half = 0.5 * (xx + zz), root = Math.Sqrt( 0.25 * (xx - zz) * (xx - zz) + xz * xz ), big = half + root;
+			var along = Math.Abs( xz ) > 1e-12 ? new Vec3( (float)xz, 0f, (float)(big - xx) ) : xx >= zz ? new Vec3( 1, 0, 0 ) : new Vec3( 0, 0, 1 );
+			if ( along.Z < 0 ) along = -along;
+			along -= facing * Vec3.Dot( along, facing );
+			if ( along.Length() < 1e-6f ) continue;
+			along /= along.Length();
+			marks[name + ".out"] = marks[name] + facing * (EarAxis * apart);
+			marks[name + ".up"] = marks[name] + along * (EarAxis * apart);
 		}
 		return marks;
 	}
