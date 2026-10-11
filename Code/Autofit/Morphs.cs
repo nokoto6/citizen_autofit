@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Sandbox.Autofit;
 
@@ -232,6 +233,310 @@ public static class GarmentMorphs
 		}
 
 		if ( morphs.Count > 0 ) Settle( positions, tris, solid, surface, morphs, turnedAsMade, shapes, bent );
+	}
+
+	const float LashPatch = 0.004f * Units.Metre;   // the lid round a lash card's root that the card moves and turns with
+	const float LidMargin = 0.016f * Units.Metre;   // how far round the lashes or the paint on the lids the skin is looked at
+	const float LidMaterial = 0.33f;                // a material with this share of the area of the one the lids are drawn with or more is skin there
+
+	/// <summary>
+	/// Lashes take the body's morphs card by card. A card stands off the lid it grows from, its
+	/// tip out in front of the eye. A garment without morphs of its own takes only the morphs
+	/// that shape the face (see <see cref="TakeFromSkin"/>), so on a body that blinks by morphs
+	/// the lid shut and the lashes stayed where it had been. Taken vertex by vertex off the skin
+	/// round each, the root would go with the lid and the tip with the skin closest to it, and a
+	/// blink would crush the card. So each card takes every morph of the body the way the patch
+	/// of lid at its root moves in it, moved and turned as a whole, as the citizen's lashes go
+	/// with its lid bones.
+	/// </summary>
+	/// <param name="positions">The garment, fitted, in the body's rest pose (the space of the body's morphs).</param>
+	/// <param name="normals">The garment's normals there.</param>
+	/// <param name="roots">Per garment vertex, the vertex at the root of its card (see <see cref="GarmentFit.LashRoots"/>), or -1.</param>
+	/// <param name="bodyDraws">The body's draws, to tell its eyes from its skin (see <see cref="LidSkin"/>). Can be null.</param>
+	/// <param name="skin">The body's morphs, a move and a turn per body vertex.</param>
+	/// <param name="morphs">The garment's morphs. Those of the body are set on the cards, and added if the garment lacks them.</param>
+	/// <param name="seen">Whether a move and a turn are big enough to keep.</param>
+	public static void LashesFromSkin( Vec3[] positions, Vec3[] normals, int[] roots, Vec3[] bodyPositions, int[] bodyTris, List<(int First, int Count, string Material)> bodyDraws,
+		Dictionary<string, (Vec3[] Position, Vec3[] Normal)> skin, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Func<Vec3, Vec3, bool> seen )
+	{
+		if ( skin.Count == 0 ) return;
+		var cards = new Dictionary<int, List<int>>();
+		for ( int v = 0; v < roots.Length; v++ )
+		{
+			if ( roots[v] < 0 ) continue;
+			if ( !cards.TryGetValue( roots[v], out var card ) ) cards[roots[v]] = card = new List<int>();
+			card.Add( v );
+		}
+		if ( cards.Count == 0 ) return;
+		var rootsAt = cards.Keys.Select( r => positions[r] ).ToList();
+		var (lidTris, area, surface) = LidSkin( rootsAt, rootsAt, bodyPositions, bodyTris, bodyDraws );
+		if ( surface == null ) return;
+		var lidVerts = new List<int>();
+		var seenVert = new HashSet<int>();
+		foreach ( int b in lidTris ) if ( seenVert.Add( b ) ) lidVerts.Add( b );
+
+		// Per card: the closest point of the lid to its root and the patch of lid round it, its
+		// vertices and its triangles, as wide as the root is off the skin and no narrower than
+		// LashPatch. A patch of lid is close to flat, and the points of it alone barely tell how
+		// it turns, so the way the surface faces counts as well.
+		var patches = new List<(List<int> Card, Vec3 At, int A, int B, int C, float U, float V, float W, float Reach, List<(int Body, float Weight)> Points, List<(int Tri, float Weight)> Faces)>();
+		foreach ( var (root, card) in cards )
+		{
+			float d = surface.Nearest( positions[root], out var at, out int tri );
+			if ( tri < 0 ) continue;
+			int a = lidTris[tri * 3], b = lidTris[tri * 3 + 1], c = lidTris[tri * 3 + 2];
+			GarmentFit.Barycentric( at, bodyPositions[a], bodyPositions[b], bodyPositions[c], out float u, out float bv, out float bw );
+			float reach = MathF.Max( LashPatch, 2f * d ), sigma2 = 2f * (reach * 0.5f) * (reach * 0.5f);
+			var points = new List<(int, float)> { (a, area[a] * u), (b, area[b] * bv), (c, area[c] * bw) };
+			foreach ( int k in lidVerts )
+			{
+				float d2 = (bodyPositions[k] - at).LengthSquared();
+				if ( d2 <= reach * reach ) points.Add( (k, area[k] * MathF.Exp( -d2 / sigma2 )) );
+			}
+			var faces = new List<(int, float)> { (tri * 3, 1f) };
+			for ( int t = 0; t < lidTris.Length; t += 3 )
+			{
+				if ( t == tri * 3 ) continue;
+				var middle = (bodyPositions[lidTris[t]] + bodyPositions[lidTris[t + 1]] + bodyPositions[lidTris[t + 2]]) * (1f / 3f);
+				float d2 = (middle - at).LengthSquared();
+				if ( d2 <= reach * reach ) faces.Add( (t, MathF.Exp( -d2 / sigma2 )) );
+			}
+			patches.Add( (card, at, a, b, c, u, bv, bw, reach, points, faces) );
+		}
+
+		int n = positions.Length;
+		var h = new float[9];
+		foreach ( var (name, (move, turn)) in skin )
+		{
+			Vec3[] cardMove = null, cardTurn = null;
+			bool any = false;
+			foreach ( var (card, at, a, b, c, u, bv, bw, reach, points, faces) in patches )
+			{
+				// The patch's move as a turn about the closest point and a shift of that point.
+				float total = 0;
+				Vec3 from = Vec3.Zero, to = Vec3.Zero;
+				bool moved = false;
+				foreach ( var (k, w) in points )
+				{
+					total += w;
+					from += bodyPositions[k] * w;
+					to += (bodyPositions[k] + move[k]) * w;
+					moved |= move[k].LengthSquared() > 0;
+				}
+				if ( total <= 0 || !moved ) continue;
+				from /= total;
+				to /= total;
+				Array.Clear( h );
+				void Pair( Vec3 p, Vec3 q, float w )
+				{
+					h[0] += w * q.X * p.X; h[1] += w * q.X * p.Y; h[2] += w * q.X * p.Z;
+					h[3] += w * q.Y * p.X; h[4] += w * q.Y * p.Y; h[5] += w * q.Y * p.Z;
+					h[6] += w * q.Z * p.X; h[7] += w * q.Z * p.Y; h[8] += w * q.Z * p.Z;
+				}
+				foreach ( var (k, w) in points ) Pair( bodyPositions[k] - from, bodyPositions[k] + move[k] - to, w );
+				Vec3 facing = Vec3.Zero, facingNow = Vec3.Zero;
+				foreach ( var (t, w) in faces )
+				{
+					int i = lidTris[t], j = lidTris[t + 1], l = lidTris[t + 2];
+					facing += Vec3.Cross( bodyPositions[j] - bodyPositions[i], bodyPositions[l] - bodyPositions[i] ) * w;
+					facingNow += Vec3.Cross( bodyPositions[j] + move[j] - bodyPositions[i] - move[i], bodyPositions[l] + move[l] - bodyPositions[i] - move[i] ) * w;
+				}
+				float f0 = facing.Length(), f1 = facingNow.Length();
+				if ( f0 > 1e-12f && f1 > 1e-12f ) Pair( facing * (reach / f0), facingNow * (reach / f1), total );
+				var r = GarmentFit.Rotation( h );
+				Vec3 Turn( Vec3 x ) => r == null ? x : new Vec3( r[0] * x.X + r[1] * x.Y + r[2] * x.Z, r[3] * x.X + r[4] * x.Y + r[5] * x.Z, r[6] * x.X + r[7] * x.Y + r[8] * x.Z );
+
+				var shift = move[a] * u + move[b] * bv + move[c] * bw;
+				cardMove ??= new Vec3[n];
+				cardTurn ??= new Vec3[n];
+				foreach ( int v in card )
+				{
+					cardMove[v] = at + shift + Turn( positions[v] - at ) - positions[v];
+					cardTurn[v] = normals != null ? Turn( normals[v] ) - normals[v] : Vec3.Zero;
+					if ( seen( cardMove[v], cardTurn[v] ) ) any = true;
+				}
+			}
+			if ( cardMove == null ) continue;
+			if ( !morphs.TryGetValue( name, out var mine ) )
+			{
+				if ( !any ) continue;
+				morphs[name] = mine = (new Vec3[n], new Vec3[n]);
+			}
+			foreach ( var patch in patches )
+				foreach ( int v in patch.Card )
+				{
+					mine.Position[v] = cardMove[v];
+					mine.Normal[v] = cardTurn[v];
+				}
+		}
+	}
+
+	const float LidMorph = 0.5f;                        // a morph that moves the edges of the lids this much of the most it moves the skin anywhere
+	const float LidMorphLeast = 0.001f * Units.Metre;   // and at least this far moves the lids
+
+	/// <summary>
+	/// Paint (eyeliner, eyeshadow) goes with the skin under it in every morph that moves the lids:
+	/// a blink, the eyes opening wide or squinting. <see cref="TakeFromSkin"/> averages the skin's
+	/// move over a patch round each vertex and evens out whatever a morph turns over, which
+	/// suits cloth held off the face. A lid shutting folds the skin at its edge and moves it two
+	/// or three centimetres on an anime face, and paint there stayed several millimetres off the
+	/// lid on the humans and up to two centimetres on Aurora. Paint is the skin's colour, so in
+	/// those morphs it takes the move of the very spot it lies on. Run after TakeFromSkin; the
+	/// other morphs are left as it made them.
+	/// </summary>
+	/// <param name="positions">The garment, fitted, in the body's rest pose.</param>
+	/// <param name="painted">Per garment vertex, whether the fit laid it on the skin as paint.</param>
+	/// <param name="lids">Points along the edges of the lids, in the body's rest pose (see <see cref="LidMarks"/>).</param>
+	/// <param name="bodyDraws">The body's draws, to tell its eyes from its skin (see <see cref="LidSkin"/>). Can be null.</param>
+	/// <param name="skin">The body's morphs, a move and a turn per body vertex.</param>
+	/// <param name="morphs">The garment's morphs, changed in place; lid morphs of the body it lacks are added.</param>
+	/// <param name="seen">Whether a move and a turn are big enough to keep.</param>
+	/// <param name="shapes">Morphs that shape the face for good, left to TakeFromSkin even where they move the lids. Can be null.</param>
+	public static void PaintFromSkin( Vec3[] positions, bool[] painted, Vec3[] lids, Vec3[] bodyPositions, int[] bodyTris, List<(int First, int Count, string Material)> bodyDraws,
+		Dictionary<string, (Vec3[] Position, Vec3[] Normal)> skin, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Func<Vec3, Vec3, bool> seen, Func<string, bool> shapes = null )
+	{
+		if ( skin.Count == 0 || lids == null || lids.Length == 0 ) return;
+		var paint = new List<int>();
+		for ( int v = 0; v < painted.Length; v++ ) if ( painted[v] ) paint.Add( v );
+		if ( paint.Count == 0 ) return;
+		var (lidTris, area, surface) = LidSkin( paint.Select( v => positions[v] ).Concat( lids ), lids, bodyPositions, bodyTris, bodyDraws );
+		if ( surface == null ) return;
+
+		(int A, int B, int C, float U, float V, float W) Spot( Vec3 p )
+		{
+			surface.Nearest( p, out var at, out int tri );
+			if ( tri < 0 ) return (-1, -1, -1, 0, 0, 0);
+			int a = lidTris[tri * 3], b = lidTris[tri * 3 + 1], c = lidTris[tri * 3 + 2];
+			GarmentFit.Barycentric( at, bodyPositions[a], bodyPositions[b], bodyPositions[c], out float u, out float bv, out float bw );
+			return (a, b, c, u, bv, bw);
+		}
+		var edges = lids.Select( Spot ).Where( x => x.A >= 0 ).ToList();
+		var spots = paint.Select( v => (Vertex: v, Spot: Spot( positions[v] )) ).Where( x => x.Spot.A >= 0 ).ToList();
+
+		int n = positions.Length;
+		foreach ( var (name, (move, turn)) in skin )
+		{
+			if ( shapes != null && shapes( name ) ) continue;
+			float most = 0, atLids = 0;
+			for ( int b = 0; b < move.Length; b++ ) if ( area[b] > 0 ) most = MathF.Max( most, move[b].LengthSquared() );
+			foreach ( var (a, b, c, u, bv, bw) in edges ) atLids = MathF.Max( atLids, (move[a] * u + move[b] * bv + move[c] * bw).LengthSquared() );
+			if ( most <= 0 || atLids < LidMorph * LidMorph * most || atLids < LidMorphLeast * LidMorphLeast ) continue;
+
+			bool any = false;
+			foreach ( var (_, (a, b, c, u, bv, bw)) in spots )
+				if ( seen( move[a] * u + move[b] * bv + move[c] * bw, turn[a] * u + turn[b] * bv + turn[c] * bw ) ) { any = true; break; }
+			if ( !morphs.TryGetValue( name, out var mine ) )
+			{
+				if ( !any ) continue;
+				morphs[name] = mine = (new Vec3[n], new Vec3[n]);
+			}
+			foreach ( var (v, (a, b, c, u, bv, bw)) in spots )
+			{
+				mine.Position[v] = move[a] * u + move[b] * bv + move[c] * bw;
+				mine.Normal[v] = turn[a] * u + turn[b] * bv + turn[c] * bw;
+			}
+		}
+	}
+
+	/// <summary>
+	/// The marks along the edges of the lids (<see cref="FaceMarks.Outline"/>), found on the body
+	/// in the stock proportions, put on the body in its rest pose: the same spot of the same
+	/// triangle.
+	/// </summary>
+	/// <param name="posed">The body in the stock proportions, where the marks were found.</param>
+	/// <param name="rest">The body's vertices in its rest pose, in the same order.</param>
+	public static Vec3[] LidMarks( List<(string Name, Vec3 Stock, Vec3 Body)> features, TriMesh posed, Vec3[] rest )
+	{
+		if ( features == null ) return null;
+		var result = new List<Vec3>();
+		foreach ( var (name, _, body) in features )
+		{
+			if ( !name.StartsWith( "eye" ) || Array.IndexOf( FaceMarks.Outline, name.Length > 4 ? name.Substring( 4 ) : "" ) < 0 ) continue;
+			posed.Nearest( body, out var at, out int tri );
+			if ( tri < 0 ) continue;
+			int a = posed.Tris[tri * 3], b = posed.Tris[tri * 3 + 1], c = posed.Tris[tri * 3 + 2];
+			GarmentFit.Barycentric( at, posed.Verts[a], posed.Verts[b], posed.Verts[c], out float u, out float v, out float w );
+			result.Add( rest[a] * u + rest[b] * v + rest[c] * w );
+		}
+		return result.Count > 0 ? result.ToArray() : null;
+	}
+
+	/// <summary>
+	/// The skin round some points (lashes, paint) without the eyes: the skin (see <see cref="Skin"/>)
+	/// within <see cref="LidMargin"/> of their box, less what is drawn with a material much
+	/// smaller than the one the lids are drawn with, the one most of the given points on the lids
+	/// are closest to. An anime
+	/// eye's white is welded to the face round it, so it is skin to <see cref="Skin"/>; a lid
+	/// shuts over it and it stays put, and lashes and liner taken off it stayed put too. Also
+	/// the area round each skin vertex.
+	/// </summary>
+	static (int[] Tris, float[] Area, TriMesh Surface) LidSkin( IEnumerable<Vec3> points, IEnumerable<Vec3> onLids, Vec3[] bodyPositions, int[] bodyTris, List<(int First, int Count, string Material)> draws )
+	{
+		var (_, area, _) = SkinOf( bodyPositions, bodyTris );
+		var lo = new Vec3( float.MaxValue, float.MaxValue, float.MaxValue );
+		var hi = new Vec3( float.MinValue, float.MinValue, float.MinValue );
+		bool any = false;
+		foreach ( var p in points )
+		{
+			any = true;
+			lo = new Vec3( MathF.Min( lo.X, p.X ), MathF.Min( lo.Y, p.Y ), MathF.Min( lo.Z, p.Z ) );
+			hi = new Vec3( MathF.Max( hi.X, p.X ), MathF.Max( hi.Y, p.Y ), MathF.Max( hi.Z, p.Z ) );
+		}
+		if ( !any ) return (Array.Empty<int>(), area, null);
+		bool Near( Vec3 p ) => p.X >= lo.X - LidMargin && p.X <= hi.X + LidMargin && p.Y >= lo.Y - LidMargin && p.Y <= hi.Y + LidMargin && p.Z >= lo.Z - LidMargin && p.Z <= hi.Z + LidMargin;
+
+		// Skin triangles near the points, with what each is drawn with. A triangle of a piece of
+		// its own that isn't skin has no area on its corners.
+		int count = bodyTris.Length / 3;
+		var material = new int[count];
+		var materialArea = new List<float>();
+		var names = new Dictionary<string, int>();
+		if ( draws != null )
+			foreach ( var (first, length, name) in draws )
+			{
+				if ( !names.TryGetValue( name ?? "", out int id ) ) { names[name ?? ""] = id = names.Count; materialArea.Add( 0 ); }
+				for ( int k = first; k + 2 < first + length && k / 3 < count; k += 3 )
+				{
+					material[k / 3] = id;
+					Vec3 a = bodyPositions[bodyTris[k]], b = bodyPositions[bodyTris[k + 1]], c = bodyPositions[bodyTris[k + 2]];
+					materialArea[id] += 0.5f * Vec3.Cross( b - a, c - a ).Length();
+				}
+			}
+		var near = new List<int>();
+		for ( int t = 0; t < count; t++ )
+		{
+			int a = bodyTris[t * 3], b = bodyTris[t * 3 + 1], c = bodyTris[t * 3 + 2];
+			if ( area[a] <= 0 || area[b] <= 0 || area[c] <= 0 ) continue;
+			if ( Near( bodyPositions[a] ) || Near( bodyPositions[b] ) || Near( bodyPositions[c] ) ) near.Add( t );
+		}
+		if ( near.Count == 0 ) return (Array.Empty<int>(), area, null);
+
+		int[] Corners( List<int> tris )
+		{
+			var result = new int[tris.Count * 3];
+			for ( int i = 0; i < tris.Count; i++ ) { result[i * 3] = bodyTris[tris[i] * 3]; result[i * 3 + 1] = bodyTris[tris[i] * 3 + 1]; result[i * 3 + 2] = bodyTris[tris[i] * 3 + 2]; }
+			return result;
+		}
+		if ( draws == null || materialArea.Count < 2 )
+		{
+			var all = Corners( near );
+			return (all, area, new TriMesh( bodyPositions, all ));
+		}
+
+		// The material most of the points on the lids are closest to is what the lids are drawn with.
+		var mesh = new TriMesh( bodyPositions, Corners( near ) );
+		var votes = new int[materialArea.Count];
+		foreach ( var p in onLids )
+		{
+			mesh.Nearest( p, out _, out int tri );
+			if ( tri >= 0 ) votes[material[near[tri]]]++;
+		}
+		int lid = 0;
+		for ( int m = 1; m < votes.Length; m++ ) if ( votes[m] > votes[lid] ) lid = m;
+		var kept = near.Where( t => materialArea[material[t]] >= LidMaterial * materialArea[lid] ).ToList();
+		if ( kept.Count == near.Count ) return (Corners( near ), area, mesh);
+		var corners = Corners( kept );
+		return (corners, area, new TriMesh( bodyPositions, corners ));
 	}
 
 	// Per garment vertex, whether it is within twice the reach of the box round the skin that

@@ -605,7 +605,10 @@ public static class ClothingFitter
 			// any other garment the skin under it moves: a mask, glasses, a gaiter.
 			bool morphed = levels.Any( x => x.Morphs.Any( set => set.Morphs.Count > 0 ) );
 			bool shaped = body.Geo.Morphs.Any( set => set.Morphs.Any( m => IsFaceShape( m.Name ) ) );
-			var bodyAtlases = morphed || shaped ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
+			// Lashes and paint on the lids shut with them, and on a body that blinks by morphs that
+			// takes its morphs. Whether a garment is either is only known once it is fitted.
+			bool blinks = body.Geo.Morphs.Any( set => set.Morphs.Count > 0 );
+			var bodyAtlases = morphed || shaped || blinks ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
 			double readingMs = reading.Elapsed.TotalMilliseconds;
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
@@ -1138,9 +1141,14 @@ public static class ClothingFitter
 	/// </summary>
 	/// <param name="asMade">The garment's own morphs as made, to tell what they turn over on purpose.</param>
 	/// <param name="bent">Per vertex, whether it is on a solid object the fit bent to the body, see <see cref="GarmentMorphs.BentSolids"/>.</param>
-	static void FaceMorphs( Vec3[] positions, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade )
+	/// <param name="lashRoots">If the garment is lashes, per vertex the root of its card (<see cref="GarmentFit.LashRoots"/>), else null. Lashes take every morph of the body card by card, see <see cref="GarmentMorphs.LashesFromSkin"/>.</param>
+	/// <param name="painted">Per vertex, whether the fit laid it on the skin as paint. In the morphs that move the lids paint takes the move of the spot it lies on, see <see cref="GarmentMorphs.PaintFromSkin"/>.</param>
+	/// <param name="target">The body as mapped, for where its lids are.</param>
+	static void FaceMorphs( Vec3[] positions, Vec3[] normals, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade, int[] lashRoots, bool[] painted, Mapped target )
 	{
-		Func<string, bool> wanted = morphs.Count > 0 ? null : IsFaceShape;
+		bool own = morphs.Count > 0;
+		bool paint = Array.IndexOf( painted, true ) >= 0;
+		Func<string, bool> wanted = own || lashRoots != null || paint ? null : IsFaceShape;
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
 		{
@@ -1157,10 +1165,19 @@ public static class ClothingFitter
 			}
 		}
 		if ( skin.Count == 0 ) return;
+		if ( lashRoots != null )
+		{
+			GarmentMorphs.LashesFromSkin( positions, normals, lashRoots, body.Positions, body.Indices, body.Draws, skin, morphs, Seen );
+			return;
+		}
 
 		var meant = new Dictionary<string, bool[]>();
 		foreach ( var (name, move) in asMade ) meant[name] = GarmentMorphs.TurnedOver( garment.Positions, garment.Indices, move );
-		GarmentMorphs.TakeFromSkin( positions, garment.Indices, solid, body.Positions, body.Indices, skin, morphs, Seen, meant, IsFaceShape, bent );
+		var taken = own ? skin : skin.Where( x => IsFaceShape( x.Key ) ).ToDictionary( x => x.Key, x => x.Value );
+		if ( taken.Count > 0 )
+			GarmentMorphs.TakeFromSkin( positions, garment.Indices, solid, body.Positions, body.Indices, taken, morphs, Seen, meant, IsFaceShape, bent );
+		if ( paint )
+			GarmentMorphs.PaintFromSkin( positions, painted, GarmentMorphs.LidMarks( target.Pose.Features, target.Mesh, body.Positions ), body.Positions, body.Indices, body.Draws, skin, morphs, Seen, IsFaceShape );
 	}
 
 	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
@@ -1263,8 +1280,9 @@ public static class ClothingFitter
 				Shading.TurnInPlace( frames, turn );
 			}
 		}
+		var lashRoots = GarmentFit.LashRoots( garment.Positions, cloth, target.Pose.Features );
 		if ( body != null && bodyAtlases != null )
-			FaceMorphs( positions, garment, solid, GarmentMorphs.BentSolids( garment.Positions, stockFit, garment.Indices, solid ), body, bodyAtlases, morphs, asMade );
+			FaceMorphs( positions, normals, garment, solid, GarmentMorphs.BentSolids( garment.Positions, stockFit, garment.Indices, solid ), body, bodyAtlases, morphs, asMade, lashRoots, painted, target );
 
 		// The garment's bones in the body's rest pose.
 		var result = new Fitted { Garment = garment, StockFit = stockFit, BonePositions = new Vec3[garment.BoneNames.Length], BoneRotations = new float[garment.BoneNames.Length][], Rest = positions, Cloth = cloth, Loose = loose };
@@ -1380,9 +1398,11 @@ public static class ClothingFitter
 				}
 				else
 				{
-					int sb = animBones[v * 4 + j];
+					// A lash card turns with the lid bones as its root does, all of it.
+					int from = lashRoots != null && lashRoots[v] >= 0 ? lashRoots[v] : v;
+					int sb = animBones[from * 4 + j];
 					wornBones[v * 4 + j] = sb >= 0 && target.Pose.BodyHas[sb] ? OutBone( sb ) : -1;
-					wornWeights[v * 4 + j] = sb >= 0 ? animWeights[v * 4 + j] : 0;
+					wornWeights[v * 4 + j] = sb >= 0 ? animWeights[from * 4 + j] : 0;
 				}
 			}
 		}

@@ -922,62 +922,13 @@ public static class GarmentFit
 	/// <returns>The garment fitted, or null if it isn't lashes.</returns>
 	static Vec3[] LashesOn( Vec3[] verts, int[] tris, int[] weld, Vec3[] pts, bool[] used, Vec3[] move, List<(string Name, Vec3 Stock, Vec3 Body)> features, bool[] solidOut, bool[] clothOut, bool[] paintOut )
 	{
-		// The lines over and under each eye, on both faces, from the inner corner to the outer one.
-		var lines = new List<(Vec3[] Stock, Vec3[] Body, float Wide, float Scale)>();
-		foreach ( string eye in new[] { "eyeL", "eyeR" } )
-			// The marks along the line over the eye and the one under it (FaceMarks).
-			foreach ( var names in new[] { new[] { ".in", ".top.1", ".top.2", ".top.3", ".out" }, new[] { ".in", ".bottom.1", ".bottom.2", ".bottom.3", ".out" } } )
-			{
-				var stock = new Vec3[names.Length];
-				var body = new Vec3[names.Length];
-				bool all = true;
-				for ( int k = 0; k < names.Length && all; k++ )
-				{
-					all = false;
-					foreach ( var (name, at, there) in features )
-						if ( name == eye + names[k] ) { stock[k] = at; body[k] = there; all = true; break; }
-				}
-				if ( !all ) continue;
-				float wide = (stock[^1] - stock[0]).Length();
-				if ( wide < 1e-4f * Units.Metre ) continue;
-				lines.Add( (stock, body, wide, (body[^1] - body[0]).Length() / wide) );
-			}
-		if ( lines.Count == 0 ) return null;
-
-		var piece = Islands( pts.Length, MeshTools.Edges( tris, weld ) );
-		var cards = new Dictionary<int, List<int>>();
-		for ( int i = 0; i < pts.Length; i++ )
-		{
-			if ( !used[i] ) continue;
-			if ( !cards.TryGetValue( piece[i], out var list ) ) cards[piece[i]] = list = new List<int>();
-			list.Add( i );
-		}
-
-		// Each card's root: its vertex nearest to a lid line, and that line. A card grows from the
-		// lid when it is rooted at the line and all of it stays near it: a shell painted over the
-		// whole face touches the lid line too.
-		var roots = new List<(List<int> Card, int Line, float Along)>();
-		int rooted = 0;
-		foreach ( var card in cards.Values )
-		{
-			float best = float.MaxValue, along = 0;
-			int line = -1;
-			foreach ( int i in card )
-				for ( int k = 0; k < lines.Count; k++ )
-				{
-					float d = AlongLine( lines[k].Stock, pts[i], out float t );
-					if ( d < best ) { best = d; line = k; along = t; }
-				}
-			float furthest = 0;
-			foreach ( int i in card ) furthest = MathF.Max( furthest, AlongLine( lines[line].Stock, pts[i], out _ ) );
-			if ( best <= LashReach * lines[line].Wide && furthest <= LashSpan * lines[line].Wide ) rooted++;
-			roots.Add( (card, line, along) );
-		}
-		if ( rooted < LashShare * cards.Count ) return null;
+		var lines = LidLines( features );
+		var roots = lines.Count > 0 ? LashCards( tris, weld, pts, used, lines ) : null;
+		if ( roots == null ) return null;
 
 		var fitted = new Vec3[pts.Length];
 		for ( int i = 0; i < pts.Length; i++ ) fitted[i] = pts[i] + move[i];
-		foreach ( var (card, k, along) in roots )
+		foreach ( var (card, k, along, _) in roots )
 		{
 			var (from, to, _, scale) = lines[k];
 			var (a, ta, ua, fa) = LineFrame( from, along );
@@ -995,6 +946,96 @@ public static class GarmentFit
 		if ( clothOut != null ) Array.Clear( clothOut );
 		if ( paintOut != null ) Array.Clear( paintOut );
 		return result;
+	}
+
+	/// <summary>
+	/// Per vertex of a garment that is lashes (see <see cref="LashesOn"/>), the vertex at the root
+	/// of its card, the one nearest the lid it grows from; -1 for a vertex on no card. Null if the
+	/// garment isn't lashes.
+	/// </summary>
+	public static int[] LashRoots( Vec3[] verts, int[] tris, List<(string Name, Vec3 Stock, Vec3 Body)> features )
+	{
+		if ( features == null ) return null;
+		var lines = LidLines( features );
+		if ( lines.Count == 0 ) return null;
+		var weld = MeshTools.Weld( verts, out int n );
+		var firstOf = new int[n];
+		for ( int i = verts.Length - 1; i >= 0; i-- ) firstOf[weld[i]] = i;
+		var pts = new Vec3[n];
+		for ( int i = 0; i < n; i++ ) pts[i] = verts[firstOf[i]];
+		var used = new bool[n];
+		foreach ( int v in tris ) used[weld[v]] = true;
+		var cards = LashCards( tris, weld, pts, used, lines );
+		if ( cards == null ) return null;
+
+		var rootOf = new int[n];
+		Array.Fill( rootOf, -1 );
+		foreach ( var (card, _, _, root) in cards )
+			foreach ( int i in card ) rootOf[i] = root;
+		var result = new int[verts.Length];
+		for ( int i = 0; i < verts.Length; i++ ) result[i] = rootOf[weld[i]] >= 0 ? firstOf[rootOf[weld[i]]] : -1;
+		return result;
+	}
+
+	// The lines over and under each eye, on both faces, from the inner corner to the outer one,
+	// out of the marks along them (FaceMarks). Also how wide the stock eye is, and how many times
+	// as wide the body's.
+	static List<(Vec3[] Stock, Vec3[] Body, float Wide, float Scale)> LidLines( List<(string Name, Vec3 Stock, Vec3 Body)> features )
+	{
+		var lines = new List<(Vec3[] Stock, Vec3[] Body, float Wide, float Scale)>();
+		foreach ( string eye in new[] { "eyeL", "eyeR" } )
+			foreach ( var names in new[] { new[] { ".in", ".top.1", ".top.2", ".top.3", ".out" }, new[] { ".in", ".bottom.1", ".bottom.2", ".bottom.3", ".out" } } )
+			{
+				var stock = new Vec3[names.Length];
+				var body = new Vec3[names.Length];
+				bool all = true;
+				for ( int k = 0; k < names.Length && all; k++ )
+				{
+					all = false;
+					foreach ( var (name, at, there) in features )
+						if ( name == eye + names[k] ) { stock[k] = at; body[k] = there; all = true; break; }
+				}
+				if ( !all ) continue;
+				float wide = (stock[^1] - stock[0]).Length();
+				if ( wide < 1e-4f * Units.Metre ) continue;
+				lines.Add( (stock, body, wide, (body[^1] - body[0]).Length() / wide) );
+			}
+		return lines;
+	}
+
+	// The garment's cards (welded vertices, by piece) with the lid line each grows from, how far
+	// along it, and its root, the vertex nearest that line. Null if the garment isn't lashes.
+	static List<(List<int> Card, int Line, float Along, int Root)> LashCards( int[] tris, int[] weld, Vec3[] pts, bool[] used, List<(Vec3[] Stock, Vec3[] Body, float Wide, float Scale)> lines )
+	{
+		var piece = Islands( pts.Length, MeshTools.Edges( tris, weld ) );
+		var cards = new Dictionary<int, List<int>>();
+		for ( int i = 0; i < pts.Length; i++ )
+		{
+			if ( !used[i] ) continue;
+			if ( !cards.TryGetValue( piece[i], out var list ) ) cards[piece[i]] = list = new List<int>();
+			list.Add( i );
+		}
+
+		// A card grows from the lid when it is rooted at the line and all of it stays near it: a
+		// shell painted over the whole face touches the lid line too.
+		var roots = new List<(List<int> Card, int Line, float Along, int Root)>();
+		int rooted = 0;
+		foreach ( var card in cards.Values )
+		{
+			float best = float.MaxValue, along = 0;
+			int line = -1, root = -1;
+			foreach ( int i in card )
+				for ( int k = 0; k < lines.Count; k++ )
+				{
+					float d = AlongLine( lines[k].Stock, pts[i], out float t );
+					if ( d < best ) { best = d; line = k; along = t; root = i; }
+				}
+			float furthest = 0;
+			foreach ( int i in card ) furthest = MathF.Max( furthest, AlongLine( lines[line].Stock, pts[i], out _ ) );
+			if ( best <= LashReach * lines[line].Wide && furthest <= LashSpan * lines[line].Wide ) rooted++;
+			roots.Add( (card, line, along, root) );
+		}
+		return rooted < LashShare * cards.Count ? null : roots;
 	}
 
 	// How far a point is from a line through points, and how far along it (0..1 by length) its nearest point is.
