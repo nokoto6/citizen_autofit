@@ -1767,8 +1767,8 @@ public sealed class Repose
 	/// </summary>
 	/// <param name="rest">The garment in the body's rest pose (<see cref="ToBodyRest"/>).</param>
 	/// <param name="bones">Its weights as stock bones, as it will be animated (<see cref="ForAnimation"/>).</param>
-	/// <param name="lining">Per vertex, cloth made under other cloth of the garment (<see cref="GarmentFit.Linings"/>), or null. It is hidden by what is over it and isn't held out itself.</param>
-	public Vec3[] CoverInPose( Vec3[] rest, int[] tris, bool[] cloth, bool[] solid, int[] bones, float[] weights, SkinnedGeometry stock, bool[] lining = null )
+	/// <param name="lining">Cloth made under other cloth of the garment and the spot over it (<see cref="GarmentFit.Linings"/>), or nulls. It is hidden by what is over it: it isn't held out itself, but goes out with the cloth over it.</param>
+	public Vec3[] CoverInPose( Vec3[] rest, int[] tris, bool[] cloth, bool[] solid, int[] bones, float[] weights, SkinnedGeometry stock, (int[] Over, float[] Weights) lining = default )
 	{
 		if ( cloth == null || Moved < 0.001f * Units.Metre ) return rest;
 		int root = Array.IndexOf( stockParents, -1 );
@@ -1853,6 +1853,7 @@ public sealed class Repose
 
 		var result = MeshTools.Copy( rest );
 		var posed = new Vec3[rest.Length];
+		var weld = MeshTools.Weld( rest, out int n );
 		int[] clothTris = null;
 		var layerHits = new List<(float T, bool Leaving, int Tri)>();
 		var lift = new Dictionary<int, Vec3>();
@@ -1864,7 +1865,7 @@ public sealed class Repose
 			{
 				int a = tris[t], b = tris[t + 1], c = tris[t + 2];
 				if ( !cloth[a] || !cloth[b] || !cloth[c] || (solid != null && (solid[a] || solid[b] || solid[c])) ) continue;
-				if ( lining != null && (lining[a] || lining[b] || lining[c]) ) continue;
+				if ( lining.Over != null && (lining.Over[a * 3] >= 0 || lining.Over[b * 3] >= 0 || lining.Over[c * 3] >= 0) ) continue;
 				Shares( bones, weights, a, b, c );
 				Array.Copy( share, clothShare, share.Length );
 				foreach ( var bw in CoverSamples )
@@ -1916,9 +1917,27 @@ public sealed class Repose
 						if ( !moves.TryGetValue( o, out var have ) || have.LengthSquared() < move.LengthSquared() ) moves[o] = move;
 				}
 			}
+			// A lining goes out with the spot of the cloth over it, split vertices of that spot
+			// taken together.
+			if ( lining.Over != null )
+			{
+				var spotMove = new Dictionary<int, Vec3>();
+				foreach ( var (vi, move) in moves )
+					if ( !spotMove.TryGetValue( weld[vi], out var have ) || have.LengthSquared() < move.LengthSquared() ) spotMove[weld[vi]] = move;
+				for ( int v = 0; v < rest.Length; v++ )
+				{
+					if ( lining.Over[v * 3] < 0 ) continue;
+					var move = Vec3.Zero;
+					for ( int k = 0; k < 3; k++ )
+						if ( spotMove.TryGetValue( weld[lining.Over[v * 3 + k]], out var m ) ) move += m * lining.Weights[v * 3 + k];
+					if ( move.LengthSquared() < 1e-12f ) continue;
+					if ( !moves.TryGetValue( v, out var have ) || have.LengthSquared() < move.LengthSquared() ) moves[v] = move;
+				}
+			}
 			// Never turned far by it: held out at its rim and not along the lining it folds into,
 			// the bottom of a vest's armhole rolled over on Akira and showed its inside. Where a
-			// triangle would turn further than CoverTurn, its corners go out less.
+			// triangle would turn further than CoverTurn from how it came in, over all the passes
+			// (a bit each pass added up to turning it over), its corners go out less.
 			for ( int round = 0; round < CoverUnturn; round++ )
 			{
 				bool turned = false;
@@ -1927,7 +1946,7 @@ public sealed class Repose
 					int a = clothTris[t], b = clothTris[t + 1], c = clothTris[t + 2];
 					bool ma = moves.TryGetValue( a, out var va ), mb = moves.TryGetValue( b, out var vb ), mc = moves.TryGetValue( c, out var vc );
 					if ( !ma && !mb && !mc ) continue;
-					var before = Vec3.Cross( result[b] - result[a], result[c] - result[a] );
+					var before = Vec3.Cross( rest[b] - rest[a], rest[c] - rest[a] );
 					var after = Vec3.Cross( result[b] + vb - result[a] - va, result[c] + vc - result[a] - va );
 					if ( Vec3.Dot( before, after ) > CoverTurn * before.Length() * after.Length() ) continue;
 					if ( ma ) moves[a] = va * 0.5f;
@@ -1941,7 +1960,6 @@ public sealed class Repose
 		}
 
 		// Split vertices of one spot go together.
-		var weld = MeshTools.Weld( rest, out int n );
 		var sum = new Vec3[n];
 		var many = new int[n];
 		for ( int v = 0; v < rest.Length; v++ ) { sum[weld[v]] += result[v] - rest[v]; many[weld[v]]++; }

@@ -1338,20 +1338,33 @@ public static class GarmentFit
 	}
 
 	/// <summary>
-	/// Per vertex, whether it is cloth made back to back with other cloth of the garment and nearer
-	/// the skin (see KeepLinings): a lining, a facing. Holding the cloth out over the body with its
-	/// arms down (<see cref="Repose.CoverInPose"/>) leaves these alone; lifted, the lining at the
-	/// back of a vest's armholes took the shell over it with it vertex by vertex and turned it
-	/// over on Akira.
+	/// Cloth made back to back with other cloth of the garment and nearer the skin (see
+	/// KeepLinings), a lining or a facing: per vertex, the spot of the cloth over it, as three
+	/// vertices and their weights, the first of them -1 where it isn't a lining. Holding the cloth
+	/// out over the body with its arms down (<see cref="Repose.CoverInPose"/>) moves these with
+	/// the cloth over them. Lifted on their own, the lining at the back of a vest's armholes took
+	/// the shell over it with it vertex by vertex and turned it over on Akira; left where it was,
+	/// the bottom of the armhole, made a millimetre under its rim, was pressed 2 cm after the rim
+	/// gone out and turned over instead.
 	/// </summary>
-	public static bool[] Linings( Vec3[] made, int[] tris, bool[] cloth, bool[] paint, TriMesh skin, (Vec3 Stock, Vec3 Body)[] eyes )
+	public static (int[] Over, float[] Weights) Linings( Vec3[] made, int[] tris, bool[] cloth, bool[] paint, TriMesh skin, (Vec3 Stock, Vec3 Body)[] eyes )
 	{
-		var result = new bool[made.Length];
-		var (weld, _, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
-		var lining = new bool[pts.Length];
-		foreach ( var (v, _, _, _) in BackToBack( pts, clothTris, skin, out _, Mouth( eyes ) ) ) lining[v] = true;
-		for ( int i = 0; i < made.Length; i++ ) result[i] = lining[weld[i]];
-		return result;
+		var over = new int[made.Length * 3];
+		var weights = new float[made.Length * 3];
+		Array.Fill( over, -1 );
+		var (weld, first, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
+		var spot = new Dictionary<int, (int Tri, float[] Bary)>();
+		foreach ( var (v, t, bw, _) in BackToBack( pts, clothTris, skin, out _, Mouth( eyes ) ) ) spot[v] = (t, bw);
+		for ( int i = 0; i < made.Length; i++ )
+		{
+			if ( !spot.TryGetValue( weld[i], out var at ) ) continue;
+			for ( int k = 0; k < 3; k++ )
+			{
+				over[i * 3 + k] = first[clothTris[at.Tri * 3 + k]];
+				weights[i * 3 + k] = at.Bary[k];
+			}
+		}
+		return (over, weights);
 	}
 
 	// The garment as made, welded, and its triangles of cloth (not paint) by welded vertex.
