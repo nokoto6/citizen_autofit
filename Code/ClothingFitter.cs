@@ -1208,7 +1208,8 @@ public static class ClothingFitter
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
-		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo );
+		var linings = GarmentFit.Linings( garment.Positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
+		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo, linings );
 		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );
 		positions = GarmentFit.KeepLinings( garment.Positions, positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
 

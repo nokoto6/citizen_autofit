@@ -565,7 +565,7 @@ public static class GarmentFit
 			// Cards hanging off a garment's cloth (the fraying threads along a denim vest's edges)
 			// are fringe, carried by the cloth (see Fringe). Taken for hair, they took the whole
 			// vest the way of hair, its lining with no care for the shell over it.
-			if ( parts.Count > LoosePieces && Fringed( parts, rigid, pts, clothPts, eyes ) )
+			if ( parts.Count > LoosePieces && Fringed( parts, rigid, pts, members, pieceTris, firstOf, boneIndex, boneWeight, clothPts.Count, eyes ) )
 			{
 				foreach ( int r in parts ) bends.Add( piece[rigid[r][0]] );
 				continue;
@@ -1193,6 +1193,7 @@ public static class GarmentFit
 	}
 
 	const float MouthBelowEyes = 0.06f * Units.Metre;   // the mouth is this far under the eyes: hair and beards reach down to it or lower, fringe on a garment and linings worked on hang lower
+	const float RimTurn = 0.3f;          // cloth whose faces round a vertex turn further than this from each other (cosine: 73 degrees) is going round its edge there
 	const float BackToBackTurn = 0.25f;  // cloth behind a lining faces the same way as it to within this (cosine: 75 degrees)
 	const float Squeezed = 0.6f;    // cloth shrunk to less than this share of its size, across, was squeezed (a collar lowered down a short neck), not just taken in
 	const float KeepDepth = 0.5f;   // cloth made under other cloth stays at least this share of as far under it as it was made
@@ -1337,6 +1338,42 @@ public static class GarmentFit
 	}
 
 	/// <summary>
+	/// Per vertex, whether it is cloth made back to back with other cloth of the garment and nearer
+	/// the skin (see KeepLinings): a lining, a facing. Holding the cloth out over the body with its
+	/// arms down (<see cref="Repose.CoverInPose"/>) leaves these alone; lifted, the lining at the
+	/// back of a vest's armholes took the shell over it with it vertex by vertex and turned it
+	/// over on Akira.
+	/// </summary>
+	public static bool[] Linings( Vec3[] made, int[] tris, bool[] cloth, bool[] paint, TriMesh skin, (Vec3 Stock, Vec3 Body)[] eyes )
+	{
+		var result = new bool[made.Length];
+		var (weld, _, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
+		var lining = new bool[pts.Length];
+		foreach ( var (v, _, _, _) in BackToBack( pts, clothTris, skin, out _, Mouth( eyes ) ) ) lining[v] = true;
+		for ( int i = 0; i < made.Length; i++ ) result[i] = lining[weld[i]];
+		return result;
+	}
+
+	// The garment as made, welded, and its triangles of cloth (not paint) by welded vertex.
+	static (int[] Weld, int[] First, Vec3[] Pts, List<int> ClothTris) ClothAsMade( Vec3[] made, int[] tris, bool[] cloth, bool[] paint )
+	{
+		var weld = MeshTools.Weld( made, out int n );
+		var first = new int[n];
+		for ( int i = made.Length - 1; i >= 0; i-- ) first[weld[i]] = i;
+		var pts = new Vec3[n];
+		for ( int v = 0; v < n; v++ ) pts[v] = made[first[v]];
+		var clothTris = new List<int>();
+		for ( int t = 0; t < tris.Length; t += 3 )
+		{
+			int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
+			if ( !cloth[tris[t]] || !cloth[tris[t + 1]] || !cloth[tris[t + 2]] || a == b || b == c || a == c ) continue;
+			if ( paint != null && (paint[tris[t]] || paint[tris[t + 1]] || paint[tris[t + 2]]) ) continue;
+			clothTris.Add( a ); clothTris.Add( b ); clothTris.Add( c );
+		}
+		return (weld, first, pts, clothTris);
+	}
+
+	/// <summary>
 	/// Cloth made back to back with other cloth of the garment and nearer the skin (a lining
 	/// behind its shell, the facing behind a zip, the inside of a waistband or of a turned-up
 	/// cuff), kept behind it as deep as it was made once the garment is back in the body's rest
@@ -1359,19 +1396,8 @@ public static class GarmentFit
 	/// <param name="eyes">Where the eyes are, on the stock body and on this one. Hats and helmets, on the head above the mouth, are left as they are: the shell of a hard hat, pressed behind its outer face, went out through the band round the head inside it.</param>
 	public static Vec3[] KeepLinings( Vec3[] made, Vec3[] rest, int[] tris, bool[] cloth, bool[] paint, TriMesh skin, (Vec3 Stock, Vec3 Body)[] eyes )
 	{
-		var weld = MeshTools.Weld( made, out int n );
-		var first = new int[n];
-		for ( int i = made.Length - 1; i >= 0; i-- ) first[weld[i]] = i;
-		var pts = new Vec3[n];
-		for ( int v = 0; v < n; v++ ) pts[v] = made[first[v]];
-		var clothTris = new List<int>();
-		for ( int t = 0; t < tris.Length; t += 3 )
-		{
-			int a = weld[tris[t]], b = weld[tris[t + 1]], c = weld[tris[t + 2]];
-			if ( !cloth[tris[t]] || !cloth[tris[t + 1]] || !cloth[tris[t + 2]] || a == b || b == c || a == c ) continue;
-			if ( paint != null && (paint[tris[t]] || paint[tris[t + 1]] || paint[tris[t + 2]]) ) continue;
-			clothTris.Add( a ); clothTris.Add( b ); clothTris.Add( c );
-		}
+		var (weld, first, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
+		int n = pts.Length;
 		var under = BackToBack( pts, clothTris, skin, out var inward, Mouth( eyes ) );
 		if ( under.Count == 0 ) return rest;
 
@@ -4666,15 +4692,17 @@ public static class GarmentFit
 	}
 
 	/// <summary>
-	/// Whether a heap of small rigid pieces is fringe on the garment's cloth: all of it below the
-	/// mouth, there is more cloth than heap, and every piece is within reach of the cloth (the
-	/// denim vest's threads hang up to 2 cm off its edges, by their vertices). Hair and beards
-	/// grow from the head, from a cap or not, and reach up to the mouth or higher (a moustache,
+	/// Whether a heap of small rigid pieces is fringe along an edge of the garment's cloth: all of
+	/// it below the mouth, more cloth than heap, and every piece within reach of the cloth with
+	/// most of them nearest a rim of it, where the cloth turns round its edge (the fraying threads
+	/// round a denim vest's armholes, front and hem: 9 in 10 of them, against 1 in 10 of the
+	/// pirate outfit's tassels, which hang off its coat and stay hair). Hair and beards grow from
+	/// the head, from a cap or not, and reach up to the mouth or higher (a moustache,
 	/// sideburns): taken for fringe, a beard's cards went with the patch of skin they lie on as
 	/// cloth would, and came apart. The threads round a vest's collar are below the chin, not
 	/// far: they come up the back of the neck.
 	/// </summary>
-	static bool Fringed( List<int> heap, List<List<int>> rigid, Vec3[] pts, List<Vec3> clothPts, (Vec3 Stock, Vec3 Body)[] eyes )
+	static bool Fringed( List<int> heap, List<List<int>> rigid, Vec3[] pts, Dictionary<int, List<int>> members, Dictionary<int, List<int>> pieceTris, int[] firstOf, int[] boneIndex, float[] boneWeight, int clothCount, (Vec3 Stock, Vec3 Body)[] eyes )
 	{
 		float mouth = Mouth( eyes );
 		if ( float.IsPositiveInfinity( mouth ) ) return false;
@@ -4684,19 +4712,51 @@ public static class GarmentFit
 			total += rigid[r].Count;
 			foreach ( int i in rigid[r] ) if ( pts[i].Z > mouth ) return false;
 		}
-		if ( total >= clothPts.Count ) return false;
+		if ( total >= clothCount ) return false;
+
+		// The cloth's vertices, and which of them are on a rim: the faces round it turn further
+		// than RimTurn from each other.
+		var faces = new Dictionary<int, List<Vec3>>();
+		foreach ( var (root, idx) in members )
+		{
+			if ( IsRigid( idx, firstOf, boneIndex, boneWeight ) || !pieceTris.TryGetValue( root, out var tris ) ) continue;
+			for ( int t = 0; t < tris.Count; t += 3 )
+			{
+				var normal = Vec3.Cross( pts[tris[t + 1]] - pts[tris[t]], pts[tris[t + 2]] - pts[tris[t]] );
+				float length = normal.Length();
+				if ( length < 1e-12f ) continue;
+				normal *= 1f / length;
+				for ( int k = 0; k < 3; k++ )
+				{
+					if ( !faces.TryGetValue( tris[t + k], out var list ) ) faces[tris[t + k]] = list = new List<Vec3>();
+					list.Add( normal );
+				}
+			}
+		}
+		var rim = new Dictionary<int, bool>();
+		foreach ( var (v, list) in faces )
+		{
+			bool turns = false;
+			for ( int x = 0; x < list.Count && !turns; x++ )
+				for ( int y = x + 1; y < list.Count && !turns; y++ ) turns = Vec3.Dot( list[x], list[y] ) < RimTurn;
+			rim[v] = turns;
+		}
+
+		int onRim = 0;
 		foreach ( int r in heap )
 		{
-			bool rooted = false;
+			float best = LayerReach * LayerReach;
+			int nearest = -1;
 			foreach ( int i in rigid[r] )
-			{
-				foreach ( var p in clothPts )
-					if ( (p - pts[i]).LengthSquared() <= LayerReach * LayerReach ) { rooted = true; break; }
-				if ( rooted ) break;
-			}
-			if ( !rooted ) return false;
+				foreach ( int v in faces.Keys )
+				{
+					float d = (pts[v] - pts[i]).LengthSquared();
+					if ( d <= best ) { best = d; nearest = v; }
+				}
+			if ( nearest < 0 ) return false;
+			if ( rim[nearest] ) onRim++;
 		}
-		return true;
+		return onRim * 2 > heap.Count;
 	}
 
 	static bool IsRigid( List<int> idx, int[] firstOf, int[] boneIndex, float[] boneWeight )

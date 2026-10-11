@@ -1767,7 +1767,8 @@ public sealed class Repose
 	/// </summary>
 	/// <param name="rest">The garment in the body's rest pose (<see cref="ToBodyRest"/>).</param>
 	/// <param name="bones">Its weights as stock bones, as it will be animated (<see cref="ForAnimation"/>).</param>
-	public Vec3[] CoverInPose( Vec3[] rest, int[] tris, bool[] cloth, bool[] solid, int[] bones, float[] weights, SkinnedGeometry stock )
+	/// <param name="lining">Per vertex, cloth made under other cloth of the garment (<see cref="GarmentFit.Linings"/>), or null. It is hidden by what is over it and isn't held out itself.</param>
+	public Vec3[] CoverInPose( Vec3[] rest, int[] tris, bool[] cloth, bool[] solid, int[] bones, float[] weights, SkinnedGeometry stock, bool[] lining = null )
 	{
 		if ( cloth == null || Moved < 0.001f * Units.Metre ) return rest;
 		int root = Array.IndexOf( stockParents, -1 );
@@ -1863,6 +1864,7 @@ public sealed class Repose
 			{
 				int a = tris[t], b = tris[t + 1], c = tris[t + 2];
 				if ( !cloth[a] || !cloth[b] || !cloth[c] || (solid != null && (solid[a] || solid[b] || solid[c])) ) continue;
+				if ( lining != null && (lining[a] || lining[b] || lining[c]) ) continue;
 				Shares( bones, weights, a, b, c );
 				Array.Copy( share, clothShare, share.Length );
 				foreach ( var bw in CoverSamples )
