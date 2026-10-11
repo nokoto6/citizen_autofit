@@ -1196,6 +1196,7 @@ public static class GarmentFit
 	const float RimTurn = 0.3f;          // cloth whose faces round a vertex turn further than this from each other (cosine: 73 degrees) is going round its edge there
 	const float BackToBackTurn = 0.25f;  // cloth behind a lining faces the same way as it to within this (cosine: 75 degrees)
 	const float Squeezed = 0.6f;    // cloth shrunk to less than this share of its size, across, was squeezed (a collar lowered down a short neck), not just taken in
+	const float RimSpill = 0.25f;   // the edge of a lining is over the shell spot it is kept behind to within this share of that triangle off its side
 	const float KeepDepth = 0.5f;   // cloth made under other cloth stays at least this share of as far under it as it was made
 
 	/// <summary>
@@ -1297,34 +1298,90 @@ public static class GarmentFit
 		}
 		bool Layer( int v ) => low.TryGetValue( piece[v], out var l ) && (high[piece[v]] - l).Length() > BeadSize;
 
-		for ( int v = 0; v < n; v++ )
+		// The cloth back to back with a vertex, along a way back from it: that cloth faces away
+		// from it, about the same way, was made further out, and no part of the body is between
+		// them (the far side of a sleeve round an arm).
+		bool Behind( int v, Vec3 back, float depth, out (int Vertex, int Tri, float[] Bary, float Depth) found )
 		{
-			float length = normal[v].Length();
-			if ( length < 1e-12f || !Layer( v ) || pts[v].Z > above ) continue;
+			found = default;
 			var p = pts[v];
-			float depth = skin.SignedGap( p, out var onSkin );
-			if ( depth < -Hidden ) continue;
-			inward[v] = Vec3.Dot( normal[v], p - onSkin ) * depth < 0;
-			var back = normal[v] * (-1f / length);
 			mesh.Crossings( p, back, LayerReach, hits );
 			foreach ( var (along, leaving, t) in hits )
 			{
 				if ( clothTris[t * 3] == v || clothTris[t * 3 + 1] == v || clothTris[t * 3 + 2] == v ) continue;
-				if ( !Layer( clothTris[t * 3] ) ) break;
-				// Back to back: that cloth faces away from this vertex, about the same way it does,
-				// was made further out, and no part of the body is between them (the far side of a
-				// sleeve round an arm).
-				if ( !leaving ) break;
+				if ( !Layer( clothTris[t * 3] ) || !leaving ) return false;
 				var behind = Vec3.Cross( pts[clothTris[t * 3 + 1]] - pts[clothTris[t * 3]], pts[clothTris[t * 3 + 2]] - pts[clothTris[t * 3]] );
-				if ( Vec3.Dot( behind, back ) < BackToBackTurn * behind.Length() ) break;
+				if ( Vec3.Dot( behind, back ) < BackToBackTurn * behind.Length() ) return false;
 				var at = p + back * along;
-				if ( skin.SignedGap( at, out _ ) <= depth ) break;
+				if ( skin.SignedGap( at, out _ ) <= depth ) return false;
 				skin.Crossings( p, back, along, skinHits );
-				bool entersBody = false;
-				foreach ( var hit in skinHits ) entersBody |= !hit.Leaving;
-				if ( entersBody ) break;
-				under.Add( (v, t, Bary( at, mesh, t ), MathF.Max( LayerSlack, along )) );
-				break;
+				foreach ( var hit in skinHits )
+					if ( !hit.Leaving ) return false;
+				found = (v, t, Bary( at, mesh, t ), MathF.Max( LayerSlack, along ));
+				return true;
+			}
+			return false;
+		}
+
+		var depthOf = new float[n];
+		for ( int v = 0; v < n; v++ )
+		{
+			float length = normal[v].Length();
+			depthOf[v] = float.NaN;
+			if ( length < 1e-12f || !Layer( v ) || pts[v].Z > above ) continue;
+			float depth = skin.SignedGap( pts[v], out var onSkin );
+			if ( depth < -Hidden ) continue;
+			depthOf[v] = depth;
+			inward[v] = Vec3.Dot( normal[v], pts[v] - onSkin ) * depth < 0;
+			if ( Behind( v, normal[v] * (-1f / length), depth, out var found ) ) under.Add( found );
+		}
+
+		// The edge a lining folds round into its shell (the opening edge of a zip's facing) has
+		// none of the shell straight behind it: it is kept as far behind the shell spot the lining
+		// next to it lies under as it was made, where it is over that spot and not off to its side,
+		// or else behind the shell it meets going the way that lining goes back. Left out, the
+		// facing's edge stood out past the puffer's opening on Aurora's bust and the opening
+		// rolled over.
+		var spotOf = new Dictionary<int, int>();
+		foreach ( var (v, t, _, _) in under ) spotOf[v] = t;
+		var next = new Dictionary<int, List<int>>();
+		foreach ( var (a, b) in MeshTools.Edges( clothTris.ToArray(), Identity( n ) ) )
+			foreach ( var (v, u) in new[] { (a, b), (b, a) } )
+			{
+				if ( spotOf.ContainsKey( v ) || !spotOf.ContainsKey( u ) || float.IsNaN( depthOf[v] ) ) continue;
+				if ( !next.TryGetValue( v, out var list ) ) next[v] = list = new List<int>();
+				list.Add( u );
+			}
+		foreach ( var (v, lining) in next )
+		{
+			(int Tri, float[] Bary, float Depth) best = (-1, null, 0);
+			float bestInside = -RimSpill;
+			var back = Vec3.Zero;
+			foreach ( int u in lining )
+			{
+				back -= normal[u] * (1f / normal[u].Length());
+				int t = spotOf[u], ta = clothTris[t * 3], tb = clothTris[t * 3 + 1], tc = clothTris[t * 3 + 2];
+				if ( ta == v || tb == v || tc == v ) continue;
+				var facing = Vec3.Cross( pts[tb] - pts[ta], pts[tc] - pts[ta] );
+				float length = facing.Length();
+				if ( length < 1e-12f ) continue;
+				facing *= 1f / length;
+				float behind = Vec3.Dot( pts[ta] - pts[v], facing );
+				if ( behind <= LayerSlack || behind >= LayerReach ) continue;
+				var bw = Bary( pts[v] + facing * behind, mesh, t );
+				float inside = MathF.Min( bw[0], MathF.Min( bw[1], bw[2] ) );
+				if ( inside < bestInside ) continue;
+				bestInside = inside;
+				best = (t, bw, behind);
+			}
+			if ( best.Tri >= 0 ) under.Add( (v, best.Tri, best.Bary, best.Depth) );
+			else if ( back.Length() > 1e-6f && Behind( v, back * (1f / back.Length()), depthOf[v], out var found ) )
+			{
+				// As deep as it is behind that cloth, square to it: the way there is aslant.
+				int ta = clothTris[found.Tri * 3], tb = clothTris[found.Tri * 3 + 1], tc = clothTris[found.Tri * 3 + 2];
+				var facing = Vec3.Cross( pts[tb] - pts[ta], pts[tc] - pts[ta] );
+				float behind = Vec3.Dot( pts[ta] - pts[v], facing * (1f / facing.Length()) );
+				under.Add( (v, found.Tri, found.Bary, MathF.Max( LayerSlack, behind )) );
 			}
 		}
 		return under;
