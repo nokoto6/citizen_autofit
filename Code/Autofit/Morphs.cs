@@ -319,6 +319,19 @@ public static class GarmentMorphs
 			}
 		}
 
+		// Which way the lid faces under each card.
+		var facings = new Vec3[patches.Count];
+		for ( int i = 0; i < patches.Count; i++ )
+		{
+			var facing = Vec3.Zero;
+			foreach ( var (t, w) in patches[i].Faces )
+			{
+				int a = lidTris[t], b = lidTris[t + 1], c = lidTris[t + 2];
+				facing += Vec3.Cross( bodyPositions[b] - bodyPositions[a], bodyPositions[c] - bodyPositions[a] ) * w;
+			}
+			facings[i] = facing;
+		}
+
 		int n = positions.Length;
 		var turns = new float[patches.Count][];
 		var sum = new float[9];
@@ -379,7 +392,7 @@ public static class GarmentMorphs
 				foreach ( var (j, w) in together[i] )
 					if ( turns[j] != null )
 						for ( int k = 0; k < 9; k++ ) sum[k] += turns[j][k] * w;
-				var r = GarmentFit.Rotation( sum );
+				var r = Swing( GarmentFit.Rotation( sum ), facings[i] );
 				Vec3 Turn( Vec3 x ) => r == null ? x : new Vec3( r[0] * x.X + r[1] * x.Y + r[2] * x.Z, r[3] * x.X + r[4] * x.Y + r[5] * x.Z, r[6] * x.X + r[7] * x.Y + r[8] * x.Z );
 				var shift = move[a] * u + move[b] * bv + move[c] * bw;
 				foreach ( int v in card )
@@ -401,6 +414,29 @@ public static class GarmentMorphs
 					mine.Normal[v] = cardTurn[v];
 				}
 		}
+	}
+
+	// Of a turn (a row-major rotation), only what tips the given direction over: the turn about
+	// the axis square to it and to where it goes. A lid shutting tips its lashes down over the
+	// eye; the twist about the lid's own facing that a fold at the corner of an anime eye adds
+	// stood the cards there on end.
+	static float[] Swing( float[] r, Vec3 facing )
+	{
+		float length = facing.Length();
+		if ( r == null || length < 1e-12f ) return r;
+		var from = facing / length;
+		var to = new Vec3( r[0] * from.X + r[1] * from.Y + r[2] * from.Z, r[3] * from.X + r[4] * from.Y + r[5] * from.Z, r[6] * from.X + r[7] * from.Y + r[8] * from.Z );
+		var axis = Vec3.Cross( from, to );
+		float sin = axis.Length(), cos = Vec3.Dot( from, to );
+		if ( sin < 1e-6f ) return cos > 0 ? new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 } : r;
+		var k = axis / sin;
+		float t = 1 - cos;
+		return new[]
+		{
+			cos + k.X * k.X * t, k.X * k.Y * t - k.Z * sin, k.X * k.Z * t + k.Y * sin,
+			k.Y * k.X * t + k.Z * sin, cos + k.Y * k.Y * t, k.Y * k.Z * t - k.X * sin,
+			k.Z * k.X * t - k.Y * sin, k.Z * k.Y * t + k.X * sin, cos + k.Z * k.Z * t,
+		};
 	}
 
 	const float LidMorph = 0.5f;                        // a morph that moves the edges of the lids this much of the most it moves the skin anywhere
