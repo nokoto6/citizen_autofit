@@ -1196,6 +1196,7 @@ public static class GarmentFit
 	const float RimTurn = 0.3f;          // cloth whose faces round a vertex turn further than this from each other (cosine: 73 degrees) is going round its edge there
 	const float BackToBackTurn = 0.25f;  // cloth behind a lining faces the same way as it to within this (cosine: 75 degrees)
 	const float Squeezed = 0.6f;    // cloth shrunk to less than this share of its size, across, was squeezed (a collar lowered down a short neck), not just taken in
+	const float EdgeOut = 5f;       // how many times as deep as it was made the edge of a lining is pressed back at most
 	const float RimSpill = 0.25f;   // the edge of a lining is over the shell spot it is kept behind to within this share of that triangle off its side
 	const float LiningDeep = 0.015f * Units.Metre;   // a lining is kept at most this deep under the cloth over it: made deeper it hangs loose behind it rather than lying on it (a collar's stand under its flap), and pressed back that deep where the two had come closer, the stand of a vest's collar squeezed down Akira's short neck stuck up out of the collar
 	const float KeepDepth = 0.5f;   // cloth made under other cloth stays at least this share of as far under it as it was made
@@ -1269,10 +1270,11 @@ public static class GarmentFit
 	/// <param name="clothTris">Triangles of the cloth, by welded vertex.</param>
 	/// <param name="inward">Per welded vertex, whether it faces the skin as made.</param>
 	/// <param name="above">Cloth higher than this, as made, is left out (see <see cref="Mouth"/>).</param>
-	static List<(int Vertex, int Tri, float[] Bary, float Depth)> BackToBack( Vec3[] pts, List<int> clothTris, TriMesh skin, out bool[] inward, float above )
+	static List<(int Vertex, int Tri, float[] Bary, float Depth)> BackToBack( Vec3[] pts, List<int> clothTris, TriMesh skin, out bool[] inward, out int firstEdge, float above )
 	{
 		int n = pts.Length;
 		inward = new bool[n];
+		firstEdge = 0;
 		var under = new List<(int Vertex, int Tri, float[] Bary, float Depth)>();
 		if ( clothTris.Count == 0 ) return under;
 		var normal = new Vec3[n];
@@ -1343,6 +1345,7 @@ public static class GarmentFit
 		// or else behind the shell it meets going the way that lining goes back. Left out, the
 		// facing's edge stood out past the puffer's opening on Aurora's bust and the opening
 		// rolled over.
+		firstEdge = under.Count;
 		var spotOf = new Dictionary<int, int>();
 		foreach ( var (v, t, _, _) in under ) spotOf[v] = t;
 		var next = new Dictionary<int, List<int>>();
@@ -1425,7 +1428,7 @@ public static class GarmentFit
 		Array.Fill( over, -1 );
 		var (weld, first, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
 		var spot = new Dictionary<int, (int Tri, float[] Bary)>();
-		foreach ( var (v, t, bw, _) in BackToBack( pts, clothTris, skin, out _, Mouth( eyes ) ) ) spot[v] = (t, bw);
+		foreach ( var (v, t, bw, _) in BackToBack( pts, clothTris, skin, out _, out _, Mouth( eyes ) ) ) spot[v] = (t, bw);
 		for ( int i = 0; i < made.Length; i++ )
 		{
 			if ( !spot.TryGetValue( weld[i], out var at ) ) continue;
@@ -1482,7 +1485,7 @@ public static class GarmentFit
 	{
 		var (weld, first, pts, clothTris) = ClothAsMade( made, tris, cloth, paint );
 		int n = pts.Length;
-		var under = BackToBack( pts, clothTris, skin, out var inward, Mouth( eyes ) );
+		var under = BackToBack( pts, clothTris, skin, out var inward, out int firstEdge, Mouth( eyes ) );
 		if ( under.Count == 0 ) return rest;
 
 		var now = new Vec3[n];
@@ -1494,8 +1497,9 @@ public static class GarmentFit
 			int pressed = 0;
 			var worn = new TriMesh( MeshTools.Copy( now ), clothTris.ToArray() );
 			var wornNormal = Normals( now, clothTris );
-			foreach ( var (v, t, bw, depth) in under )
+			for ( int e = 0; e < under.Count; e++ )
 			{
+				var (v, t, bw, depth) = under[e];
 				int a = clothTris[t * 3], b = clothTris[t * 3 + 1], c = clothTris[t * 3 + 2];
 				var facing = Vec3.Cross( now[b] - now[a], now[c] - now[a] );
 				float length = facing.Length();
@@ -1514,6 +1518,11 @@ public static class GarmentFit
 				var over = now[a] * bw[0] + now[b] * bw[1] + now[c] * bw[2];
 				float through = Vec3.Dot( now[v] - over, facing ) + MathF.Max( LayerSlack, MathF.Min( depth, LiningDeep ) * squeezed );
 				if ( through <= 0 || through > LayerReach ) continue;
+				// The edge of a lining (see BackToBack) further out than EdgeOut times as deep as it
+				// was made behind the shell didn't come through it, the hem it turns round went its
+				// own way: pressed back, the outer edge of the denim skirt's hem rolled under on the
+				// human, a millimetre deep and 15 mm out.
+				if ( e >= firstEdge && through > EdgeOut * depth ) continue;
 				// Never through a third layer on the way: the inside of a hard hat has a band
 				// round the head under its shell, and the shell's inner face, pressed behind the
 				// outer one, went out through the band.
