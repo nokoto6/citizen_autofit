@@ -1144,12 +1144,14 @@ public static class ClothingFitter
 	/// <param name="lashRoots">If the garment is lashes, per vertex the root of its card (<see cref="GarmentFit.LashRoots"/>), else null. Lashes take every morph of the body card by card, see <see cref="GarmentMorphs.LashesFromSkin"/>.</param>
 	/// <param name="painted">Per vertex, whether the fit laid it on the skin as paint. In the morphs that move the lids paint takes the move of the spot it lies on, see <see cref="GarmentMorphs.PaintFromSkin"/>.</param>
 	/// <param name="target">The body as mapped, for where its lids are.</param>
-	/// <param name="reference">The stock body the garment was made for, to tell brows. Brows are paint too, but they aren't on the lids: on Aurora the lower edge of a pair lies over the top of her tall lid, and taken off the spot under each vertex the brow stretched by a blink. They keep the moves TakeFromSkin gives them.</param>
+	/// <param name="reference">The stock body the garment was made for, to tell brows. Brows are paint too, but they aren't on the lids. On a body with brows of its own they go the way those do (see <see cref="GarmentMorphs.BrowsFromOwn"/>), elsewhere with the skin as TakeFromSkin moves it.</param>
 	static void FaceMorphs( Vec3[] positions, Vec3[] normals, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade, int[] lashRoots, bool[] painted, Mapped target, Reference reference )
 	{
 		bool own = morphs.Count > 0;
-		bool paint = Array.IndexOf( painted, true ) >= 0 && !GarmentFit.IsBrows( garment.Positions, garment.Indices, reference.Mesh, target.Pose.Eyes.ToArray() );
-		Func<string, bool> wanted = own || lashRoots != null || paint ? null : IsFaceShape;
+		bool brows = Array.IndexOf( painted, true ) >= 0 && GarmentFit.IsBrows( garment.Positions, garment.Indices, reference.Mesh, target.Pose.Eyes.ToArray() );
+		bool paint = Array.IndexOf( painted, true ) >= 0 && !brows;
+		var ownBrows = brows ? GarmentMorphs.OwnBrows( target.Pose.Features, target.Mesh, body.Positions, body.Indices ) : null;
+		Func<string, bool> wanted = own || lashRoots != null || paint || ownBrows != null ? null : IsFaceShape;
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
 		{
@@ -1169,6 +1171,12 @@ public static class ClothingFitter
 		if ( lashRoots != null )
 		{
 			GarmentMorphs.LashesFromSkin( positions, normals, lashRoots, body.Positions, body.Indices, body.Draws, skin, morphs, Seen );
+			return;
+		}
+
+		if ( ownBrows != null )
+		{
+			GarmentMorphs.BrowsFromOwn( positions, garment.Indices, ownBrows, body.Positions, body.Indices, skin, morphs, Seen );
 			return;
 		}
 
