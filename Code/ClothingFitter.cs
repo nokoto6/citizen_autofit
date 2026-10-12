@@ -1052,7 +1052,7 @@ public static class ClothingFitter
 				result.BodyWeights = geo.BoneWeight;
 				result.Pivots = reference.Geo.BoneNames.Select( x => x.StartsWith( "eye_" ) ).ToArray();
 				var skin = new SkinByBone( result.Mesh, result.BodyBones, geo.BoneWeight, reference.Geo.BoneParents );
-				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks, result.Pose.Features );
+				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks, result.Pose.Features, result.Pose.Ears );
 				result.Milliseconds = watch.ElapsedMilliseconds;
 				return result;
 			} );
@@ -1207,7 +1207,7 @@ public static class ClothingFitter
 		var (animBones, animWeights) = Repose.ForAnimation( positions, fittedAsCloth, solid, target.Mesh, target.BodyBones, target.BodyWeights, backBones, backWeights, bones, garment.BoneWeight, reference.Geo, ownHead );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
-		positions = target.Pose.OntoSkin( stockFit, positions, painted );
+		positions = target.Pose.OntoSkin( stockFit, positions, painted, cloth );
 		var linings = GarmentFit.Linings( garment.Positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
 		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo, linings );
 		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );

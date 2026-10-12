@@ -71,6 +71,7 @@ public sealed class Repose
 	Vec3[] bodyRest;
 	int[] bodyIndices;
 	TriMesh posedSkin;
+	TriMesh restSkin;   // the body's skin in its rest pose, what paint is kept over there
 	TriMesh restBody;   // the body in its rest pose, what cloth hung from the hips stays out of
 
 	// The body in the stock pose and proportions, with its skin weights as stock bones and
@@ -1252,7 +1253,8 @@ public sealed class Repose
 	/// <param name="stockFit">The garment fitted, in the stock pose and proportions.</param>
 	/// <param name="rest">The same garment taken back to the rest pose by its bones. Changed in place, and returned.</param>
 	/// <param name="paint">Per vertex, whether it is paint (<see cref="GarmentFit.Fit"/>'s paintOut). Null for none.</param>
-	public Vec3[] OntoSkin( Vec3[] stockFit, Vec3[] rest, bool[] paint )
+	/// <param name="tris">The garment's triangles. Given, paint is also kept over the skin across each of them (<see cref="PaintLift"/>).</param>
+	public Vec3[] OntoSkin( Vec3[] stockFit, Vec3[] rest, bool[] paint, int[] tris = null )
 	{
 		if ( bodyRest == null || paint == null || Array.IndexOf( paint, true ) < 0 ) return rest;
 		TriMesh skin;
@@ -1274,6 +1276,11 @@ public sealed class Repose
 			var exact = bodyRest[a] * bary[0] + bodyRest[b] * bary[1] + bodyRest[c] * bary[2] + n1 / l1 * off;
 			float w = Math.Clamp( (OntoFar - d) / (OntoFar - OntoNear), 0f, 1f );
 			rest[v] = rest[v] * (1 - w) + exact * w;
+		}
+		if ( tris != null )
+		{
+			lock ( this ) skin = restSkin ??= new TriMesh( bodyRest, bodyIndices ).Skin();
+			PaintLift.Lift( rest, tris, paint, skin );
 		}
 		return rest;
 	}
