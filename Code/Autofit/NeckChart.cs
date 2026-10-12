@@ -415,6 +415,13 @@ public sealed class NeckChart
 
 	static float Smooth( float w ) => w * w * (3 - 2 * w);
 
+	/// <summary>How high the jaw line is round the neck at a point. NaN off the chart.</summary>
+	public float JawAt( Vec3 p )
+	{
+		var axis = AxisAt( p.Z );
+		return JawHeight( MathF.Atan2( p.Y - axis.Y, p.X - axis.X ) * 180f / MathF.PI );
+	}
+
 	/// <summary>How high the jaw line (the top of the throat) is at an angle round the neck. NaN off the chart.</summary>
 	public float JawHeight( float angle )
 	{
