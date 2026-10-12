@@ -378,8 +378,8 @@ public sealed class BodyMap
 	}
 
 	/// <summary>
-	/// The skin round the ears goes the way the ears went (<see cref="Repose.Ears"/>), by how far its
-	/// height is from the ear's bottom to its top. On an anime head the ears sit 7 to 11 cm
+	/// The skin round and under the ears goes the way the ears went (<see cref="Repose.Ears"/>), by how
+	/// far its height is from the ear's bottom to its middle, fading out up to the middle. On an anime head the ears sit 7 to 11 cm
 	/// lower than the citizen's and the rays keep the side of the head at the stock height,
 	/// so paint going round under the ear (a neck tattoo's sides, below them the neck's own
 	/// landmarks, see <see cref="NeckChart"/>) was pulled up to the ear and stretched.
@@ -390,7 +390,9 @@ public sealed class BodyMap
 		{
 			float d = (s - stock[1]).Length() / tall;
 			if ( d >= EarNone ) continue;
-			float w = Math.Clamp( (EarNone - d) / (EarNone - EarFull), 0f, 1f );
+			// Only under the ear, where the neck's chart leaves off: over it the face's warp and
+			// the rays have the head, and cloth over the face goes by them too.
+			float w = Math.Clamp( (EarNone - d) / (EarNone - EarFull), 0f, 1f ) * Math.Clamp( (stock[1].Z - s.Z) / (stock[1].Z - stock[0].Z), 0f, 1f );
 			w = w * w * (3 - 2 * w);
 			Vec3 shift;
 			if ( s.Z <= stock[0].Z ) shift = body[0] - stock[0];
