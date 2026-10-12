@@ -1279,7 +1279,7 @@ public sealed class Repose
 		}
 		if ( tris != null )
 		{
-			lock ( this ) skin = restSkin ??= new TriMesh( bodyRest, bodyIndices ).Skin();
+			lock ( this ) skin = restSkin ??= new TriMesh( bodyRest, skin.Tris );   // the same triangles as in the stock pose
 			PaintLift.Lift( rest, tris, paint, skin );
 		}
 		return rest;

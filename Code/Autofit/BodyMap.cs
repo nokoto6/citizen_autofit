@@ -321,10 +321,11 @@ public sealed class BodyMap
 			outlines.Add( (outline, front, HiddenDepth * (high - low)) );
 		}
 
+		var earMarks = EarMarks( ears );
 		for ( int i = 0; i < n; i++ )
 		{
 			var s = old.Verts[firstOf[i]];
-			var p = s + move[i];
+			var p = ByTheEars( earMarks, s, s + move[i] );
 			bool hidden = false;
 			foreach ( var (outline, front, depth) in outlines )
 				hidden |= s.X > front - depth && InFront( outline, s );
@@ -350,6 +351,59 @@ public sealed class BodyMap
 			onSkin[i] = q - up / MathF.Max( up.Length(), 1e-12f ) * Buried;
 		}
 		return onSkin;
+	}
+
+	const float EarFull = 1.5f;   // skin round an ear goes its way in full this far from its middle, in the stock ear's heights
+	const float EarNone = 6.5f;   // and not at all from this far
+
+	// Each ear's bottom, middle and top on both bodies (Repose.Ears), and how tall the stock one is.
+	static List<(Vec3[] Stock, Vec3[] Body, float Tall)> EarMarks( List<(string Name, Vec3 Stock, Vec3 Body)> ears )
+	{
+		var result = new List<(Vec3[], Vec3[], float)>();
+		if ( ears == null ) return result;
+		foreach ( string side in new[] { "earL", "earR" } )
+		{
+			var stock = new Vec3[3]; var body = new Vec3[3];
+			int found = 0;
+			foreach ( var (name, at, there) in ears )
+			{
+				int k = name == side + ".bottom" ? 0 : name == side ? 1 : name == side + ".top" ? 2 : -1;
+				if ( k < 0 ) continue;
+				stock[k] = at; body[k] = there; found++;
+			}
+			float tall = stock[2].Z - stock[0].Z;
+			if ( found == 3 && tall > 1e-4f * Units.Metre && stock[1].Z > stock[0].Z && stock[2].Z > stock[1].Z ) result.Add( (stock, body, tall) );
+		}
+		return result;
+	}
+
+	/// <summary>
+	/// The skin round the ears goes the way the ears went (<see cref="Repose.Ears"/>), by how far its
+	/// height is from the ear's bottom to its top. On an anime head the ears sit 7 to 11 cm
+	/// lower than the citizen's and the rays keep the side of the head at the stock height,
+	/// so paint going round under the ear (a neck tattoo's sides, below them the neck's own
+	/// landmarks, see <see cref="NeckChart"/>) was pulled up to the ear and stretched.
+	/// </summary>
+	static Vec3 ByTheEars( List<(Vec3[] Stock, Vec3[] Body, float Tall)> marks, Vec3 s, Vec3 p )
+	{
+		foreach ( var (stock, body, tall) in marks )
+		{
+			float d = (s - stock[1]).Length() / tall;
+			if ( d >= EarNone ) continue;
+			float w = Math.Clamp( (EarNone - d) / (EarNone - EarFull), 0f, 1f );
+			w = w * w * (3 - 2 * w);
+			Vec3 shift;
+			if ( s.Z <= stock[0].Z ) shift = body[0] - stock[0];
+			else if ( s.Z >= stock[2].Z ) shift = body[2] - stock[2];
+			else
+			{
+				int k = s.Z < stock[1].Z ? 0 : 1;
+				float f = (s.Z - stock[k].Z) / (stock[k + 1].Z - stock[k].Z);
+				shift = (body[k] - stock[k]) * (1 - f) + (body[k + 1] - stock[k + 1]) * f;
+			}
+			p = p * (1 - w) + (s + shift) * w;
+		}
+		return p;
 	}
 
 	/// <summary>
