@@ -33,11 +33,25 @@ public static class Teeth
 	const float WornMargin = 0.15f;   // round the teeth, as a share of their width
 	const int MinRow = 12;            // vertices a row of teeth has at least
 	const float Reach = 1.5f;         // the lips in front of the teeth are looked for this far, as a share of the row's width
-	const float Under = 0.04f;        // and what came out from behind them goes this far behind them, or as far as it was behind the stock lips if closer
+	const float Under = 0.04f;        // and what came out in front of them goes this far behind them
 	const int BehindPasses = 8;
-	const float Slack = 0.005f;       // closer behind the lips than on the stock body by this share of the width is let be
+	const float Touch = 0.01f;        // what the stock lips hid stays at least this far behind this body's (a share of the row's width), or as far as it was
+	const float Slack = 0.005f;       // closer behind the lips than that by this share of the width is let be
 	const float Aside = 0.61f;        // looked at from 35 degrees to either side too
+	const float Tilt = 0.35f;         // and from 20 degrees above and below
 	const int Rings = 3;
+	const float MostBack = 0.3f;      // and no further than this share of the row's width
+	const float SameRow = 0.01f;      // rows this close to each other everywhere, as a share of the width, are the same teeth
+	const float Fang = 0.02f;         // what hangs past the upper row's biting edge by this share of its width is fang
+	static readonly float[] Backs = { 0f, 0.25f, 0.5f };   // how far back fangs are tried leant, for how far down they reach
+	const float LeastIn = 0.5f;       // what is on the upper row is moved in towards the middle down to this share of where it was
+	const float InStep = 0.1f;
+	const float Shut = 4f;            // a share of the fangs out through the closed lips counts this many times as much
+	const float Near = 0.05f;         // a share of the fangs showing this close to the stock body's is as good
+	const float LongerStep = 0.125f;  // fang lengths are tried in steps of this (one of them as fitted)
+	const float LongerCost = 0.02f;   // a change of the length counts against it this much, so that a tie keeps it
+	const float LeastLonger = 0.5f;   // fangs get no shorter than this many times what the row's width makes them
+	const float MostLonger = 3f;      // and no longer than this
 	const int Slices = 8;             // a row is followed round in this many slices across
 	const float FrontDepth = 0.15f;   // what is this close behind a slice's front, as a share of the row's width, faces forward
 
@@ -409,11 +423,7 @@ public static class Teeth
 		var upper = InMouth( verts, tris, stockMesh, eyes[0].Stock, eyes[1].Stock, out var stock );
 		if ( upper == null ) return null;
 		var body = Find( bodyMesh.Verts, bodyMesh.Tris, eyes[0].Body, eyes[1].Body );
-		if ( Fit( verts, upper, stock, body ) is Vec3[] fitted )
-		{
-			KeepBehindLips( verts, tris, fitted, stockMesh, bodyMesh, stock, body );
-			return fitted;
-		}
+		if ( Fit( verts, upper, stock, body ) is Vec3[] fitted ) return fitted;
 
 		// No teeth: by the mouth.
 		(string Name, Vec3 Stock, Vec3 Body) mid = default, left = default, right = default;
@@ -441,13 +451,14 @@ public static class Teeth
 	/// </summary>
 	static void KeepBehindLips( Vec3[] made, int[] tris, Vec3[] fitted, TriMesh stockMesh, TriMesh bodyMesh, Mouth stock, Mouth body )
 	{
+		float most = MostBack * MathF.Max( body.Upper?.Width ?? 0, body.Lower?.Width ?? 0 );
 		float width = MathF.Max( body.Upper?.Width ?? 0, body.Lower?.Width ?? 0 );
 		float stockWidth = MathF.Max( stock.Upper?.Width ?? 0, stock.Lower?.Width ?? 0 );
 		if ( width <= 0 || stockWidth <= 0 ) return;
 		var forward = new Vec3( 1, 0, 0 );
 		var back = new Vec3( -1, 0, 0 );
-		// Seen from the front, and from either side of it.
-		var looks = new[] { forward, new Vec3( MathF.Cos( Aside ), MathF.Sin( Aside ), 0 ), new Vec3( MathF.Cos( Aside ), -MathF.Sin( Aside ), 0 ) };
+		// Seen from the front, from either side of it, from above and from below.
+		var looks = new[] { forward, new Vec3( MathF.Cos( Aside ), MathF.Sin( Aside ), 0 ), new Vec3( MathF.Cos( Aside ), -MathF.Sin( Aside ), 0 ), new Vec3( MathF.Cos( Tilt ), 0, MathF.Sin( Tilt ) ), new Vec3( MathF.Cos( Tilt ), 0, -MathF.Sin( Tilt ) ) };
 		var hits = new List<(float T, bool Leaving, int Tri)>();
 		var weld = MeshTools.Weld( made, out int n );
 		var edges = MeshTools.Edges( tris, weld );
@@ -467,7 +478,7 @@ public static class Teeth
 			{
 				stockMesh.Crossings( made[i], looks[k], Reach * stockWidth, hits );
 				hidden[w * looks.Length + k] = hits.Count > 0;
-				if ( hits.Count > 0 ) clear[w * looks.Length + k] = MathF.Min( hits[0].T * width / stockWidth, Under * width );
+				if ( hits.Count > 0 ) clear[w * looks.Length + k] = MathF.Min( hits[0].T * width / stockWidth, Touch * width );
 			}
 		}
 		var shift = new float[n];
@@ -490,15 +501,15 @@ public static class Teeth
 						if ( hits.Count > 0 ) more = hits[0].T + Under * width;
 					}
 				}
-				// Seen from aside past the corner of the mouth: back a step at a time.
+				// Seen at a slant past the corner of the mouth or the nose: back a step at a time.
 				for ( int k = 1; k < looks.Length && more == 0; k++ )
 				{
 					if ( !hidden[w * looks.Length + k] ) continue;
 					bodyMesh.Crossings( p, looks[k], Reach * width, hits );
 					if ( hits.Count == 0 || hits[0].T < clear[w * looks.Length + k] - Slack * width ) more = 2 * Under * width;
 				}
-				if ( more <= 0 ) continue;
-				shift[w] += more;
+				if ( more <= 0 || shift[w] >= most ) continue;
+				shift[w] = MathF.Min( shift[w] + more, most );
 				any = true;
 			}
 			if ( !any ) break;
@@ -512,6 +523,209 @@ public static class Teeth
 		}
 		for ( int i = 0; i < made.Length; i++ ) if ( used[i] ) fitted[i] += back * shift[weld[i]];
 	}
+
+	/// <summary>The morphs that open a mouth, by the names the bodies use: all of them at once open it once.</summary>
+	public static readonly string[] OpenMouth = { "jawOpen", "openjawL", "openjawR", "openmouthL", "openmouthR" };
+
+	/// <summary>The same rows, measured again in other positions of the same body (its rest pose, the mouth open).</summary>
+	public static Mouth In( Mouth mouth, Vec3[] verts, int[] tris ) =>
+		mouth == null ? null : new Mouth { Upper = Again( mouth.Upper, verts, tris ), Lower = Again( mouth.Lower, verts, tris ) };
+
+	static Row Again( Row row, Vec3[] verts, int[] tris )
+	{
+		if ( row == null ) return null;
+		float lo = float.MaxValue, hi = float.MinValue;
+		foreach ( int v in row.Verts ) { lo = MathF.Min( lo, verts[v].Y ); hi = MathF.Max( hi, verts[v].Y ); }
+		return MakeRow( new List<int>( row.Verts ), verts, tris, 0.5f * (lo + hi), row.Upper );
+	}
+
+	/// <summary>
+	/// Puts a garment worn on the teeth right in the body's rest pose, once it is there: onto
+	/// its rows as found there (see <see cref="Fit"/>), what the stock lips hid behind this
+	/// body's closed lips (see <see cref="KeepBehindLips"/>), and fangs made to show with the
+	/// mouth open as much as they do on the stock body (see <see cref="Lengthen"/>). Fangs are
+	/// made for that: on the citizen, whose lip goes up over its teeth, they hang a little past
+	/// its row; an anime girl's lip stays down over the whole row even wide open, and fangs as
+	/// long for her teeth never showed.
+	/// </summary>
+	/// <param name="made">The garment as made, on the stock body.</param>
+	/// <param name="fitted">The garment in the body's rest pose. Changed in place.</param>
+	/// <param name="upper">Per vertex, its row (<see cref="InMouth"/>).</param>
+	/// <param name="stock">The stock body's mouth (<see cref="InMouth"/>).</param>
+	/// <param name="stockRest">The stock body's positions, as made.</param>
+	/// <param name="stockOpen">The same with the mouth open (<see cref="OpenMouth"/>), or null if it doesn't open by morphs.</param>
+	/// <param name="body">This body's mouth as found in the stock pose (<see cref="Find"/>).</param>
+	/// <param name="rest">This body's positions in its rest pose.</param>
+	/// <param name="open">The same with the mouth open, or null.</param>
+	public static void Settle( Vec3[] made, int[] tris, Vec3[] fitted, bool[] upper, Mouth stock, Vec3[] stockRest, int[] stockTris, Vec3[] stockOpen, Mouth body, Vec3[] rest, int[] bodyTris, Vec3[] open )
+	{
+		var from = In( stock, stockRest, stockTris );
+		var to = In( body, rest, bodyTris );
+		if ( from?.Upper == null || to?.Upper == null ) return;
+		// Onto the rows again, here: the way back from the stock pose carries the garment as a
+		// whole with the head and leaves it a few millimetres off teeth that went their own way.
+		if ( Fit( made, upper, from, to ) is Vec3[] again ) Array.Copy( again, fitted, fitted.Length );
+		// The same teeth (the human male's and female's mouths are one mesh): it stays as made for them.
+		if ( Same( from.Upper, to.Upper ) && (from.Lower == null || to.Lower == null || Same( from.Lower, to.Lower )) ) return;
+		var stockMesh = new TriMesh( stockRest, stockTris );
+		var bodyMesh = new TriMesh( rest, bodyTris );
+		KeepBehindLips( made, tris, fitted, stockMesh, bodyMesh, from, to );
+		if ( stockOpen == null || open == null ) return;
+		Lengthen( made, tris, fitted, upper, from.Upper, stockMesh, stockRest, stockOpen, stockTris, to.Upper, bodyMesh, rest, open, bodyTris );
+		// Moved in towards the middle, the rest of it can have come out somewhere else.
+		KeepBehindLips( made, tris, fitted, stockMesh, bodyMesh, from, to );
+	}
+
+	// Whether two rows are the same teeth: as wide, and their front, edge and top in every slice
+	// the same to within a hundredth of their width.
+	static bool Same( Row a, Row b )
+	{
+		float tolerance = SameRow * a.Width;
+		if ( MathF.Abs( a.Width - b.Width ) > tolerance ) return false;
+		for ( int k = 0; k < a.Ahead.Length; k++ )
+			if ( MathF.Abs( a.Ahead[k] - b.Ahead[k] ) > tolerance || MathF.Abs( a.Edge[k] - b.Edge[k] ) > tolerance || MathF.Abs( a.Root[k] - b.Root[k] ) > tolerance ) return false;
+		return true;
+	}
+
+	// What is on the upper row moved in towards the middle by the factor, on the row's front and
+	// as far below its edge, see Lengthen.
+	static void Squeeze( Vec3[] fitted, bool[] upper, Row row, float f )
+	{
+		if ( f >= 1f ) return;
+		for ( int i = 0; i < fitted.Length; i++ )
+		{
+			if ( !upper[i] ) continue;
+			var p = fitted[i];
+			float u = (p.Y - row.Front.Y) / row.Width, v = u * f;
+			fitted[i] = new Vec3( p.X + Row.At( row.Ahead, v ) - Row.At( row.Ahead, u ), row.Front.Y + v * row.Width, p.Z + Row.At( row.Edge, v ) - Row.At( row.Edge, u ) );
+		}
+	}
+
+	/// <summary>
+	/// Fangs made to show with the mouth open as much as on the stock body, see <see cref="Settle"/>.
+	/// On an anime face the open lips hardly part, and a fang long enough to show between them
+	/// stood out through the lower lip when they closed; leant back a little it goes behind it.
+	/// With the mouth open the garment goes the way its row goes at its closest point (as
+	/// <see cref="Morphs"/> moves it), and a bit of a fang shows if nothing of the body is in
+	/// front of it; the fangs are looked at in points spread over their triangles, so a fang
+	/// that crosses the opening between its tip and root still counts. Tried: fangs from half
+	/// to three times as long, and the upper row's garment moved in towards the middle (a
+	/// human's or an anime girl's teeth reach well past the corners of the open mouth, the
+	/// citizen's hardly do, and fangs as far round the row stood in the corners, half behind the
+	/// cheek). What shows closest to the stock body's share wins, the least change among those
+	/// as good; what comes out through the closed lips more than on the stock body counts
+	/// heavily against.
+	/// </summary>
+	static void Lengthen( Vec3[] made, int[] tris, Vec3[] fitted, bool[] upper, Row from, TriMesh stockShut, Vec3[] stockRest, Vec3[] stockOpen, int[] stockTris, Row to, TriMesh shut, Vec3[] rest, Vec3[] open, int[] bodyTris )
+	{
+		var fromFang = FangTriangles( made, tris, upper, from );
+		if ( fromFang.Count == 0 ) return;
+		float margin = Touch * to.Width, stockMargin = Touch * from.Width;
+		var fromPoints = Samples( made, tris, fromFang );
+		float want = Showing( Carried( fromPoints, from, stockRest, stockOpen ), new TriMesh( stockOpen, stockTris ), stockMargin );
+		float wantShut = Showing( fromPoints, stockShut, stockMargin, true );
+
+		var openMesh = new TriMesh( open, bodyTris );
+		var tried = new Vec3[fitted.Length];
+		float bestIn = 1f, bestLonger = 1f, bestBack = 0f, bestOff = float.MaxValue;
+		int ins = (int)MathF.Round( (1f - LeastIn) / InStep ), lengths = (int)MathF.Round( (MostLonger - LeastLonger) / LongerStep );
+		for ( int a = 0; a <= ins; a++ )
+			for ( int b = 0; b <= lengths; b++ )
+				for ( int c = 0; c < Backs.Length; c++ )
+			{
+				float f = 1f - a * InStep, longer = LeastLonger + b * LongerStep, back = Backs[c];
+				Array.Copy( fitted, tried, fitted.Length );
+				Shape( tried, upper, to, f, longer, back );
+				var fang = FangTriangles( tried, tris, upper, to );
+				if ( fang.Count == 0 ) continue;
+				var points = Samples( tried, tris, fang );
+				float showing = Showing( Carried( points, to, rest, open ), openMesh, margin );
+				// Out through the closed lips counts worst.
+				float through = MathF.Max( 0f, Showing( points, shut, margin, true ) - wantShut );
+				float off = MathF.Max( 0f, MathF.Abs( showing - want ) - Near ) + Shut * through + LongerCost * (MathF.Abs( longer - 1f ) + 2f * (1f - f) + back);
+				if ( off < bestOff ) { bestOff = off; bestIn = f; bestLonger = longer; bestBack = back; }
+			}
+		Shape( fitted, upper, to, bestIn, bestLonger, bestBack );
+	}
+
+	// The upper row's garment moved in towards the middle by f, and what hangs past the row's
+	// edge made longer by the factor and leant back by so much for each unit it hangs down.
+	static void Shape( Vec3[] points, bool[] upper, Row row, float f, float longer, float back )
+	{
+		Squeeze( points, upper, row, f );
+		for ( int i = 0; i < points.Length; i++ )
+		{
+			if ( !upper[i] ) continue;
+			float b = Row.At( row.Edge, (points[i].Y - row.Front.Y) / row.Width ) - points[i].Z;
+			if ( b <= Fang * row.Width ) continue;
+			points[i].Z -= b * (longer - 1f);
+			points[i].X -= b * longer * back;
+		}
+	}
+
+	// Triangles of the upper row's garment with a corner past its biting edge.
+	static List<int> FangTriangles( Vec3[] points, int[] tris, bool[] upper, Row row )
+	{
+		var result = new List<int>();
+		for ( int t = 0; t + 2 < tris.Length; t += 3 )
+			for ( int k = 0; k < 3; k++ )
+			{
+				int v = tris[t + k];
+				if ( !upper[v] || Row.At( row.Edge, (points[v].Y - row.Front.Y) / row.Width ) - points[v].Z <= Fang * row.Width ) continue;
+				result.Add( t );
+				break;
+			}
+		return result;
+	}
+
+	static readonly (float A, float B, float C)[] Spread = { (1f, 0f, 0f), (0f, 1f, 0f), (0f, 0f, 1f), (1f / 3, 1f / 3, 1f / 3), (0.6f, 0.2f, 0.2f), (0.2f, 0.6f, 0.2f), (0.2f, 0.2f, 0.6f) };
+
+	// Points spread over triangles, a few on each.
+	static Vec3[] Samples( Vec3[] points, int[] tris, List<int> triangles )
+	{
+		var result = new Vec3[triangles.Count * Spread.Length];
+		int n = 0;
+		foreach ( int t in triangles )
+			foreach ( var (a, b, c) in Spread )
+				result[n++] = points[tris[t]] * a + points[tris[t + 1]] * b + points[tris[t + 2]] * c;
+		return result;
+	}
+
+	// Points where the open mouth puts them: moved as their row moves at their closest point.
+	static Vec3[] Carried( Vec3[] points, Row row, Vec3[] rest, Vec3[] open )
+	{
+		var mesh = new TriMesh( rest, row.Tris );
+		var result = new Vec3[points.Length];
+		for ( int k = 0; k < points.Length; k++ )
+		{
+			var p = points[k];
+			mesh.Nearest( p, out var at, out int t );
+			if ( t < 0 ) { result[k] = p; continue; }
+			int a = row.Tris[t * 3], b = row.Tris[t * 3 + 1], c = row.Tris[t * 3 + 2];
+			GarmentFit.Barycentric( at, rest[a], rest[b], rest[c], out float u, out float v, out float w );
+			result[k] = p + (open[a] - rest[a]) * u + (open[b] - rest[b]) * v + (open[c] - rest[c]) * w;
+		}
+		return result;
+	}
+
+	// The share of points seen from the front (slanted: or from a little above or below):
+	// nothing of the body in front of them, or only skin they touch from behind.
+	static float Showing( Vec3[] points, TriMesh body, float margin, bool slanted = false )
+	{
+		var hits = new List<(float T, bool Leaving, int Tri)>();
+		var looks = slanted ? Slanted : Straight;
+		int seen = 0;
+		foreach ( var p in points )
+			foreach ( var look in looks )
+			{
+				body.Crossings( p, look, Units.Metre, hits );
+				if ( hits.Count == 0 || hits[0].T < margin ) { seen++; break; }
+			}
+		return points.Length > 0 ? seen / (float)points.Length : 0;
+	}
+
+	static readonly Vec3[] Straight = { new( 1, 0, 0 ) };
+	static readonly Vec3[] Slanted = { new( 1, 0, 0 ), new( MathF.Cos( Tilt ), 0, MathF.Sin( Tilt ) ), new( MathF.Cos( Tilt ), 0, -MathF.Sin( Tilt ) ) };
 
 	/// <summary>
 	/// The morphs of a garment worn on the teeth: every vertex goes the way the row of teeth it

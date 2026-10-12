@@ -49,6 +49,7 @@ public static class ClothingFitter
 		public TriMesh Mesh;
 		public SkinByBone Skin;
 		public int[] Stiff;   // per bone, the foot it is part of (its ankle), -1 if none: a foot changes as a whole from body to body
+		public Dictionary<string, Atlas> Atlases;   // its own morphs, read once something worn on its teeth needs them (see Teeth.Settle)
 	}
 
 	// A body brought into one reference's pose, and where that reference's skin went on it.
@@ -609,6 +610,14 @@ public static class ClothingFitter
 			// takes its morphs. Whether a garment is either is only known once it is fitted.
 			bool blinks = body.Geo.Morphs.Any( set => set.Morphs.Count > 0 );
 			var bodyAtlases = morphed || shaped || blinks ? ReadAtlases( new List<SkinnedGeometry> { body.Geo } ) : null;
+			// Fangs go by how far the lips open over the teeth, on the stock body too.
+			if ( bodyAtlases != null && reference.Atlases == null && target.Pose.Eyes.Count == 2 )
+			{
+				var eyes = target.Pose.Eyes;
+				if ( await OnWorker( () => Teeth.InMouth( levels[0].Positions, levels[0].Indices, reference.Mesh, eyes[0].Stock, eyes[1].Stock, out _ ) != null ) )
+					reference.Atlases = ReadAtlases( new List<SkinnedGeometry> { reference.Geo } );
+				if ( started != generation ) return null;
+			}
 			double readingMs = reading.Elapsed.TotalMilliseconds;
 
 			// Roughest level first. Each one is a step of its own, so the rough levels of every
@@ -1194,6 +1203,35 @@ public static class ClothingFitter
 			GarmentMorphs.PaintFromSkin( positions, painted, GarmentMorphs.LidMarks( target.Pose.Features, target.Mesh, body.Positions ), body.Positions, body.Indices, body.Draws, skin, morphs, Seen, IsFaceShape );
 	}
 
+	// Something worn on the teeth, in the body's rest pose: onto its rows, behind the closed
+	// lips, and its fangs showing under the open lip as much as on the stock body (Teeth.Settle).
+	static void Settle( SkinnedGeometry garment, Vec3[] positions, Reference reference, Mapped target, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases )
+	{
+		var eyes = target.Pose.Eyes;
+		var upper = Teeth.InMouth( garment.Positions, garment.Indices, reference.Mesh, eyes[0].Stock, eyes[1].Stock, out var stock );
+		if ( upper == null ) return;
+		var mouth = Teeth.Find( target.Mesh.Verts, target.Mesh.Tris, eyes[0].Body, eyes[1].Body );
+		if ( mouth == null ) return;
+		Teeth.Settle( garment.Positions, garment.Indices, positions, upper, stock, reference.Geo.Positions, reference.Geo.Indices, Opened( reference.Geo, reference.Atlases ), mouth, body.Positions, body.Indices, Opened( body, bodyAtlases ) );
+	}
+
+	// A body's positions with its mouth opened by its morphs, or null if it has none to open it with.
+	static Vec3[] Opened( SkinnedGeometry geo, Dictionary<string, Atlas> atlases )
+	{
+		if ( atlases == null ) return null;
+		Vec3[] open = null;
+		foreach ( var set in geo.Morphs )
+		{
+			if ( set.AtlasPath == null || !atlases.TryGetValue( set.AtlasPath, out var atlas ) ) continue;
+			foreach ( var (_, deltas) in set.Decode( atlas.Rgba, atlas.Width, atlas.Height, name => Teeth.OpenMouth.Contains( name ) ) )
+			{
+				open ??= MeshTools.Copy( geo.Positions );
+				foreach ( var (vertex, move, _) in deltas ) open[vertex] += move;
+			}
+		}
+		return open;
+	}
+
 	// Morph moves smaller than these aren't seen, and a beard that every jaw and mouth morph
 	// moves as a whole has close to a million deltas, all copied on the main thread when the
 	// model is made. Most of the ones under the floor are the atlas's 8-bit rounding anyway.
@@ -1238,6 +1276,8 @@ public static class ClothingFitter
 		var (animBones, animWeights) = Repose.ForAnimation( positions, fittedAsCloth, solid, target.Mesh, target.BodyBones, target.BodyWeights, backBones, backWeights, bones, garment.BoneWeight, reference.Geo, ownHead );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
+		if ( body != null && target.Pose.Eyes.Count == 2 )
+			Settle( garment, positions, reference, target, body, bodyAtlases );
 		positions = target.Pose.OntoSkin( stockFit, positions, painted );
 		var linings = GarmentFit.Linings( garment.Positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
 		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo, linings );
