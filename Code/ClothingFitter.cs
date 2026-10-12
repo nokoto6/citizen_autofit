@@ -600,6 +600,8 @@ public static class ClothingFitter
 			if ( started != generation ) return null;
 			var reading = System.Diagnostics.Stopwatch.StartNew();
 			var atlases = ReadAtlases( levels );
+			var inks = await OnWorker( () => levels.Any( level => LooksPainted( level, reference.Mesh ) ) ) ? ReadInks( levels ) : null;
+			if ( started != generation ) return null;
 			// A garment with morphs (a beard) takes them off the body's face, see FaceMorphs. On a
 			// body whose face is shaped by morphs (a stronger jaw, the eyes further apart), so does
 			// any other garment the skin under it moves: a mask, glasses, a gaiter.
@@ -627,7 +629,7 @@ public static class ClothingFitter
 			{
 				var level = levels[i];
 				var faceAtlases = preview && i > 0 ? null : bodyAtlases;
-				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body, faceAtlases, simulated, over, overShoes ) );
+				var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, null, body, faceAtlases, simulated, over, overShoes, inks ) );
 				if ( started != generation ) return null;
 				if ( i == levels.Count - 1 ) roughest = result.Milliseconds;
 				if ( i == 0 )
@@ -664,7 +666,7 @@ public static class ClothingFitter
 				{
 					var level = levels[i];
 					var detailed = done[0];
-					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body, bodyAtlases, simulated, over, overShoes ) );
+					var result = await OnWorker( () => FitGarment( level, reference, target, withoutSkin, atlases, underMesh, detailed, body, bodyAtlases, simulated, over, overShoes, inks ) );
 					if ( started != generation ) return null;
 					done[i] = result;
 					worker += result.Milliseconds;
@@ -1055,7 +1057,7 @@ public static class ClothingFitter
 				result.BodyWeights = geo.BoneWeight;
 				result.Pivots = reference.Geo.BoneNames.Select( x => x.StartsWith( "eye_" ) ).ToArray();
 				var skin = new SkinByBone( result.Mesh, result.BodyBones, geo.BoneWeight, reference.Geo.BoneParents );
-				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks, result.Pose.Features );
+				result.Map = BodyMap.Build( reference.Geo, reference.Mesh, result.Mesh, geo.Uvs, skin, result.Pose.Landmarks, result.Pose.Features, result.Pose.Ears );
 				result.Milliseconds = watch.ElapsedMilliseconds;
 				return result;
 			} );
@@ -1127,6 +1129,62 @@ public static class ClothingFitter
 		}
 
 		return atlases;
+	}
+
+	const float PaintMedian = 0.003f * Units.Metre;   // a garment half of whose vertices are this close to the stock skin may be paint (GarmentFit decides)
+
+	// Worker thread. Whether a garment may be paint on the skin (a tattoo, makeup), and so wants
+	// its texture read for what is drawn where.
+	static bool LooksPainted( SkinnedGeometry garment, TriMesh stock )
+	{
+		if ( garment.Positions.Length == 0 ) return false;
+		var gaps = new float[garment.Positions.Length];
+		for ( int v = 0; v < gaps.Length; v++ ) gaps[v] = MathF.Abs( stock.SignedGap( garment.Positions[v], out _ ) );
+		Array.Sort( gaps );
+		return gaps[gaps.Length / 2] <= PaintMedian;
+	}
+
+	// Inks read so far, by material.
+	static readonly Dictionary<string, Atlas> inkCache = new();
+
+	// Main thread. The colour textures of a painted garment's materials: their alpha is the ink,
+	// what PaintIslands tells the drawings by.
+	static Dictionary<string, Atlas> ReadInks( List<SkinnedGeometry> levels )
+	{
+		var inks = new Dictionary<string, Atlas>();
+		foreach ( var (_, _, material) in levels.SelectMany( level => level.Draws ) )
+		{
+			if ( string.IsNullOrEmpty( material ) || inks.ContainsKey( material ) ) continue;
+			if ( !inkCache.TryGetValue( material, out var ink ) )
+			{
+				var texture = Material.Load( material )?.GetTexture( "g_tColor" );
+				if ( texture == null || !texture.IsValid() || texture.IsError || texture.Width <= 0 ) continue;
+				var pixels = texture.GetPixels();
+				ink = new Atlas { Width = texture.Width, Height = texture.Height, Rgba = new byte[pixels.Length] };
+				for ( int i = 0; i < pixels.Length; i++ ) ink.Rgba[i] = pixels[i].a;   // the alpha alone
+				inkCache[material] = ink;
+			}
+			inks[material] = ink;
+		}
+		return inks;
+	}
+
+	// How much ink there is at a texture coordinate, by a vertex of the garment (its material).
+	static Func<int, Vec2, float> InkOf( SkinnedGeometry garment, Dictionary<string, Atlas> inks )
+	{
+		if ( inks == null || inks.Count == 0 ) return null;
+		var of = new Atlas[garment.Positions.Length];
+		foreach ( var (first, count, material) in garment.Draws )
+			if ( material != null && inks.TryGetValue( material, out var ink ) )
+				for ( int k = first; k < first + count && k < garment.Indices.Length; k++ ) of[garment.Indices[k]] = ink;
+		return ( v, uv ) =>
+		{
+			var ink = of[v];
+			if ( ink == null || ink.Rgba.Length < ink.Width * ink.Height ) return 0;
+			float u = uv.X - MathF.Floor( uv.X ), t = uv.Y - MathF.Floor( uv.Y );
+			int x = Math.Clamp( (int)(u * ink.Width), 0, ink.Width - 1 ), y = Math.Clamp( (int)(t * ink.Height), 0, ink.Height - 1 );
+			return ink.Rgba[y * ink.Width + x] / 255f;
+		};
 	}
 
 	static bool IsFaceShape( string name ) => FitDresser.FaceShapeMorphs.Contains( name, StringComparer.OrdinalIgnoreCase );
@@ -1201,7 +1259,7 @@ public static class ClothingFitter
 	/// <param name="detailed">A more detailed level already fitted, for this one to follow instead of being fitted on its own.</param>
 	/// <param name="simulated">The bones the engine moves by the garment's physics (see <see cref="Simulated"/>).</param>
 	/// <param name="over">Garments worn under this one, in the body's rest pose, for it to be laid over if it hangs on them (see <see cref="Layers.Over"/>).</param>
-	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, Body wearer = null, Dictionary<string, Atlas> bodyAtlases = null, HashSet<string> simulated = null, List<Layers.Under> over = null, bool overShoes = false )
+	static Fitted FitGarment( SkinnedGeometry garment, Reference reference, Mapped target, bool withoutSkin, Dictionary<string, Atlas> atlases, TriMesh under = null, Fitted detailed = null, Body wearer = null, Dictionary<string, Atlas> bodyAtlases = null, HashSet<string> simulated = null, List<Layers.Under> over = null, bool overShoes = false, Dictionary<string, Atlas> inks = null )
 	{
 		var body = wearer?.Geo;
 		var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -1224,6 +1282,14 @@ public static class ClothingFitter
 		var painted = new bool[garment.Positions.Length];
 		var beard = new bool[garment.Positions.Length];
 		var positions = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, solid, target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, fittedAsCloth, target.Pose.Neck, target.Map.OnSkin, painted, target.Pose.Trunk, target.Pose.Features, beard, target.Pose.Ears );
+		// Paint: a drawing mostly on the neck goes by the neck's own map instead, as a whole, see PaintIslands.
+		if ( target.Map.OnNeck != null && painted.Any( x => x ) )
+		{
+			int count = garment.Positions.Length;
+			var byNeckFit = GarmentFit.Fit( garment.Positions, cloth, bones, garment.BoneWeight, reference.Mesh, target.Mesh, target.Map.SkinMove, reference.Skin, target.Map.Found, withoutSkin, given, under, new bool[count], target.Pose.Eyes.ToArray(), reference.Stiff, target.Map.Landmarked, target.Pose.Face.ToArray(), target.Map.Thickness, new bool[count], target.Pose.Neck, target.Map.OnNeck, new bool[count], target.Pose.Trunk, target.Pose.Features, new bool[count], target.Pose.Ears );
+			var byNeck = PaintIslands.ByTheNeck( garment.Positions, cloth, garment.Uvs, painted, InkOf( garment, inks ), target.Map.JawHeight );
+			positions = PaintIslands.Pick( positions, byNeckFit, byNeck );
+		}
 		var stockFit = positions;
 
 		// The fit happens in the stock skeleton's proportions and bind pose. Take it back to
@@ -1233,7 +1299,7 @@ public static class ClothingFitter
 		var (animBones, animWeights) = Repose.ForAnimation( positions, fittedAsCloth, solid, target.Mesh, target.BodyBones, target.BodyWeights, backBones, backWeights, bones, garment.BoneWeight, reference.Geo, ownHead );
 		positions = target.Pose.FromStockProportions( positions, backBones, backWeights, reference.Geo );
 		positions = target.Pose.ToBodyRest( positions, backBones, backWeights, garment.Indices, fittedAsCloth );
-		positions = target.Pose.OntoSkin( stockFit, positions, painted );
+		positions = target.Pose.OntoSkin( stockFit, positions, painted, cloth );
 		var linings = GarmentFit.Linings( garment.Positions, cloth, fittedAsCloth, painted, reference.Mesh, target.Pose.Eyes.ToArray() );
 		positions = target.Pose.CoverInPose( positions, garment.Indices, fittedAsCloth, solid, animBones, animWeights, reference.Geo, linings );
 		positions = GarmentFit.Fringe( stockFit, positions, garment.Indices, fittedAsCloth, painted );

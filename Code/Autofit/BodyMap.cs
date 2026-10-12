@@ -47,6 +47,18 @@ public sealed class BodyMap
 	/// </summary>
 	public Vec3[] OnSkin;
 
+	/// <summary>
+	/// <see cref="OnSkin"/> with the neck and the lower face gone over by the neck's own landmarks
+	/// (<see cref="NeckChart"/>): what a drawing on the citizen's neck goes by (see <see cref="PaintIslands"/>).
+	/// Null when <see cref="OnSkin"/> is, or the faces have no mouth and nose to go by.
+	/// </summary>
+	public Vec3[] OnNeck;
+
+	NeckChart stockNeck;
+
+	/// <summary>How high the stock body's jaw line is round its neck at a point of its skin (the line between its neck and its face). NaN where it isn't known.</summary>
+	public float JawHeight( Vec3 stockPoint ) => stockNeck?.JawAt( stockPoint ) ?? float.NaN;
+
 	public int ByUv, ByRays, NoMatch, Outliers;
 
 	const float LookBeyond = 0.5f * Units.Metre;    // how far past the old skin we look for the new one
@@ -68,7 +80,8 @@ public sealed class BodyMap
 	/// </param>
 	/// <param name="landmarks">Landmarks from <see cref="Repose"/> (eyes, the front of the chest): skin within reach of each one shifts along the surface with it.</param>
 	/// <param name="features">The face's features on both bodies (<see cref="Repose.Features"/>). Given, <see cref="OnSkin"/> is worked out too.</param>
-	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs, SkinByBone otherSkin, List<(Vec3 At, Vec3 Shift, float Reach)> landmarks, List<(string Name, Vec3 Stock, Vec3 Body)> features = null )
+	/// <param name="ears">The ears on both bodies (<see cref="Repose.Ears"/>): paint on the neck reaches up to under them.</param>
+	public static BodyMap Build( SkinnedGeometry stock, TriMesh old, TriMesh other, Vec2[] otherUvs, SkinByBone otherSkin, List<(Vec3 At, Vec3 Shift, float Reach)> landmarks, List<(string Name, Vec3 Stock, Vec3 Body)> features = null, List<(string Name, Vec3 Stock, Vec3 Body)> ears = null )
 	{
 		var result = new BodyMap();
 		var weld = MeshTools.Weld( old.Verts, out int n );
@@ -204,9 +217,15 @@ public sealed class BodyMap
 
 		if ( features != null )
 		{
-			var onSkin = PaintedOn( old, other, weld, firstOf, move, features );
+			var (onSkin, onNeck, chart) = PaintedOn( stock, old, other, weld, firstOf, move, features, ears );
 			result.OnSkin = new Vec3[old.Verts.Length];
 			for ( int i = 0; i < old.Verts.Length; i++ ) result.OnSkin[i] = onSkin[weld[i]];
+			if ( onNeck != null )
+			{
+				result.OnNeck = new Vec3[old.Verts.Length];
+				for ( int i = 0; i < old.Verts.Length; i++ ) result.OnNeck[i] = onNeck[weld[i]];
+				result.stockNeck = chart;
+			}
 		}
 		return result;
 	}
@@ -223,17 +242,28 @@ public sealed class BodyMap
 	/// over the face the skin goes by a smooth warp (<see cref="Warp"/>) that takes each feature of
 	/// the stock face onto the same feature of this one, tied to the rays' map round the face, and
 	/// is faded over into the rays' map from there. Either way the point is then put on the skin:
-	/// both only come near it.
+	/// both only come near it. Also <see cref="OnNeck"/>: the same with the neck and what is
+	/// under the mouth going by the neck's own landmarks (<see cref="NeckChart"/>): the warp only
+	/// knows the face seen from the front, and on an anime body whose face sits 11 cm lower the
+	/// rays put the citizen's throat on its chin and its chin on its mouth.
 	/// </summary>
-	static Vec3[] PaintedOn( TriMesh old, TriMesh other, int[] weld, int[] firstOf, Vec3[] move, List<(string Name, Vec3 Stock, Vec3 Body)> features )
+	static (Vec3[] OnSkin, Vec3[] OnNeck, NeckChart Chart) PaintedOn( SkinnedGeometry stock, TriMesh old, TriMesh other, int[] weld, int[] firstOf, Vec3[] move, List<(string Name, Vec3 Stock, Vec3 Body)> features, List<(string Name, Vec3 Stock, Vec3 Body)> ears )
 	{
 		var whole = other.Skin();
 		var skin = whole;   // on the face, only what can be seen from the front (below)
 		Vec3 OnTheSkin( Vec3 p ) { skin.Nearest( p, out var q, out _ ); return q; }
 		int n = firstOf.Length;
 		var onSkin = new Vec3[n];
+		var (neckFrom, neckTo) = NeckCharts( stock, old, whole, features, ears );
+		var onNeck = neckFrom != null ? new Vec3[n] : null;
 		var hits = new List<(float T, bool Leaving, int Tri)>();
 		var forward = new Vec3( 1, 0, 0 );   // the way a body faces in the stock pose
+		Vec3 ByTheNeck( Vec3 s, Vec3 p )
+		{
+			if ( neckFrom == null ) return p;
+			var q = NeckChart.Map( neckFrom, neckTo, s, out float w );
+			return w > 0 ? p * (1 - w) + q * w : p;
+		}
 
 		// The face: how far its features reach from their middle. The crown is far above it,
 		// a tie of its own.
@@ -331,13 +361,50 @@ public sealed class BodyMap
 					hidden = hits.Count > 0;
 				}
 			}
-			if ( !hidden ) { onSkin[i] = OnTheSkin( p ); continue; }
-			skin.Nearest( p, out var q, out _ );
-			whole.Nearest( q, out _, out int tri );   // whose normals face out of the whole body
-			var up = whole.TriNormals[tri];
-			onSkin[i] = q - up / MathF.Max( up.Length(), 1e-12f ) * Buried;
+			Vec3 Place( Vec3 at )
+			{
+				if ( !hidden ) return OnTheSkin( at );
+				skin.Nearest( at, out var q, out _ );
+				whole.Nearest( q, out _, out int tri );   // whose normals face out of the whole body
+				var up = whole.TriNormals[tri];
+				return q - up / MathF.Max( up.Length(), 1e-12f ) * Buried;
+			}
+			onSkin[i] = Place( p );
+			if ( onNeck == null ) continue;
+			var byNeck = warp != null ? ByTheNeck( s, p ) : p;
+			onNeck[i] = byNeck.X == p.X && byNeck.Y == p.Y && byNeck.Z == p.Z ? onSkin[i] : Place( byNeck );
 		}
-		return onSkin;
+		return (onSkin, onNeck, neckFrom);
+	}
+
+	/// <summary>
+	/// The neck and the lower face (<see cref="NeckChart"/>) of the stock body and of this one, both
+	/// in the stock pose, round the stock neck's axis and from its base at the clavicles' joints.
+	/// Nulls when a face has no mouth or nose to go by.
+	/// </summary>
+	static (NeckChart From, NeckChart To) NeckCharts( SkinnedGeometry stock, TriMesh old, TriMesh skin, List<(string Name, Vec3 Stock, Vec3 Body)> features, List<(string Name, Vec3 Stock, Vec3 Body)> ears )
+	{
+		int neck = Array.IndexOf( stock.BoneNames, "neck_0" ), head = Array.IndexOf( stock.BoneNames, "head" ), clavicle = Array.IndexOf( stock.BoneNames, "clavicle_L" );
+		if ( neck < 0 || head < 0 || clavicle < 0 ) return (null, null);
+		Vec3? mouthS = null, mouthB = null, noseS = null, noseB = null;
+		foreach ( var (name, at, there) in features )
+		{
+			if ( name == "mouth.mid" ) { mouthS = at; mouthB = there; }
+			if ( name == "nose" ) { noseS = at; noseB = there; }
+		}
+		if ( mouthS == null || noseS == null ) return (null, null);
+		Vec3 low = stock.BonePositions[neck], high = stock.BonePositions[head];
+		float baseZ = stock.BonePositions[clavicle].Z;
+		float leftS = float.NaN, rightS = float.NaN, leftB = float.NaN, rightB = float.NaN;
+		if ( ears != null )
+			foreach ( var (name, at, there) in ears )
+			{
+				if ( name == "earL.bottom" ) { leftS = at.Z; leftB = there.Z; }
+				if ( name == "earR.bottom" ) { rightS = at.Z; rightB = there.Z; }
+			}
+		var from = NeckChart.Build( old.Skin(), low, high, baseZ, mouthS.Value.Z, noseS.Value.Z, leftS, rightS );
+		var to = NeckChart.Build( skin, low, high, baseZ, mouthB.Value.Z, noseB.Value.Z, leftB, rightB );
+		return from == null || to == null ? (null, null) : (from, to);
 	}
 
 	/// <summary>How far under the skin paint goes that the stock body hides (see <see cref="OnSkin"/>).</summary>
