@@ -369,6 +369,14 @@ public static class GarmentFit
 			if ( givenMove != null ) move[i] = givenMove[src];
 		}
 
+		// What is worn on the teeth (fangs, a grill) goes onto this body's teeth, see Teeth. Close
+		// to the stock body all over, it was taken for paint and laid on the lips.
+		if ( Teeth.On( verts, tris, old, other, eyes, features ) is Vec3[] onTeeth )
+		{
+			if ( solidOut != null ) Array.Fill( solidOut, true );
+			return onTeeth;
+		}
+
 		// Paint on the skin (a tattoo, makeup, brows) goes onto this body's skin and nowhere else,
 		// see PaintOn. Fitted as cloth it was held off the skin by every pass made for cloth.
 		// Lashes grow from the lids instead, see LashesOn.

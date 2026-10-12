@@ -1148,10 +1148,12 @@ public static class ClothingFitter
 	static void FaceMorphs( Vec3[] positions, Vec3[] normals, SkinnedGeometry garment, bool[] solid, bool[] bent, SkinnedGeometry body, Dictionary<string, Atlas> bodyAtlases, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Dictionary<string, Vec3[]> asMade, int[] lashRoots, bool[] painted, Mapped target, Reference reference )
 	{
 		bool own = morphs.Count > 0;
+		var eyes = target.Pose.Eyes;
+		var onTeeth = eyes.Count == 2 ? Teeth.InMouth( garment.Positions, garment.Indices, reference.Mesh, eyes[0].Stock, eyes[1].Stock, out _ ) : null;
 		bool brows = Array.IndexOf( painted, true ) >= 0 && GarmentFit.IsBrows( garment.Positions, garment.Indices, reference.Mesh, target.Pose.Eyes.ToArray() );
 		bool paint = Array.IndexOf( painted, true ) >= 0 && !brows;
 		var ownBrows = brows ? GarmentMorphs.OwnBrows( target.Pose.Features, target.Mesh, body.Positions, body.Indices ) : null;
-		Func<string, bool> wanted = own || lashRoots != null || paint || ownBrows != null ? null : IsFaceShape;
+		Func<string, bool> wanted = own || lashRoots != null || paint || ownBrows != null || onTeeth != null ? null : IsFaceShape;
 		var skin = new Dictionary<string, (Vec3[] Position, Vec3[] Normal)>();
 		foreach ( var set in body.Morphs )
 		{
@@ -1173,6 +1175,9 @@ public static class ClothingFitter
 			GarmentMorphs.LashesFromSkin( positions, normals, lashRoots, body.Positions, body.Indices, body.Draws, skin, morphs, Seen );
 			return;
 		}
+
+		if ( onTeeth != null && Teeth.Morphs( positions, onTeeth, target.Mesh, eyes[0].Body, eyes[1].Body, body.Positions, skin, morphs, Seen ) )
+			return;
 
 		if ( ownBrows != null )
 		{
