@@ -442,6 +442,12 @@ public static class GarmentMorphs
 	const float OwnBrowNear = 0.015f * Units.Metre;   // a piece of the body's own this close to the marks of a brow (FaceMarks) can be that brow
 	const float OwnBrowOn = 0.006f * Units.Metre;     // and lies on a mark when this close to it
 	const float BrowAlong = 0.2f;                      // a dressed brow goes with its own brow's moves this far along it, as a share of its length
+	const float BrowPastFull = 0.004f * Units.Metre;    // past the end of the own brow, a shell under a dressed one goes with it in full this far
+	const float BrowPastReach = 0.016f * Units.Metre;   // and with the skin from this far
+	const float BrowAcrossFull = 0.013f * Units.Metre;  // across it, from the middle of the own brow, in full this far
+	const float BrowAcrossReach = 0.019f * Units.Metre; // and with the skin from this far
+	const float ShellGap = 0.0015f * Units.Metre;       // a piece of a brow no further off the skin than this anywhere is drawn on it
+	const int ShellLeast = 12;                          // and has at least this many vertices (a single flat card has fewer)
 
 	/// <summary>
 	/// The body's own brows, one per side: the piece of its own (not skin, see <see cref="Skin"/>)
@@ -512,6 +518,31 @@ public static class GarmentMorphs
 		return any ? result : null;
 	}
 
+	// Per garment vertex, whether it is on a shell lying on the skin all over (a cap, a brow drawn
+	// on), not on a card standing off it.
+	static bool[] Shells( Vec3[] positions, int[] tris, Vec3[] bodyPositions, int[] bodyTris )
+	{
+		var result = new bool[positions.Length];
+		var (_, _, surface) = SkinOf( bodyPositions, bodyTris );
+		if ( surface == null ) return result;
+		var weld = MeshTools.Weld( positions, out int count );
+		var piece = GarmentFit.Islands( count, MeshTools.Edges( tris, weld ) );
+		var size = new Dictionary<int, int>();
+		var off = new Dictionary<int, float>();
+		foreach ( int v in tris.Distinct() )
+		{
+			int p = piece[weld[v]];
+			size[p] = (size.TryGetValue( p, out int k ) ? k : 0) + 1;
+			off[p] = MathF.Max( off.TryGetValue( p, out float d ) ? d : 0f, surface.Nearest( positions[v], out _, out _ ) );
+		}
+		for ( int v = 0; v < positions.Length; v++ )
+		{
+			int p = piece[weld[v]];
+			result[v] = size.TryGetValue( p, out int k ) && k >= ShellLeast && off[p] <= ShellGap;
+		}
+		return result;
+	}
+
 	/// <summary>
 	/// A dressed brow goes the way the body's own brow does, in every morph. An anime face moves
 	/// its brows as pieces of their own over skin that stays put, and under the lower edge of a
@@ -520,14 +551,16 @@ public static class GarmentMorphs
 	/// by a blink and stuck while the face frowned or raised its brows. Each vertex takes the
 	/// move of the own brow at the same point along it, from the inner end to the outer one, so the
 	/// brow keeps its width and bends along its length as the own one does. Between the inner ends
-	/// (a monobrow) it goes from one brow's move to the other's.
+	/// (a monobrow) it goes from one brow's move to the other's. A shell drawn on the skin under
+	/// it (the cap a brow's hairs grow from) goes back to the skin's moves past the own brow's
+	/// ends and away from it across, where it is only the see-through patch round the brow.
 	/// </summary>
 	/// <param name="positions">The garment, fitted, in the body's rest pose.</param>
 	/// <param name="own">The body's own brows, see <see cref="OwnBrows"/>.</param>
 	/// <param name="skin">The body's morphs, a move and a turn per body vertex.</param>
 	/// <param name="morphs">The garment's morphs, changed in place; those of the body it lacks are added.</param>
 	/// <param name="seen">Whether a move and a turn are big enough to keep.</param>
-	public static void BrowsFromOwn( Vec3[] positions, List<int>[] own, Vec3[] bodyPositions,
+	public static void BrowsFromOwn( Vec3[] positions, int[] tris, List<int>[] own, Vec3[] bodyPositions, int[] bodyTris,
 		Dictionary<string, (Vec3[] Position, Vec3[] Normal)> skin, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Func<Vec3, Vec3, bool> seen )
 	{
 		// Per own brow: its middle, the line along it, outwards from the middle of the face, and
@@ -569,18 +602,44 @@ public static class GarmentMorphs
 			last[s] = at[s].Max();
 		}
 
-		// Per garment vertex: which brow, how far along it, and between the two inner ends how
-		// much of the other one.
+		// Per garment vertex: which brow, how far along it, between the two inner ends how much
+		// of the other one, and how much it goes with the brow at all.
 		int n = positions.Length;
 		var side = new int[n];
 		var t = new float[n];
 		var other = new float[n];
+		var with = new float[n];
+		var shell = Shells( positions, tris, bodyPositions, bodyTris );
 		for ( int v = 0; v < n; v++ )
 		{
 			int s = sides == 2 ? (Vec3.Dot( positions[v] - face, middle[0] - face ) >= 0 ? 0 : 1) : (own[0] != null && own[0].Count >= 3 ? 0 : 1);
 			side[v] = s;
 			float x = Vec3.Dot( positions[v] - middle[s], along[s] );
 			t[v] = Math.Clamp( x, first[s], last[s] );
+
+			// A shell drawn on the skin (the cap under a brow's hairs, a brow drawn on), past the
+			// outer end of the own brow, or past the inner one with no other brow to go to, and
+			// away from the brow across it: there it is no longer brow but the patch a brow is
+			// drawn on, see-through, and it goes back to the skin's moves. Moved with the brow as
+			// far out as it reaches, its corners rose up the forehead past the brow's ends. Hair
+			// cards go with the brow wherever they reach.
+			with[v] = 1f;
+			if ( shell[v] )
+			{
+				float past = x > last[s] ? x - last[s] : sides == 1 && x < first[s] ? first[s] - x : 0f;
+				var centre = Vec3.Zero;
+				float total = 0, sigma = MathF.Max( BrowAlong * (last[s] - first[s]), 1e-4f * Units.Metre );
+				for ( int i = 0; i < own[s].Count; i++ )
+				{
+					float d = at[s][i] - t[v], w = MathF.Exp( -d * d / (2f * sigma * sigma) );
+					centre += bodyPositions[own[s][i]] * w;
+					total += w;
+				}
+				var away = positions[v] - centre / total;
+				away -= along[s] * Vec3.Dot( away, along[s] );
+				with[v] = Math.Clamp( (BrowPastReach - past) / (BrowPastReach - BrowPastFull), 0f, 1f )
+					* Math.Clamp( (BrowAcrossReach - away.Length()) / (BrowAcrossReach - BrowAcrossFull), 0f, 1f );
+			}
 			if ( sides == 2 && x < first[s] )
 			{
 				// Past the inner end, towards the other brow's: more and more with the other one,
@@ -609,6 +668,20 @@ public static class GarmentMorphs
 			return total > 0 ? (m / total, r / total) : (Vec3.Zero, Vec3.Zero);
 		}
 
+		// The skin under each vertex that doesn't go with the brow all the way.
+		var under = new (int A, int B, int C, float U, float V, float W)[n];
+		var (skinTris, _, surface) = SkinOf( bodyPositions, bodyTris );
+		for ( int v = 0; v < n; v++ )
+		{
+			under[v] = (-1, -1, -1, 0, 0, 0);
+			if ( with[v] >= 1f || surface == null ) continue;
+			surface.Nearest( positions[v], out var on, out int tri );
+			if ( tri < 0 ) continue;
+			int a = skinTris[tri * 3], b = skinTris[tri * 3 + 1], c = skinTris[tri * 3 + 2];
+			GarmentFit.Barycentric( on, bodyPositions[a], bodyPositions[b], bodyPositions[c], out float u, out float bv, out float bw );
+			under[v] = (a, b, c, u, bv, bw);
+		}
+
 		foreach ( var (name, (move, turn)) in skin )
 		{
 			var moves = new Vec3[n];
@@ -623,6 +696,14 @@ public static class GarmentMorphs
 					var (m2, r2) = MoveAt( 1 - s, first[1 - s], move, turn );
 					m = m * (1 - other[v]) + m2 * other[v];
 					r = r * (1 - other[v]) + r2 * other[v];
+				}
+				if ( with[v] < 1f )
+				{
+					var (a, b, c, u, bv, bw) = under[v];
+					var sm = a >= 0 ? move[a] * u + move[b] * bv + move[c] * bw : Vec3.Zero;
+					var sr = a >= 0 ? turn[a] * u + turn[b] * bv + turn[c] * bw : Vec3.Zero;
+					m = m * with[v] + sm * (1 - with[v]);
+					r = r * with[v] + sr * (1 - with[v]);
 				}
 				moves[v] = m;
 				turns[v] = r;

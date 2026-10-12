@@ -1176,7 +1176,7 @@ public static class ClothingFitter
 
 		if ( ownBrows != null )
 		{
-			GarmentMorphs.BrowsFromOwn( positions, ownBrows, body.Positions, skin, morphs, Seen );
+			GarmentMorphs.BrowsFromOwn( positions, garment.Indices, ownBrows, body.Positions, body.Indices, skin, morphs, Seen );
 			return;
 		}
 
