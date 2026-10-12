@@ -33,8 +33,9 @@ public static class Teeth
 	const float WornMargin = 0.15f;   // round the teeth, as a share of their width
 	const int MinRow = 12;            // vertices a row of teeth has at least
 	const float Reach = 1.5f;         // the lips in front of the teeth are looked for this far, as a share of the row's width
-	const float Under = 0.04f;        // and what came out from behind them, or is closer behind them than this, goes this far behind them
+	const float Under = 0.04f;        // and what came out from behind them goes this far behind them, or as far as it was behind the stock lips if closer
 	const int BehindPasses = 8;
+	const float Slack = 0.005f;       // closer behind the lips than on the stock body by this share of the width is let be
 	const float Aside = 0.61f;        // looked at from 35 degrees to either side too
 	const int Rings = 3;
 	const int Slices = 8;             // a row is followed round in this many slices across
@@ -410,7 +411,7 @@ public static class Teeth
 		var body = Find( bodyMesh.Verts, bodyMesh.Tris, eyes[0].Body, eyes[1].Body );
 		if ( Fit( verts, upper, stock, body ) is Vec3[] fitted )
 		{
-			KeepBehindLips( verts, tris, fitted, stockMesh, bodyMesh, body );
+			KeepBehindLips( verts, tris, fitted, stockMesh, bodyMesh, stock, body );
 			return fitted;
 		}
 
@@ -438,10 +439,11 @@ public static class Teeth
 	/// front of the lips, and a grill's edge through a cheek. Such a vertex goes straight back
 	/// until the skin in front of it hides it again, and its neighbours with it, less and less.
 	/// </summary>
-	static void KeepBehindLips( Vec3[] made, int[] tris, Vec3[] fitted, TriMesh stockMesh, TriMesh bodyMesh, Mouth body )
+	static void KeepBehindLips( Vec3[] made, int[] tris, Vec3[] fitted, TriMesh stockMesh, TriMesh bodyMesh, Mouth stock, Mouth body )
 	{
 		float width = MathF.Max( body.Upper?.Width ?? 0, body.Lower?.Width ?? 0 );
-		if ( width <= 0 ) return;
+		float stockWidth = MathF.Max( stock.Upper?.Width ?? 0, stock.Lower?.Width ?? 0 );
+		if ( width <= 0 || stockWidth <= 0 ) return;
 		var forward = new Vec3( 1, 0, 0 );
 		var back = new Vec3( -1, 0, 0 );
 		// Seen from the front, and from either side of it.
@@ -452,6 +454,7 @@ public static class Teeth
 		var used = new bool[made.Length];
 		foreach ( int v in tris ) used[v] = true;
 		var hidden = new bool[n * looks.Length];
+		var clear = new float[n * looks.Length];   // how far behind the stock lips, for this row's width
 		var at = new Vec3[n];
 		var mine = new bool[n];
 		for ( int i = 0; i < made.Length; i++ )
@@ -462,8 +465,9 @@ public static class Teeth
 			at[w] = fitted[i];
 			for ( int k = 0; k < looks.Length; k++ )
 			{
-				stockMesh.Crossings( made[i], looks[k], Reach * width, hits );
+				stockMesh.Crossings( made[i], looks[k], Reach * stockWidth, hits );
 				hidden[w * looks.Length + k] = hits.Count > 0;
+				if ( hits.Count > 0 ) clear[w * looks.Length + k] = MathF.Min( hits[0].T * width / stockWidth, Under * width );
 			}
 		}
 		var shift = new float[n];
@@ -478,7 +482,7 @@ public static class Teeth
 				if ( hidden[w * looks.Length] )
 				{
 					bodyMesh.Crossings( p, forward, Reach * width, hits );
-					if ( hits.Count > 0 && hits[0].T < Under * width ) more = Under * width - hits[0].T;
+					if ( hits.Count > 0 && hits[0].T < clear[w * looks.Length] - Slack * width ) more = clear[w * looks.Length] - hits[0].T;
 					else if ( hits.Count == 0 )
 					{
 						// Out in front: back through the skin, and as far again behind it.
@@ -491,7 +495,7 @@ public static class Teeth
 				{
 					if ( !hidden[w * looks.Length + k] ) continue;
 					bodyMesh.Crossings( p, looks[k], Reach * width, hits );
-					if ( hits.Count == 0 || hits[0].T < Under * width ) more = 2 * Under * width;
+					if ( hits.Count == 0 || hits[0].T < clear[w * looks.Length + k] - Slack * width ) more = 2 * Under * width;
 				}
 				if ( more <= 0 ) continue;
 				shift[w] += more;
