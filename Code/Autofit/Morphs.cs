@@ -439,6 +439,206 @@ public static class GarmentMorphs
 		};
 	}
 
+	const float OwnBrowNear = 0.015f * Units.Metre;   // a piece of the body's own this close to the marks of a brow (FaceMarks) can be that brow
+	const float OwnBrowOn = 0.006f * Units.Metre;     // and lies on a mark when this close to it
+	const float BrowAlong = 0.2f;                      // a dressed brow goes with its own brow's moves this far along it, as a share of its length
+
+	/// <summary>
+	/// The body's own brows, one per side: the piece of its own (not skin, see <see cref="Skin"/>)
+	/// lying on the skin where <see cref="FaceMarks"/> found the brow. Anime faces draw their brows
+	/// so, and move them by their morphs over skin that stays put. Null if the body has none.
+	/// </summary>
+	/// <param name="posed">The body in the stock proportions, where the marks were found.</param>
+	/// <param name="rest">The body's vertices in its rest pose, in the same order.</param>
+	public static List<int>[] OwnBrows( List<(string Name, Vec3 Stock, Vec3 Body)> features, TriMesh posed, Vec3[] rest, int[] tris )
+	{
+		if ( features == null ) return null;
+		var (_, area, _) = SkinOf( rest, tris );
+		int[] weld = null, piece = null;
+		var result = new List<int>[2];
+		bool any = false;
+		for ( int side = 0; side < 2; side++ )
+		{
+			string brow = side == 0 ? "browL" : "browR";
+			var marks = new List<Vec3>();
+			foreach ( var (name, _, body) in features )
+			{
+				if ( name != brow && !name.StartsWith( brow + "." ) ) continue;
+				posed.Nearest( body, out var on, out int tri );
+				if ( tri < 0 ) continue;
+				int a = posed.Tris[tri * 3], b = posed.Tris[tri * 3 + 1], c = posed.Tris[tri * 3 + 2];
+				GarmentFit.Barycentric( on, posed.Verts[a], posed.Verts[b], posed.Verts[c], out float u, out float v, out float w );
+				marks.Add( rest[a] * u + rest[b] * v + rest[c] * w );
+			}
+			if ( marks.Count == 0 ) continue;
+			if ( weld == null )
+			{
+				weld = MeshTools.Weld( rest, out int count );
+				piece = GarmentFit.Islands( count, MeshTools.Edges( tris, weld ) );
+			}
+
+			// Pieces that aren't skin near the marks; the brow is the one lying on most of them
+			// (its middle, top and both ends), not a line drawn in the fold of a lid under it.
+			var near = new Dictionary<int, (List<int> Verts, float[] Closest)>();
+			for ( int k = 0; k < rest.Length; k++ )
+			{
+				if ( area[k] > 0 ) continue;
+				float closest = float.MaxValue;
+				foreach ( var m in marks ) closest = MathF.Min( closest, (rest[k] - m).LengthSquared() );
+				if ( closest > OwnBrowNear * OwnBrowNear ) continue;
+				int p = piece[weld[k]];
+				if ( !near.TryGetValue( p, out var entry ) )
+				{
+					var none = new float[marks.Count];
+					Array.Fill( none, float.MaxValue );
+					near[p] = entry = (new List<int>(), none);
+				}
+				entry.Verts.Add( k );
+				for ( int i = 0; i < marks.Count; i++ ) entry.Closest[i] = MathF.Min( entry.Closest[i], (rest[k] - marks[i]).LengthSquared() );
+			}
+			int bestPiece = -1, bestScore = 0, bestCount = 0;
+			foreach ( var (p, (verts, closest)) in near )
+			{
+				int score = closest.Count( d => d <= OwnBrowOn * OwnBrowOn );
+				if ( score > bestScore || (score == bestScore && score > 0 && verts.Count > bestCount) ) { bestPiece = p; bestScore = score; bestCount = verts.Count; }
+			}
+			if ( bestPiece < 0 ) continue;
+			var own = new List<int>();
+			for ( int k = 0; k < rest.Length; k++ )
+				if ( area[k] <= 0 && piece[weld[k]] == bestPiece ) own.Add( k );
+			result[side] = own;
+			any = true;
+		}
+		return any ? result : null;
+	}
+
+	/// <summary>
+	/// A dressed brow goes the way the body's own brow does, in every morph. An anime face moves
+	/// its brows as pieces of their own over skin that stays put, and under the lower edge of a
+	/// brow there is the top of a lid that a blink moves two centimetres: taken off the skin, the
+	/// part of a dressed brow over the lid went with it and the rest stayed, so it was stretched
+	/// by a blink and stuck while the face frowned or raised its brows. Each vertex takes the
+	/// move of the own brow at the same point along it, from the inner end to the outer one, so the
+	/// brow keeps its width and bends along its length as the own one does. Between the inner ends
+	/// (a monobrow) it goes from one brow's move to the other's.
+	/// </summary>
+	/// <param name="positions">The garment, fitted, in the body's rest pose.</param>
+	/// <param name="own">The body's own brows, see <see cref="OwnBrows"/>.</param>
+	/// <param name="skin">The body's morphs, a move and a turn per body vertex.</param>
+	/// <param name="morphs">The garment's morphs, changed in place; those of the body it lacks are added.</param>
+	/// <param name="seen">Whether a move and a turn are big enough to keep.</param>
+	public static void BrowsFromOwn( Vec3[] positions, List<int>[] own, Vec3[] bodyPositions,
+		Dictionary<string, (Vec3[] Position, Vec3[] Normal)> skin, Dictionary<string, (Vec3[] Position, Vec3[] Normal)> morphs, Func<Vec3, Vec3, bool> seen )
+	{
+		// Per own brow: its middle, the line along it, outwards from the middle of the face, and
+		// how far along that line each of its vertices is.
+		var middle = new Vec3[2];
+		var along = new Vec3[2];
+		var at = new float[2][];
+		float[] first = new float[2], last = new float[2];
+		int sides = 0;
+		var face = Vec3.Zero;
+		for ( int s = 0; s < 2; s++ )
+		{
+			if ( own[s] == null || own[s].Count < 3 ) continue;
+			var c = Vec3.Zero;
+			foreach ( int k in own[s] ) c += bodyPositions[k];
+			middle[s] = c / own[s].Count;
+			face += middle[s];
+			sides++;
+		}
+		if ( sides == 0 ) return;
+		face /= sides;
+		for ( int s = 0; s < 2; s++ )
+		{
+			if ( own[s] == null || own[s].Count < 3 ) continue;
+			// The longest way across it, as the inner and outer ends: the main axis of its vertices.
+			var axis = new Vec3( 0, s == 0 ? 1 : -1, 0 );
+			for ( int pass = 0; pass < 8; pass++ )
+			{
+				var next = Vec3.Zero;
+				foreach ( int k in own[s] ) { var d = bodyPositions[k] - middle[s]; next += d * Vec3.Dot( d, axis ); }
+				float l = next.Length();
+				if ( l < 1e-12f ) break;
+				axis = next / l;
+			}
+			if ( sides == 2 ? Vec3.Dot( axis, middle[s] - face ) < 0 : axis.Y * (s == 0 ? 1 : -1) < 0 ) axis = -axis;
+			along[s] = axis;
+			at[s] = own[s].Select( k => Vec3.Dot( bodyPositions[k] - middle[s], axis ) ).ToArray();
+			first[s] = at[s].Min();
+			last[s] = at[s].Max();
+		}
+
+		// Per garment vertex: which brow, how far along it, and between the two inner ends how
+		// much of the other one.
+		int n = positions.Length;
+		var side = new int[n];
+		var t = new float[n];
+		var other = new float[n];
+		for ( int v = 0; v < n; v++ )
+		{
+			int s = sides == 2 ? (Vec3.Dot( positions[v] - face, middle[0] - face ) >= 0 ? 0 : 1) : (own[0] != null && own[0].Count >= 3 ? 0 : 1);
+			side[v] = s;
+			float x = Vec3.Dot( positions[v] - middle[s], along[s] );
+			t[v] = Math.Clamp( x, first[s], last[s] );
+			if ( sides == 2 && x < first[s] )
+			{
+				// Past the inner end, towards the other brow's: more and more with the other one,
+				// half each halfway between them.
+				var inner = middle[s] + along[s] * first[s];
+				var otherInner = middle[1 - s] + along[1 - s] * first[1 - s];
+				var gap = otherInner - inner;
+				float g = gap.LengthSquared();
+				other[v] = g > 1e-12f ? Math.Clamp( Vec3.Dot( positions[v] - inner, gap ) / g, 0f, 1f ) : 0f;
+			}
+		}
+
+		// An own brow's move at a point along it: its vertices' moves near there.
+		(Vec3 Move, Vec3 Turn) MoveAt( int s, float x, Vec3[] move, Vec3[] turn )
+		{
+			float sigma = MathF.Max( BrowAlong * (last[s] - first[s]), 1e-4f * Units.Metre );
+			float total = 0;
+			Vec3 m = Vec3.Zero, r = Vec3.Zero;
+			for ( int i = 0; i < own[s].Count; i++ )
+			{
+				float d = at[s][i] - x, w = MathF.Exp( -d * d / (2f * sigma * sigma) );
+				total += w;
+				m += move[own[s][i]] * w;
+				r += turn[own[s][i]] * w;
+			}
+			return total > 0 ? (m / total, r / total) : (Vec3.Zero, Vec3.Zero);
+		}
+
+		foreach ( var (name, (move, turn)) in skin )
+		{
+			var moves = new Vec3[n];
+			var turns = new Vec3[n];
+			bool any = false;
+			for ( int v = 0; v < n; v++ )
+			{
+				int s = side[v];
+				var (m, r) = MoveAt( s, t[v], move, turn );
+				if ( other[v] > 0 )
+				{
+					var (m2, r2) = MoveAt( 1 - s, first[1 - s], move, turn );
+					m = m * (1 - other[v]) + m2 * other[v];
+					r = r * (1 - other[v]) + r2 * other[v];
+				}
+				moves[v] = m;
+				turns[v] = r;
+				any |= seen( m, r );
+			}
+			if ( !morphs.TryGetValue( name, out var mine ) )
+			{
+				if ( !any ) continue;
+				morphs[name] = mine = (moves, turns);
+				continue;
+			}
+			Array.Copy( moves, mine.Position, n );
+			Array.Copy( turns, mine.Normal, n );
+		}
+	}
+
 	const float LidMorph = 0.5f;                        // a morph that moves the edges of the lids this much of the most it moves the skin anywhere
 	const float LidMorphLeast = 0.001f * Units.Metre;   // and at least this far moves the lids
 
